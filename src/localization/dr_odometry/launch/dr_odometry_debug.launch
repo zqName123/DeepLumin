@@ -34,7 +34,7 @@
   <!-- 是否使用 CAN 轮速（前进速度观测 + 非完整约束：侧向/垂向速度≈0） -->
   <arg name="use_wheel" default="true" />
   <!-- 总 GNSS 开关；false 时不订阅 /gnss_chc_data，且不进入 GNSS 更新 -->
-  <arg name="use_gnss" default="false" />
+  <arg name="use_gnss" default="true" />
   <!-- GNSS 航向（GPCHC heading → ENU yaw）观测，通常需要车速超过阈值才生效 -->
   <arg name="use_gnss_heading" default="true" />
   <!-- GNSS 绝对位置（LLA→ENU）观测；默认关闭，DR 更侧重相对运动一致性 -->

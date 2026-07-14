@@ -104,25 +104,25 @@ dr_odometry/
 
 | 名称 | 含义 |
 |------|------|
-| **world / odom** | 近似局部 ENU：X 东、Y 北、Z 天；重力 \((0,0,-g)\) |
-| **body / base_link** | 车体；\(x\) 前、\(y\) 左、\(z\) 上（与常见 ROS 车体一致） |
-| 姿态四元数 \(q\) | **body → world**，即 \(v_w = R(q)\,v_b\) |
+| **world / odom** | 近似局部 ENU：X 东、Y 北、Z 天；重力 (0,0,-g) |
+| **body / base_link** | 车体；x 前、y 左、z 上（与常见 ROS 车体一致） |
+| 姿态四元数 q | **body → world**，即 v_w = R(q)v_b |
 
 ### 3.2 航向约定（重要）
 
 GPCHC `heading`：
 
-- \(0^\circ\) = 北，**顺时针**为正（导航惯例）。
+- 0° = 北，**顺时针**为正（导航惯例）。
 
 本模块内部 yaw（ENU）：
 
-- \(0\) rad = 东，**逆时针**为正。
+- 0 rad = 东，**逆时针**为正。
 
 转换（`ros_adapter.cpp`）：
 
-\[
-\psi_{\text{ENU}} = \mathrm{normalize}\bigl((90^\circ - \text{heading}_{\deg})\cdot\pi/180\bigr)
-\]
+```text
+yaw_ENU = normalize( (90° - heading_deg) * pi / 180 )
+```
 
 ### 3.3 话题与消息
 
@@ -288,12 +288,12 @@ roslaunch dr_odometry dr_odometry_debug.launch use_gnss_heading:=false use_gnss_
 
 | 参数 | 单位（量级） | 进入何处 |
 |------|--------------|----------|
-| `gyro_noise` | rad/s 标度 | 过程噪声 \(Q\) 姿态相关块 |
-| `accel_noise` | m/s² 标度 | \(Q\) 速度块 |
-| `gyro_bias_noise` | 随机游走 | \(Q\) 的 \(\delta b_g\) |
-| `accel_bias_noise` | 随机游走 | \(Q\) 的 \(\delta b_a\) |
-| `wheel_velocity_noise` | m/s | 轮速观测 \(R_{00}\) |
-| `nonholonomic_noise` | m/s | 侧/垂向约束 \(R_{11},R_{22}\) |
+| `gyro_noise` | rad/s 标度 | 过程噪声 Q 姿态相关块 |
+| `accel_noise` | m/s² 标度 | Q 速度块 |
+| `gyro_bias_noise` | 随机游走 | Q 的 d b_g |
+| `accel_bias_noise` | 随机游走 | Q 的 d b_a |
+| `wheel_velocity_noise` | m/s | 轮速观测 R_00 |
+| `nonholonomic_noise` | m/s | 侧/垂向约束 R_11,R_22 |
 | `gnss_heading_noise_deg` | deg | 航向观测，内部转 rad |
 | `gnss_velocity_noise` | m/s | ENU 速度观测 |
 | `gnss_position_noise` | m | ENU 位置观测 |
@@ -319,13 +319,13 @@ roslaunch dr_odometry dr_odometry_debug.launch use_gnss_heading:=false use_gnss_
 
 | 索引 | 符号 | 含义 | 单位 |
 |------|------|------|------|
-| 0:3 | \(\delta p\) | 位置误差 | m |
-| 3:6 | \(\delta v\) | 速度误差 | m/s |
-| 6:9 | \(\delta\theta\) | 姿态小角度误差 | rad |
-| 9:12 | \(\delta b_g\) | 陀螺零偏误差 | rad/s |
-| 12:15 | \(\delta b_a\) | 加计零偏误差 | m/s² |
+| 0:3 | dp | 位置误差 | m |
+| 3:6 | dv | 速度误差 | m/s |
+| 6:9 | dtheta | 姿态小角度误差 | rad |
+| 9:12 | db_g | 陀螺零偏误差 | rad/s |
+| 12:15 | db_a | 加计零偏误差 | m/s² |
 
-协方差矩阵 `DrState::covariance` 为 \(15\times 15\)，块索引与上表一致。
+协方差矩阵 `DrState::covariance` 为 15x 15，块索引与上表一致。
 
 ### 7.2 主要结构
 
@@ -335,7 +335,7 @@ roslaunch dr_odometry dr_odometry_debug.launch use_gnss_heading:=false use_gnss_
 | `CanData` | 带符号 `speed_mps`、档位、valid |
 | `GnssData` | LLA、ENU 航向/速度、有效位 |
 | `DrConfig` | 全部算法与开关参数 |
-| `DrState` | 名义状态 + \(P\) + `initialized` |
+| `DrState` | 名义状态 + P + `initialized` |
 | `DrHealth` | 传感器是否到达、年龄 |
 | `OdomResult` | 对外位姿；`covariance` 为 6×6（位置3+姿态3） |
 
@@ -370,7 +370,7 @@ roslaunch dr_odometry dr_odometry_debug.launch use_gnss_heading:=false use_gnss_
 |------|------|
 | 输入 | `CanReceiveInfo`，`speed_is_kmh` |
 | 输出 | `CanData` |
-| 方向 | `round(gear)==2` → 倒车，速度乘 \(-1\) |
+| 方向 | `round(gear)==2` → 倒车，速度乘 -1 |
 | 单位 | km/h 时 `speed/3.6` |
 | 时间 | stamp 为 0 则用 `ros::Time::now()` |
 
@@ -400,9 +400,9 @@ roslaunch dr_odometry dr_odometry_debug.launch use_gnss_heading:=false use_gnss_
 
 | 函数 | 输入 | 输出 | 用途 |
 |------|------|------|------|
-| `skew(v)` | \(\mathbb{R}^3\) | \([v]_\times\) | 误差雅可比 |
-| `deltaQuat(ω, dt)` | 角速度、时间 | 增量四元数 | 预测姿态、注入 \(\delta\theta\) |
-| `normalizeAngle` | rad | \((-\pi,\pi]\) | 航向残差 |
+| `skew(v)` | R^3 | [v]_x | 误差雅可比 |
+| `deltaQuat(ω, dt)` | 角速度、时间 | 增量四元数 | 预测姿态、注入 dtheta |
+| `normalizeAngle` | rad | (-pi,pi] | 航向残差 |
 | `yawFromQuat` | 四元数 | yaw | GNSS 航向残差 |
 | `quatFromYaw` | yaw | 四元数 | 初值 / GNSS 预置 |
 
@@ -417,7 +417,7 @@ roslaunch dr_odometry dr_odometry_debug.launch use_gnss_heading:=false use_gnss_
 
 | 函数 | 输入 | 输出/副作用 | 说明 |
 |------|------|-------------|------|
-| `initialize(config)` | `DrConfig` | 重置状态与 \(P\) 块 | 未设 `initialized`；等首帧 IMU |
+| `initialize(config)` | `DrConfig` | 重置状态与 P 块 | 未设 `initialized`；等首帧 IMU |
 | `feedImu(imu)` | `ImuData` | 预测 + 可能更新 | **主路径** |
 | `feedCan(can)` | `CanData` | 写 `last_can_` | 不立刻更新 |
 | `feedGnss(gnss)` | `GnssData` | 写缓存；可定原点、预置 yaw | 更新在随后 IMU 里 |
@@ -445,12 +445,12 @@ last_imu = imu
 | 函数 | 作用 |
 |------|------|
 | `initializeFromImu` | 置 `initialized`，对齐时间 |
-| `predict` | 名义积分 + \(P\leftarrow FPF^T+Q\) |
+| `predict` | 名义积分 + Parrow FPF^T+Q |
 | `correctWheel` | body 速度观测 + NHC |
 | `correctGnss` | heading / ENU vel / ENU pos（按开关） |
-| `update` | \(K\)、注入误差、Joseph \(P\) |
-| `injectError` | \(\delta x\) 注入名义量 |
-| `wheelFresh` / `gnssFresh` | \(\|t-t_{\mathrm{obs}}\|\le\) timeout，且允许 −0.05 s 时钟误差 |
+| `update` | K、注入误差、Joseph P |
+| `injectError` | d x 注入名义量 |
+| `wheelFresh` / `gnssFresh` | ||t-t_obs||<= timeout，且允许 −0.05 s 时钟误差 |
 | `llaToEcef` / `llaToEnu` | WGS84 位置转换 |
 
 ### 10.4 成员缓存含义
@@ -465,183 +465,180 @@ last_imu = imu
 
 ## 11. 详细数学原理
 
+> 本节公式一律用纯文本代码块书写，不依赖 LaTeX 渲染，避免预览器显示成“乱码”。
+
 ### 11.1 名义状态与 IMU 运动学
 
 名义状态：
 
-\[
-\mathbf{x} = \{p,\ v,\ q,\ b_g,\ b_a\}
-\]
+```text
+x = { p, v, q, b_g, b_a }
+```
 
 去偏测量：
 
-\[
-\omega = \omega_m - b_g,\qquad
-a_b = a_m - b_a
-\]
+```text
+omega = omega_m - b_g
+a_b   = a_m - b_a
+```
 
 世界系加速度（`use_imu_accel`）：
 
-\[
-a_w = R(q)\,a_b + g,\quad g=(0,0,-g)
-\]
+```text
+a_w = R(q) * a_b + g ,   g = (0, 0, -g)
+```
 
-若关闭加速度：\(a_w=\mathbf{0}\)（速度靠观测拉回）。
+若关闭加速度：`a_w = 0`（速度靠观测拉回）。
 
 中值积分（离散）：
 
-\[
-\begin{aligned}
-p &\leftarrow p + v\,\Delta t + \tfrac12 a_w\Delta t^2 \\
-v &\leftarrow v + a_w\Delta t \\
-q &\leftarrow q \otimes \delta q(\omega\Delta t)
-\end{aligned}
-\]
+```text
+p <- p + v * dt + 0.5 * a_w * dt^2
+v <- v + a_w * dt
+q <- q ⊗ delta_q(omega * dt)
+```
 
-零偏在预测步中保持不变（随机游走噪声进 \(Q\)）。
+零偏在预测步中保持不变（随机游走噪声进入过程噪声 Q）。
 
 ### 11.2 误差状态与 F 矩阵
 
-误差状态：
+误差状态（15 维）：
 
-\[
-\delta x = [\delta p^\top,\ \delta v^\top,\ \delta\theta^\top,\ \delta b_g^\top,\ \delta b_a^\top]^\top \in \mathbb{R}^{15}
-\]
+```text
+dx = [ dp(3), dv(3), dtheta(3), db_g(3), db_a(3) ]^T
+```
 
-代码采用近似离散转移 \(F \approx I + F_c\Delta t\)，非零块包括：
+代码采用近似离散转移 `F ≈ I + F_c * dt`，非零块包括：
 
-\[
-\begin{aligned}
-F_{p,v} &= I\,\Delta t \\
-F_{v,\theta} &= -R[a_b]_\times\,\Delta t &&(\text{仅 use\_imu\_accel}) \\
-F_{v,b_a} &= -R\,\Delta t &&(\text{仅 use\_imu\_accel}) \\
-F_{\theta,b_g} &= -I\,\Delta t
-\end{aligned}
-\]
+```text
+F[p, v]         = I * dt
+F[v, theta]     = -R * [a_b]_x * dt     (仅 use_imu_accel)
+F[v, b_a]       = -R * dt               (仅 use_imu_accel)
+F[theta, b_g]   = -I * dt
+```
 
-协方差：
+协方差传播：
 
-\[
-P \leftarrow F\,P\,F^\top + Q
-\]
+```text
+P <- F * P * F^T + Q
+```
 
-\(Q\) 为对角近似：速度/姿态块 \(\propto (\sigma\Delta t)^2\)，零偏块 \(\propto \sigma_b^2\Delta t\)。
+Q 为对角近似：速度/姿态块约正比于 `(sigma * dt)^2`，零偏块约正比于 `sigma_b^2 * dt`。
 
 ### 11.3 标准更新与误差注入
 
-对残差 \(r\)、观测阵 \(H\)、噪声 \(R\)：
+对残差 `r`、观测阵 `H`、噪声 `R`：
 
-\[
-\begin{aligned}
-S &= HPH^\top + R \\
-K &= PH^\top S^{-1} \\
-\delta x &= K\,r
-\end{aligned}
-\]
+```text
+S  = H * P * H^T + R
+K  = P * H^T * inv(S)
+dx = K * r
+```
 
-注入（右乘小角度）：
+注入（姿态右乘小角度）：
 
-\[
-\begin{aligned}
-p &\leftarrow p + \delta p \\
-v &\leftarrow v + \delta v \\
-q &\leftarrow q \otimes \delta q(\delta\theta) \\
-b_g &\leftarrow b_g + \delta b_g \\
-b_a &\leftarrow b_a + \delta b_a
-\end{aligned}
-\]
+```text
+p   <- p + dp
+v   <- v + dv
+q   <- q ⊗ delta_q(dtheta)
+b_g <- b_g + db_g
+b_a <- b_a + db_a
+```
 
 协方差用 Joseph 形式：
 
-\[
-P \leftarrow (I-KH)\,P\,(I-KH)^\top + KRK^\top
-\]
+```text
+P <- (I - K*H) * P * (I - K*H)^T + K * R * K^T
+```
 
-> 经典 ESKF 常在注入后把 \(\delta x\) 清零；本实现每次更新后误差已并入名义状态，等价于“用完即清”。
+> 经典 ESKF 常在注入后把 dx 清零；本实现每次更新后误差已并入名义状态，等价于“用完即清”。
 
 ### 11.4 轮速 + 非完整约束（NHC）
 
 车体速度预测：
 
-\[
-\hat{v}_b = R^\top v
-\]
+```text
+v_body_hat = R^T * v
+```
 
 观测：
 
-\[
-z = [v_{\mathrm{wheel}},\ 0,\ 0]^\top
-\]
+```text
+z = [ v_wheel,  0,  0 ]^T
+```
 
 残差：
 
-\[
-r = z - \hat{v}_b
-\]
+```text
+r = z - v_body_hat
+```
 
 物理含义：
 
-- 纵向：轮速约束前进速度；  
-- 侧向/垂向：理想刚体无侧滑/跳起时速度≈0（NHC）。
+- 纵向：轮速约束前进速度；
+- 侧向/垂向：理想刚体无侧滑/跳起时速度约等于 0（NHC）。
 
-观测噪声对角：\(R=\mathrm{diag}(\sigma_w^2,\sigma_{\mathrm{nhc}}^2,\sigma_{\mathrm{nhc}}^2)\)。
+观测噪声对角：
 
-代码中 \(H\) 先按 \(v_b\) 对 \((v,\theta)\) 的雅可比构造，再整体取负，与残差 \(z-\hat{v}_b\) 的线性化约定对齐。
+```text
+R = diag( sigma_wheel^2,  sigma_nhc^2,  sigma_nhc^2 )
+```
+
+代码中 H 先按 `v_body` 对 `(v, theta)` 的雅可比构造，再整体取负，与残差 `z - v_body_hat` 的线性化约定对齐。
 
 ### 11.5 GNSS 航向
 
 残差（一维）：
 
-\[
-r = \mathrm{normalize}\bigl(\psi_{\mathrm{gnss}} - \mathrm{yaw}(q)\bigr)
-\]
+```text
+r = normalize( psi_gnss - yaw(q) )
+```
 
-\(H\) 仅在 \(\delta\theta_z\)（索引 8）置 1，把残差当作对 yaw 误差的直接观测。
+H 仅在 `dtheta_z`（误差状态索引 8）置 1，把残差当作对 yaw 误差的直接观测。
 
-门限：\(|v_{\mathrm{wheel}}| \ge\) `min_wheel_speed_for_heading`，避免低速/静止时航向噪声污染。
+门限：`|v_wheel| >= min_wheel_speed_for_heading`，避免低速/静止时航向噪声污染。
 
 ### 11.6 GNSS ENU 速度
 
-\[
-r = v_{\mathrm{ENU}}^{\mathrm{gnss}} - v,\qquad
-H = [0_{3\times3}\ I_{3\times3}\ 0]
-\]
+```text
+r = v_ENU_gnss - v
+H = [ 0(3x3) , I(3x3) , 0 ]
+```
 
 即直接观测世界系速度。与轮速的区别：轮速在 **body**，ENU 速度在 **world**。
 
 ### 11.7 GNSS ENU 位置
 
-1. 首次 `position_valid`：锁定原点 \(LLA_0\)，算 \(p_{\mathrm{ecef},0}\)。  
+1. 首次 `position_valid`：锁定原点 `LLA_0`，计算 `p_ecef_0`。
 2. 之后：
 
-\[
-p_{\mathrm{enu}} = \mathrm{LLA\to ENU}(LLA;\ LLA_0),\quad
-r = p_{\mathrm{enu}} - p
-\]
+```text
+p_enu = LLA_to_ENU(LLA ; LLA_0)
+r     = p_enu - p
+```
 
-\(H\) 对 \(\delta p\) 为单位阵。默认关闭，因绝对位置抖动会拉漂相对里程计风格的 odom。
+H 对 `dp` 为单位阵。默认关闭，因绝对位置抖动会拉漂相对里程计风格的 odom。
 
 ### 11.8 LLA → ECEF → ENU
 
 WGS84：
 
-\[
-N = \frac{a}{\sqrt{1-e^2\sin^2\phi}},\quad
-\begin{aligned}
-X &= (N+h)\cos\phi\cos\lambda \\
-Y &= (N+h)\cos\phi\sin\lambda \\
-Z &= \bigl(N(1-e^2)+h\bigr)\sin\phi
-\end{aligned}
-\]
+```text
+N = a / sqrt(1 - e^2 * sin(phi)^2)
 
-相对原点的 ECEF 差经标准旋转得 \((E,N,U)\)（见 `llaToEnu`）。
+X = (N + h) * cos(phi) * cos(lambda)
+Y = (N + h) * cos(phi) * sin(lambda)
+Z = (N*(1 - e^2) + h) * sin(phi)
+```
+
+相对原点的 ECEF 差经标准旋转得到 `(E, N, U)`（见 `llaToEnu`）。
 
 ### 11.9 输出协方差
 
 `OdomResult::covariance`（6×6）：
 
-- 左上 \(3\times3\)：来自 \(P_{pp}\)  
-- 右下 \(3\times3\)：来自 \(P_{\theta\theta}\)（误差状态姿态块）  
+- 左上 3×3：来自 `P_pp`
+- 右下 3×3：来自 `P_theta_theta`（误差状态姿态块）
 - 交叉项未填速度块；`twist` 发布世界系线速度，未填角速度协方差。
 
 ---
@@ -656,7 +653,7 @@ Z &= \bigl(N(1-e^2)+h\bigr)\sin\phi
 | 轮速尺度 | 无 | 在线低通估计 |
 | ZUPT | 无 | 有静止零速更新 |
 | 初始化 | 首帧 IMU；可选 GNSS yaw | 等轮速可插值 + 重力对齐 |
-| 过程噪声建模 | \(Q\) 对角直接堆到 15 维 | \(G\,Q\,G^\top\)（15×12）更标准 |
+| 过程噪声建模 | Q 对角直接堆到 15 维 | GQG^T（15×12）更标准 |
 
 DeepLumin 版更适合“带 GNSS 消融实验、工程接口清晰”；ws2 版相对 DR 的时间同步与静止处理更细。
 
