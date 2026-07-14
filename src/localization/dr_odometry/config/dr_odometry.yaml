@@ -1,0 +1,71 @@
+# =============================================================================
+# dr_odometry.yaml — 航位推算（Dead Reckoning）模块参数
+#
+# 被 launch 通过 rosparam 加载到参数服务器后，由：
+#   - loadFrameConfig / loadTopicConfig / loadDrConfig（ros_adapter）读取
+#   - 调试节点额外读取 debug/*（见 dr_odometry_debug.launch）覆盖部分开关
+#
+# 坐标系约定（本模块输出）：
+#   - odom 系：原点在启动/首帧有效 GNSS 时固定；XY 近似局部东北 / ENU 水平面
+#   - base_link：车体；速度观测中 x 为前进方向
+# =============================================================================
+
+# ---------- 坐标系（frames）----------
+# 发布 nav_msgs/Odometry、TF、Path 时使用的 frame_id / child_frame_id。
+# imu / gnss / can 名称供外部 TF 树对齐参考，当前核心滤波未强制查 TF 外参。
+frames:
+  odom: "odom"              # 输出里程计父坐标系
+  base_link: "base_link"    # 输出里程计子坐标系 / TF child
+  imu: "os_imu"             # IMU 物理坐标系名（外参预留）
+  gnss: "gnss_sensor"       # GNSS 天线/组合导航坐标系名（外参预留）
+  can: "local1"             # 车速相关坐标系名（预留）
+
+# ---------- 话题（topics）----------
+# 输入：IMU / CAN / GNSS；输出：DR 里程计 / 状态 / 轨迹
+topics:
+  imu: "/ouster/imu"                    # sensor_msgs/Imu
+  can: "/can_receive_info"              # deeplumin_msgs/CanReceiveInfo
+  gnss: "/gnss_chc_data"                # deeplumin_msgs/Gpchc（华测类 GPCHC）
+  odom: "/localization/dr_odom"         # nav_msgs/Odometry
+  status: "/localization/dr_status"     # deeplumin_msgs/LocalizationStatus
+  path: "/localization/dr_path"         # nav_msgs/Path（可视化）
+
+# CAN 车速单位标记：
+#   true  → msg.speed 按 km/h，适配层会 /3.6 转成 m/s（与 ysw_loc 约定一致）
+#   false → 上游已是 m/s，不再换算
+can_speed_is_kmh: true
+
+# ---------- DR / ESKF 算法参数（命名空间 dr/）----------
+dr:
+  # 节点主循环发布频率（Hz）；滤波预测仍由 IMU 回调驱动
+  output_rate: 100.0
+  # 是否发布 odom → base_link 的 TF
+  publish_tf: true
+
+  # ---- 观测开关（正式节点用这里；调试节点可被 debug/* 覆盖）----
+  use_imu_accel: true       # 预测是否用 IMU 加速度；false 时速度主要靠轮速/GNSS 修正
+  use_wheel: true           # 轮速 + 非完整约束（侧向/垂向速度≈0）
+  use_gnss: false            # 是否启用 GNSS 相关更新（以及是否订阅 GNSS）
+  use_gnss_heading: false    # 航向观测（需车速超过 min_wheel_speed_for_heading）
+  use_gnss_velocity: false   # ENU 速度观测
+  use_gnss_position: false  # 绝对位置观测；默认关，避免强绑 GNSS 原点漂移问题
+
+  # ---- 过程噪声 / 观测噪声（量级与单位需随传感器标定微调）----
+  gyro_noise: 0.01                  # 陀螺过程噪声标度 (rad/s 量级，进入 Q)
+  accel_noise: 0.2                  # 加速度过程噪声标度 (m/s^2 量级)
+  gyro_bias_noise: 0.00001          # 陀螺零偏随机游走
+  accel_bias_noise: 0.0001          # 加计零偏随机游走
+  wheel_velocity_noise: 0.25        # 纵向轮速观测噪声 (m/s)
+  nonholonomic_noise: 0.10          # 侧向/垂向速度≈0 的约束噪声 (m/s)
+  gnss_heading_noise_deg: 2.0       # 航向观测噪声 (deg)，内部转 rad
+  gnss_position_noise: 1.5          # 位置观测噪声 (m)
+  gnss_velocity_noise: 0.4          # 速度观测噪声 (m/s)
+
+  # ---- 时间与门限 ----
+  max_dt: 0.05                      # IMU 预测最大步长 (s)，防止断流后一次跨太大
+  min_wheel_speed_for_heading: 0.2  # |车速|低于该值时不做 GNSS 航向更新 (m/s)
+  gnss_timeout: 1.0                 # GNSS 相对 IMU 时间戳过期阈值 (s)
+  wheel_timeout: 0.5                # 轮速相对 IMU 时间戳过期阈值 (s)
+
+  # 滤波器初始 yaw（度，ENU：0=东，逆时针为正）；首帧有效 GNSS heading 可覆盖
+  initial_yaw_deg: 0.0

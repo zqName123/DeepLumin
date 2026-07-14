@@ -1,8 +1,15 @@
 <?xml version="1.0"?>
+<!--
+  dr_odometry：DeepLumin 航位推算（DR）功能包。
+  提供 IMU + 轮速（+ 可选 GNSS）ESKF 局部里程计，输出 /localization/dr_odom 等。
+-->
 <package format="2">
   <name>dr_odometry</name>
   <version>1.0.0</version>
-  <description>Dead reckoning node</description>
+  <description>
+    Dead reckoning odometry via 15-state ESKF (IMU predict, wheel / GNSS updates).
+    Nodes: dr_odometry_node (production), dr_odometry_debug_node (ablation switches).
+  </description>
   <maintainer email="developer@example.com">Developer</maintainer>
   <license>Apache-2.0</license>
   <buildtool_depend>catkin</buildtool_depend>
@@ -11,12 +18,14 @@
   <build_depend>geometry_msgs</build_depend>
   <build_depend>sensor_msgs</build_depend>
   <build_depend>nav_msgs</build_depend>
+  <build_depend>tf</build_depend>
   <build_depend>deeplumin_msgs</build_depend>
   <exec_depend>roscpp</exec_depend>
   <exec_depend>std_msgs</exec_depend>
   <exec_depend>geometry_msgs</exec_depend>
   <exec_depend>sensor_msgs</exec_depend>
   <exec_depend>nav_msgs</exec_depend>
+  <exec_depend>tf</exec_depend>
   <exec_depend>deeplumin_msgs</exec_depend>
   <export>
     <build_type>catkin</build_type>

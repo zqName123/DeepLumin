@@ -24,6 +24,8 @@ add_message_files(
   FusedOdometry.msg
   LocalizationStatus.msg
   SlamHealth.msg
+  Gpchc.msg
+  CanReceiveInfo.msg
 )
 
 add_message_files(

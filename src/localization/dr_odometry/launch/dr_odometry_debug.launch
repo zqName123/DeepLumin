@@ -1,0 +1,69 @@
+<?xml version="1.0"?>
+<!--
+  dr_odometry_debug.launch
+  
+  用途：启动航位推算（DR）调试节点 dr_odometry_debug_node。
+
+  与正式版 dr_odometry.launch 的区别：
+    1) 可通过 launch 参数单独开关 IMU / 轮速 / GNSS 及 GNSS 子观测
+       （heading / position / velocity / imu_accel），方便做消融实验；
+    2) 节点内部用 debug/* 参数覆盖 yaml 中的 dr/* 开关。
+
+  典型用法：
+    # 默认配置（加载 yaml + 全部 debug 开关为 true，但 position 默认 false）
+    roslaunch dr_odometry dr_odometry_debug.launch
+
+    # 只做 IMU+轮速，关闭 GNSS
+    roslaunch dr_odometry dr_odometry_debug.launch use_gnss:=false
+
+    # 开启 GNSS 位置观测（默认关闭，避免绝对定位把相对里程计拉漂）
+    roslaunch dr_odometry dr_odometry_debug.launch use_gnss_position:=true
+
+  参数加载顺序：
+    1) rosparam 将 config yaml 加载到参数服务器（含 frames/topics/dr/...）
+    2) <node> 内的 debug/* 私有参数覆盖对应观测开关
+    3) 节点构造时：先 loadDrConfig / loadTopicConfig / loadFrameConfig，
+       再读 debug/* 覆盖 config_ 中的开关字段
+-->
+<launch>
+  
+
+  <!-- ========== 调试用观测源开关（会写入节点私有命名空间 debug/*）========== -->
+  <!-- 是否订阅并融合 IMU；关闭后滤波器不会初始化/预测，基本无输出 -->
+  <arg name="use_imu" default="true" />
+  <!-- 是否使用 CAN 轮速（前进速度观测 + 非完整约束：侧向/垂向速度≈0） -->
+  <arg name="use_wheel" default="true" />
+  <!-- 总 GNSS 开关；false 时不订阅 /gnss_chc_data，且不进入 GNSS 更新 -->
+  <arg name="use_gnss" default="false" />
+  <!-- GNSS 航向（GPCHC heading → ENU yaw）观测，通常需要车速超过阈值才生效 -->
+  <arg name="use_gnss_heading" default="true" />
+  <!-- GNSS 绝对位置（LLA→ENU）观测；默认关闭，DR 更侧重相对运动一致性 -->
+  <arg name="use_gnss_position" default="false" />
+  <!-- GNSS ENU 速度观测（ve/vn/vu） -->
+  <arg name="use_gnss_velocity" default="true" />
+  <!-- 预测时是否使用 IMU 线加速度积分；false 则主要靠轮速约束传播速度 -->
+  <arg name="use_imu_accel" default="false" />
+
+  <!-- 算法与话题/坐标系配置文件，默认指向包内 dr_odometry.yaml -->
+  <arg name="config" default="$(find dr_odometry)/config/dr_odometry.yaml" />
+
+  <!-- 将 yaml 中的 frames / topics / dr / can_speed_is_kmh 加载到参数服务器 -->
+  <rosparam file="$(arg config)" command="load" />
+
+  <!--
+    启动调试节点：
+      - pkg/type：编译产物 dr_odometry_debug_node
+      - name：ROS 节点名 dr_odometry_debug（私有参数在 ~ 下）
+      - output="screen"：日志打到终端，便于对照观测开关
+  -->
+  <node pkg="dr_odometry" type="dr_odometry_debug_node" name="dr_odometry_debug" output="screen">
+    <!-- 以下 debug/* 覆盖 yaml 中同名语义的 dr/* 开关，仅调试节点读取 -->
+    <param name="debug/use_imu" value="$(arg use_imu)" />
+    <param name="debug/use_wheel" value="$(arg use_wheel)" />
+    <param name="debug/use_gnss" value="$(arg use_gnss)" />
+    <param name="debug/use_gnss_heading" value="$(arg use_gnss_heading)" />
+    <param name="debug/use_gnss_position" value="$(arg use_gnss_position)" />
+    <param name="debug/use_gnss_velocity" value="$(arg use_gnss_velocity)" />
+    <param name="debug/use_imu_accel" value="$(arg use_imu_accel)" />
+  </node>
+</launch>

@@ -1,0 +1,17 @@
+std_msgs/Header header
+float64 angle
+float64 brk
+float64 thr
+float64 gear
+float64 speed
+float64 angle_fedback
+bool valid
+bool gpio0
+bool gpio1
+bool gpio2
+bool gpio3
+float64 power_soc
+float64 torque_fedback
+float64 front_brake_pressure
+float64 rear_brake_pressure
+bool aoto_key

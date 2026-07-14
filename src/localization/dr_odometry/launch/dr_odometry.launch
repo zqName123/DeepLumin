@@ -1,0 +1,24 @@
+<?xml version="1.0"?>
+<!--
+  dr_odometry.launch
+  
+  用途：启动正式航位推算节点 dr_odometry_node。
+
+  与 dr_odometry_debug.launch 的区别：
+    - 不提供 debug/* 观测消融开关，完全按 yaml（dr/*）运行；
+    - 始终订阅 IMU 与 CAN；GNSS 是否订阅由 yaml 中 dr/use_gnss 决定。
+
+  用法：
+    roslaunch dr_odometry dr_odometry.launch
+    roslaunch dr_odometry dr_odometry.launch config:=/path/to/custom.yaml
+-->
+<launch>
+  <!-- 配置文件路径，可用 launch 参数覆盖为自定义 yaml -->
+  <arg name="config" default="$(find dr_odometry)/config/dr_odometry.yaml" />
+
+  <!-- 加载 frames / topics / dr / can_speed_is_kmh 等到参数服务器 -->
+  <rosparam file="$(arg config)" command="load" />
+
+  <!-- 正式 DR 节点：输出 odom / path / status，可选发布 odom→base_link TF -->
+  <node pkg="dr_odometry" type="dr_odometry_node" name="dr_odometry" output="screen" />
+</launch>
