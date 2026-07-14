@@ -1,0 +1,25 @@
+<?xml version="1.0"?>
+<package format="2">
+  <name>relocalization</name>
+  <version>1.0.0</version>
+  <description>Standalone Scan Context and GICP relocalization node for DeepLumin</description>
+  <maintainer email="developer@example.com">Developer</maintainer>
+  <license>Apache-2.0</license>
+
+  <buildtool_depend>catkin</buildtool_depend>
+
+  <depend>geometry_msgs</depend>
+  <depend>pcl_conversions</depend>
+  <depend>pcl_ros</depend>
+  <depend>rosbag</depend>
+  <depend>roscpp</depend>
+  <depend>sensor_msgs</depend>
+  <depend>std_msgs</depend>
+  <depend>std_srvs</depend>
+  <depend>visualization_msgs</depend>
+  <depend>deeplumin_msgs</depend>
+
+  <export>
+    <build_type>catkin</build_type>
+  </export>
+</package>

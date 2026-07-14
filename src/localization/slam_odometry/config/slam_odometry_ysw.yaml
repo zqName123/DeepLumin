@@ -1,0 +1,164 @@
+# ysw_loc 同款传感器话题 + Faster-LIO ouster64 参数
+# 用法: roslaunch localization localization_ysw.launch
+
+localization:
+  mode: "localization"
+  frames:
+    map: "map"
+    odom: "odom"
+    base_link: "base_link"
+    imu: "imu_link"
+    lidar: "lidar_link"
+
+# 传感器输入（与 ysw_loc faster-lio common 段对齐）
+sensors:
+  imu_topic: "/ouster/imu"
+  lidar_topic: "/ouster/points"
+  wheel_topic: "/can_receive_info"
+  gnss_topic: "/gnss_chc_data"
+  scene_topic: "/system/scene_state"
+
+# 定位输出（对应 faster-lio publish 段，统一加 /localization 前缀）
+outputs:
+  dr_topic: "/localization/dr_odom"
+  slam_topic: "/localization/slam_odom"
+  fused_topic: "/localization/fused_odom"
+  covariance_topic: "/localization/covariance"
+  status_topic: "/localization/status"
+  path_topic: "/localization/path"
+  local_map_topic: "/localization/local_map"
+  registered_scan_topic: "/localization/cloud_registered"
+  global_map_topic: "/localization/global_map"
+  loop_markers_topic: "/localization/loop_markers"
+
+dr:
+  output_rate: 100
+  imu:
+    gyro_noise: 0.01
+    accel_noise: 0.1
+    gyro_bias_noise: 0.0001
+    accel_bias_noise: 0.001
+    initial_gyro_bias: [0.0, 0.0, 0.0]
+    initial_accel_bias: [0.0, 0.0, 0.0]
+  wheel:
+    initial_scale: 1.0
+    scale_noise: 0.001
+    velocity_noise: 0.05
+  online_calibration:
+    enable: true
+    static_detection_duration: 2.0
+    static_gyro_threshold: 0.02
+    static_accel_threshold: 0.15
+    wheel_scale_update_interval: 10.0
+
+slam:
+  type: "faster_lio"
+  output_topic: "/localization/slam_odom"
+  local_map_topic: "/localization/local_map"
+  faster_lio:
+    scan_rate: 10
+    preprocess:
+      lidar_type: 3          # Ouster
+      scan_line: 64
+      blind: 3.0
+      time_scale: 1.0e-3
+      point_filter_num: 2
+    mapping:
+      acc_cov: 0.1
+      gyr_cov: 0.1
+      b_acc_cov: 0.0001
+      b_gyr_cov: 0.0001
+      fov_degree: 180.0
+      det_range: 150.0
+      extrinsic_est_en: false
+      extrinsic_T: [0.0, 0.0, 0.0]
+      extrinsic_R: [1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0]
+    ivox:
+      grid_resolution: 0.5
+      nearby_type: 18
+      cube_side_length: 2000.0
+    filter_size_surf: 0.5   # 降采样分辨率：与原始 ouster64.yaml 一致，过小会保留过多点导致处理变慢
+    filter_size_map: 0.5    # 地图增量更新的最近邻间距阈值，0→倾向全部加入
+    max_iteration: 4        # IEKF 最大迭代次数：原始 Faster-LIO 默认为 4，3 次收敛不足导致残差偏大
+    esti_plane_threshold: 0.1
+    degeneracy_threshold: 100.0
+
+fusion:
+  output_topic: "/localization/fused_odom"
+  status_topic: "/localization/status"
+  output_rate: 100
+  eskf:
+    initial_position_cov: 1.0
+    initial_velocity_cov: 1.0
+    initial_rotation_cov: 0.1
+    initial_bias_cov: 0.01
+    initial_scale_cov: 0.01
+  adaptive_covariance:
+    enable: true
+    degeneracy_hard_penalty: 0.1
+    degeneracy_soft_factor: 1.0
+    pos_cov_threshold: 10.0
+  observers:
+    slam:
+      enabled: true
+      position_noise: 0.05
+      rotation_noise: 0.02
+    gnss:
+      enabled: false
+      position_noise: 0.1
+      position_noise_float: 2.0
+
+mapping:
+  keyframe:
+    dist_thresh: 1.0
+    rad_thresh: 0.2
+    time_thresh: 0.5
+  global_map_publish_rate: 1.0
+
+loop_closure:
+  activate: true
+  descriptor:
+    type: "scan_context"
+    ring_num: 20
+    sector_num: 60
+    max_radius: 80.0
+  candidate:
+    top_k: 5
+    min_index_gap: 20
+    time_thresh: 30.0
+  verification:
+    matcher: "ndt"
+    fitness_thresh: 0.3
+  pose_graph:
+    optimizer: "gtsam"
+    odom_noise: [1.0e-6, 1.0e-6, 1.0e-6, 1.0e-4, 1.0e-4, 1.0e-6]
+    loop_noise_scale: 1.0
+
+relocalization:
+  enable: false
+  thread_rate: 1.0
+  trigger:
+    pose_jump_threshold: 2.0
+    cov_threshold: 50.0
+    degenerate_frames_threshold: 30
+  global_descriptor:
+    type: "scan_context"
+    ring_num: 20
+    sector_num: 60
+  fine_matcher:
+    type: "ndt"
+    resolution: 1.0
+    max_iterations: 30
+    transformation_epsilon: 0.01
+  search:
+    xy_offset: 2.0
+    yaw_offset: 1
+    yaw_resolution: 0.5
+  smooth_transition_frames: 10
+
+scene:
+  default_state: "underground"
+  gnss_fade:
+    signal_strength_threshold: 30
+    fade_decay_rate: 0.95
+    transition_timeout: 10.0

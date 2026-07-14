@@ -1,0 +1,111 @@
+<!--
+  ═══════════════════════════════════════════════════════════════════════════
+  bag_eval_viz.launch — rosbag 离线重定位评估 + RViz 可视化
+  ═══════════════════════════════════════════════════════════════════════════
+
+  【整体数据流】
+
+    relocalization.yaml ──┐
+    launch 参数覆盖 ──────┼──> bag_eval_node
+                          │
+    预建 SC 数据库 ───────┤    scan_context_db.bin（build_sc_database.launch 产出）
+    关键帧 PCD + 位姿 ────┤    key_point_frame/<id>.pcd + optimized_poses_tum.txt
+    全局地图 PCD ─────────┘    global_map_pcd（RViz 灰色背景 + GICP fallback）
+
+    rosbag (/ouster/points)
+         │
+         ▼
+    ┌─────────────────────────────────────────────────────────────────────┐
+    │ 每帧 query 处理流水线（bag_eval_node.cpp）                            │
+    │                                                                     │
+    │  1. 时间窗口过滤 [bag_start_offset, bag_start_offset+bag_duration] │
+    │  2. cloud_stride 降采样（每 N 帧取一帧）                            │
+    │  3. ROS PointCloud2 → PCL                                         │
+    │  4. query_frame 坐标系旋转（与 key_point_frame 约定对齐）            │
+    │  5. preprocessCloud（距离裁剪 + 体素下采样）                        │
+    │  6. ScanContext::makeDescriptor → query 描述子                      │
+    │  7. ScanContext::query → Top-K 地点候选 + yaw_diff                  │
+    │  8. GicpRelocalizer::alignCandidates → 精配准位姿                  │
+    │  9. EvalVisualizer → /offline_eval/* 话题 → RViz                  │
+    └─────────────────────────────────────────────────────────────────────┘
+
+  【启动示例】
+    roslaunch relocalization bag_eval_viz.launch \
+      bag_file:=/path/to/your.bag \
+      bag_start_offset:=180.0
+
+  【Launch 参数】
+    bag_file          rosbag 路径（必填）
+    bag_lidar_topic   bag 内 LiDAR 话题，默认 /ouster/points
+    bag_cloud_stride  每隔 N 帧点云评估一次（默认 10）
+    max_queries       最多评估多少帧（默认 20）
+    bag_start_offset  从 bag 起点跳过多少秒
+    bag_duration      只评估多少秒（0 = 到 bag 结束）
+    bag_use_truth_pose  false=map_align（推荐）；true=truth_compare
+    override_query_frame  true 时覆盖 yaml 中的 query_frame 旋转参数
+    rviz              是否启动 RViz（默认 true）
+
+  【评估模式】
+    map_align（bag_use_truth_pose=false，默认）：
+      - 不需要 bag 时间与 pose_file 对齐
+      - 成功判定：GICP converged && fitness<=accept_fitness && 内点率/RMSE 达标
+      - RViz 目视：红(重定位) 与 灰(地图)/蓝(target) 贴合
+
+    truth_compare（bag_use_truth_pose:=true）：
+      - bag 与 pose_file 须为同一次采集且时间重叠
+      - 成功判定：GICP 成功 + 平移/航向误差在阈值内
+      - RViz 额外显示绿色真值对齐点云
+
+  【可视化话题 /offline_eval/】
+    global_map                 灰色  query 附近裁剪的全局地图
+    query_raw                  橙色  重定位前原始点云（LiDAR 系）
+    query_sc_initial_aligned   青色  SC 初值对齐后的点云
+    query_reloc_aligned        红色  GICP 输出对齐点云
+    gicp_target_submap         蓝色  GICP 配准目标子图
+    pose_markers               箭头  青色=SC 初值，红色=GICP 结果
+    focus_pose                 RViz 聚焦位姿
+    status                     文本  当前 query 诊断信息
+-->
+<launch>
+  <arg name="config" default="$(find relocalization)/config/relocalization.yaml"/>
+  <arg name="rviz" default="true"/>
+  <arg name="bag_file" default="/home/hhy/2004ros/data/ousterpoints/2025-10-20-16-09-51.bag"/>
+  <arg name="bag_lidar_topic" default="/ouster/points"/>
+  <arg name="bag_cloud_stride" default="10"/>
+  <arg name="max_queries" default="20"/>
+  <arg name="bag_start_offset" default="0.0"/>
+  <arg name="bag_duration" default="0.0"/>
+  <arg name="bag_use_truth_pose" default="false"/>
+  <arg name="override_query_frame" default="false"/>
+  <arg name="query_frame_yaw_deg" default="0.0"/>
+  <arg name="query_rotate_xy_y_negx" default="false"/>
+
+  <!--
+    bag_eval_node：离线评估主节点
+    - rosparam 加载 relocalization.yaml 作为基础配置
+    - 下列 param 由 launch 参数覆盖 yaml 默认值
+  -->
+  <node pkg="relocalization" type="bag_eval_node" name="bag_eval" output="screen">
+    <rosparam file="$(arg config)" command="load"/>
+    <!-- bag 数据源 -->
+    <param name="bag_file" value="$(arg bag_file)"/>
+    <param name="bag_lidar_topic" value="$(arg bag_lidar_topic)"/>
+    <param name="bag_cloud_stride" value="$(arg bag_cloud_stride)"/>
+    <param name="max_queries" value="$(arg max_queries)"/>
+    <param name="bag_start_offset" value="$(arg bag_start_offset)"/>
+    <param name="bag_duration" value="$(arg bag_duration)"/>
+    <param name="bag_use_truth_pose" value="$(arg bag_use_truth_pose)"/>
+    <!-- 可选：覆盖 yaml 中的 query_frame 旋转（LiDAR 轴向对齐） -->
+    <param if="$(arg override_query_frame)" name="query_frame/yaw_deg" value="$(arg query_frame_yaw_deg)"/>
+    <param if="$(arg override_query_frame)" name="query_frame/rotate_xy_y_negx" value="$(arg query_rotate_xy_y_negx)"/>
+    <!-- 可视化：开启 + 交互模式（按 Enter 切帧）+ 关闭真值点云（map_align 默认） -->
+    <param name="enable_visualization" value="true"/>
+    <param name="visualization/interactive" value="true"/>
+    <param name="visualization/wait_sec" value="0"/>
+    <param name="visualization/publish_truth_aligned" value="false"/>
+  </node>
+
+  <!-- RViz：订阅 /offline_eval/* 话题，配置见 rviz/offline_eval.rviz -->
+  <node if="$(arg rviz)" pkg="rviz" type="rviz" name="bag_eval_rviz"
+        args="-d $(find relocalization)/rviz/offline_eval.rviz" required="false"/>
+</launch>

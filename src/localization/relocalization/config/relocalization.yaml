@@ -1,0 +1,143 @@
+# ============================================================
+# scan_context_relocalization 统一配置文件
+#
+# ⚠️  建库与查询参数一致性要求（修改下列参数后须重建 scan_context_db）：
+#
+#   SC 描述子网格（存储在 .bin 文件中，加载时自动覆盖 yaml 值）：
+#     scan_context.num_rings / num_sectors / max_radius / min_range
+#
+#   预处理（不存储，建库与查询必须手动保持一致）：
+#     preprocess.voxel_leaf / min_range / max_range
+#
+# 一致性约束：
+#   preprocess.min_range  == scan_context.min_range
+#   preprocess.max_range  == scan_context.max_radius
+#
+# 当前库：scan_context_db_leaf01.bin
+#   建库时间：Jul 6 07:16  voxel_leaf=0.1  max_radius=100  count=4798
+# ============================================================
+
+# ---------- 模块抽象选择 ----------
+descriptor:
+  type: "scan_context"
+matcher:
+  type: "gicp"
+
+# ---------- 路径配置 ----------
+keyframe_dir:    "/home/hhy/2004ros/relocalization_ws/key_point_frame"
+pose_file:       "/home/hhy/2004ros/relocalization_ws/optimized_poses_tum.txt"
+global_map_pcd:  "/home/hhy/2004ros/relocalization_ws/global_map_manual_imu.pcd"
+# ⚠️  与 scan_context.max_radius / preprocess.max_range 对应的库
+scan_context_db: "/home/hhy/2004ros/relocalization_ws/scan_context_submap_db_index8_remove_ceiling.bin"
+output_db:       "/home/hhy/2004ros/relocalization_ws/scan_context_submap_db_index50.bin"
+scan_context_submap_db: "/home/hhy/2004ros/relocalization_ws/scan_context_submap_db_50.bin"
+report_csv:      "/home/hhy/2004ros/relocalization_ws/offline_eval_report.csv"
+bag_report_csv:  "/home/hhy/2004ros/relocalization_ws/bag_eval_report.csv"
+
+# ---------- bag 评估（bag_eval_viz.launch）----------
+bag_file: ""
+bag_lidar_topic: "/ouster/points"
+bag_cloud_stride: 1
+bag_use_truth_pose: false   # false=地图贴合评估（推荐）；true=与 TUM 真值对比
+max_pose_time_diff: 0.15    # 仅 bag_use_truth_pose=true 时使用
+bag_start_offset: 20.0       # 从 bag 起点跳过 (s)
+bag_duration: 0.0           # 只评估时长 (s)，0=到 bag 结束
+log_topk_candidates: true     # 打印每个 query 的 SC Top-K 候选
+
+# ---------- 在线重定位 / 评估通用 ----------
+lidar_topic: "/ouster/points"
+frame_id: "map"
+top_k: 20
+eval_stride: 100
+max_queries: 30
+success_translation: 0.5
+success_yaw_deg: 3.0
+
+# ---------- query 坐标系转换 ----------
+# key_point_frame 必须与 bag/在线 raw query 使用同一局部坐标约定。
+# yaw_deg 可用于快速测试 0 / 90 / -90 / 180；rotate_xy_y_negx=true 等价于额外 -90deg。
+query_frame:
+  rotate_xy_y_negx: true
+  yaw_deg: 0.0
+
+# ---------- 点云预处理 ----------
+# ⚠️  min_range / max_range 须与 scan_context 对应项完全相同
+# voxel_leaf = 0.1：在 max_range=100m 时不会触发 VoxelGrid 整数溢出
+preprocess:
+  voxel_leaf: 0.0
+  min_range:  3.0    # == scan_context.min_range
+  max_range:  100.0  # == scan_context.max_radius（当前库 max_r=100）
+
+# ---------- Scan Context 建库过滤 ----------
+# TEMP_SC_CEILING_FILTER: 仅影响 build_sc_database / build_sc_submap_database 的建库输入；默认关闭。
+# 若打开，query 端也建议使用一致的 z 过滤策略，否则库/query 分布会不一致。
+scan_context_filter:
+  remove_ceiling: false
+  ceiling_max_z: 3.5
+
+# ---------- Scan Context 描述子 ----------
+# 以下参数存储在 .bin 文件中，加载时自动覆盖；此处供文档参考 + 建库节点使用
+# ⚠️  修改后须重建库（roslaunch ... build_sc_database.launch）
+scan_context:
+  num_rings:   20
+  num_sectors: 60
+  max_radius:  100.0   # 与 preprocess.max_range 一致
+  min_range:   3.0     # 与 preprocess.min_range 一致
+  # Stage-1 ring_key 预过滤保留数量（建议 >= top_k * 3）
+  # 0 = 关闭预过滤，对全量条目做完整 SC（调试用）
+  ring_key_candidates: 100
+
+# ---------- Scan Context 子图建库（build_sc_submap_database.launch）----------
+# 子图会被转换到中心关键帧局部坐标系后生成 SC；不要直接用 map 坐标系子图生成 SC。
+sc_submap:
+  # radius: 保持旧空间邻域逻辑；index: 按中心帧前后索引窗口；hybrid: 索引窗口 + 半径门限
+  mode: index
+  radius: 10.0
+  neighbor_keyframes: 50
+  # index/hybrid 模式：使用 [center_id-before_frames, center_id+after_frames]
+  # half_window 保留兼容；未设置 before/after 时会退回 half_window。
+  half_window: 25
+  before_frames: 3
+  after_frames: 10
+  min_points: 50
+
+# ---------- 局部子图（GICP target）----------
+submap:
+  # GICP target 子图模式：radius 保持旧空间邻域逻辑；index 按候选帧前后索引；hybrid=index+radius门限
+  mode: radius
+  radius: 20.0
+  neighbor_keyframes: 20
+  before_frames: 5
+  after_frames: 5
+
+# ---------- GICP ----------
+gicp:
+  max_iterations: 100
+  max_correspondence_distance: 10.5
+  transformation_epsilon: 0.00001
+  euclidean_fitness_epsilon: 0.0001
+  accept_fitness: 0.5
+  # 额外验真：aligned source 到 target 最近邻距离 <= inlier_distance 视为内点
+  inlier_distance: 0.5
+  min_inlier_ratio: 0.7
+  max_inlier_rmse: 0.3
+  # TEMP_GICP_Z_FILTER: GICP 输入专用 z 过滤；后续不用可删除这 3 行及代码标记。
+  z_filter_enable: true
+  z_filter_min: -1.0
+  z_filter_max: 10.0
+  near_ceiling_filter_enable: false
+  near_ceiling_radius: 3.0
+
+
+# ---------- 离线评估可视化（配合 offline_eval_viz.launch / bag_eval_viz.launch）----------
+enable_visualization: false
+visualization:
+  # pcd = 裁剪 global_map_pcd；keyframes = 拼接附近关键帧（真 3D）
+  global_map_source: pcd
+  max_keyframes_for_map: 200
+  crop_radius: 80.0
+  wait_sec: 3.0
+  interactive: false
+  publish_truth_aligned: true
+  publish_reloc_aligned: true
+  publish_target_submap: true

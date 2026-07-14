@@ -1,0 +1,33 @@
+<!--
+  在线全局重定位 launch 文件
+
+  使用前提：
+    1. 已运行 build_sc_database.launch 生成 scan_context_db.bin
+    2. 关键帧点云目录 key_point_frame/ 和位姿文件 optimized_poses_tum.txt 存在
+
+  启动命令：
+    roslaunch relocalization global_relocalization.launch
+
+  数据流：
+    /ouster/points (当前 LiDAR 点云)
+      -> 点云预处理
+      -> Scan Context 描述子提取
+      -> 数据库 Top-K 检索
+      -> 候选子图构建 + GICP 精配准
+      -> 发布重定位位姿
+
+  发布话题（命名空间 /global_relocalization/）：
+    reloc_pose           : geometry_msgs/PoseStamped  重定位结果位姿 (map 坐标系)
+    reloc_status         : std_msgs/String            状态字符串 (success/score/fitness 等)
+    reloc_aligned_scan   : sensor_msgs/PointCloud2    GICP 对齐后的当前点云
+    reloc_target_submap  : sensor_msgs/PointCloud2    用于配准的候选局部子图
+-->
+<launch>
+  <!-- 配置文件路径，可通过 arg 覆盖 -->
+  <arg name="config" default="$(find relocalization)/config/relocalization.yaml"/>
+
+  <!-- 在线重定位节点：订阅 LiDAR，执行 Scan Context + GICP 全局定位 -->
+  <node pkg="relocalization" type="global_relocalization_node" name="global_relocalization" output="screen">
+    <rosparam file="$(arg config)" command="load"/>
+  </node>
+</launch>

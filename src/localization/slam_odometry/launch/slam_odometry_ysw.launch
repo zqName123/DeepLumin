@@ -1,0 +1,7 @@
+<launch>
+  <arg name="config" default="$(find slam_odometry)/config/slam_odometry_ysw.yaml" />
+
+  <node pkg="slam_odometry" type="slam_odometry_node" name="slam_odometry" output="screen">
+    <rosparam command="load" file="$(arg config)" />
+  </node>
+</launch>
