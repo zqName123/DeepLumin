@@ -1,0 +1,15 @@
+<launch>
+  <arg name="config" default="$(find global_matcher)/config/global_matcher.yaml" />
+  <arg name="pcd_path" default="/home/hhy/2004ros/ysw_loc/src/map/0730map/yuhsuwan2_loc_rot_72.pcd" />
+  <arg name="source_cloud" default="/localization/cloud_registered" />
+  <arg name="initial_pose" default="/localization/fused_odom" />
+  <arg name="source_odom" default="/localization/slam_odom" />
+
+  <node pkg="global_matcher" type="global_matcher_node" name="global_matcher" output="screen">
+    <rosparam file="$(arg config)" command="load" />
+    <param name="map/pcd_path" value="$(arg pcd_path)" />
+    <param name="topics/source_cloud" value="$(arg source_cloud)" />
+    <param name="topics/initial_pose" value="$(arg initial_pose)" />
+    <param name="topics/source_odom" value="$(arg source_odom)" />
+  </node>
+</launch>

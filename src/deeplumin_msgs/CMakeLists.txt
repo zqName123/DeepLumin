@@ -26,6 +26,11 @@ add_message_files(
   SlamHealth.msg
   Gpchc.msg
   CanReceiveInfo.msg
+  GlobalMatchResult.msg
+  RelocalizationResult.msg
+  ObserverPolicy.msg
+  FusionStatus.msg
+  ObservationDebug.msg
 )
 
 add_message_files(

@@ -1,0 +1,90 @@
+Panels:
+  - Class: rviz/Displays
+    Name: Displays
+  - Class: rviz/Views
+    Name: Views
+Visualization Manager:
+  Class: ""
+  Displays:
+    - Class: rviz/Grid
+      Enabled: true
+      Name: Grid
+      Plane: XY
+      Plane Cell Count: 80
+      Reference Frame: map
+    - Class: rviz/PointCloud2
+      Enabled: true
+      Name: Global Map
+      Topic: /localization/global_matcher/global_map
+      Style: Points
+      Size (m): 0.06
+      Color Transformer: FlatColor
+      Color: 95; 95; 95
+    - Class: rviz/PointCloud2
+      Enabled: true
+      Name: Source Scan Initial
+      Topic: /localization/global_matcher/source_scan_initial
+      Style: Points
+      Size (m): 0.16
+      Color Transformer: FlatColor
+      Color: 255; 60; 60
+    - Class: rviz/PointCloud2
+      Enabled: true
+      Name: Target Submap
+      Topic: /localization/global_matcher/target_submap
+      Style: Points
+      Size (m): 0.08
+      Color Transformer: FlatColor
+      Color: 255; 190; 0
+    - Class: rviz/PointCloud2
+      Enabled: true
+      Name: Aligned Scan
+      Topic: /localization/global_matcher/aligned_scan
+      Style: Points
+      Size (m): 0.13
+      Color Transformer: FlatColor
+      Color: 0; 190; 255
+    - Class: rviz/Pose
+      Enabled: true
+      Name: Initial Guess
+      Topic: /localization/global_matcher/initial_guess
+      Shape: Arrow
+    - Class: rviz/Pose
+      Enabled: true
+      Name: Ground Truth Pose
+      Topic: /localization/global_matcher/test_truth_pose
+      Shape: Axes
+    - Class: rviz/Path
+      Enabled: true
+      Name: Match Path
+      Topic: /localization/global_matcher/path
+      Color: 25; 255; 25
+  Enabled: true
+  Global Options:
+    Background Color: 32; 32; 32
+    Fixed Frame: map
+    Frame Rate: 30
+  Name: root
+  Tools:
+    - Class: rviz/Interact
+    - Class: rviz/MoveCamera
+    - Class: rviz/FocusCamera
+    - Class: rviz/SetInitialPose
+      Topic: /initialpose
+  Value: true
+  Views:
+    Current:
+      Class: rviz/Orbit
+      Distance: 120
+      Focal Point:
+        X: 0
+        Y: 0
+        Z: 0
+      Name: Current View
+      Pitch: 0.75
+      Target Frame: map
+      Yaw: 0.8
+    Saved: ~
+Window Geometry:
+  Height: 900
+  Width: 1400

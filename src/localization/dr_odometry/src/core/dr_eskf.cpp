@@ -84,7 +84,7 @@ void DrEskf::feedImu(const ImuData& imu) {
   mid.timestamp = imu.timestamp;
   mid.gyro = 0.5 * (last_imu_.gyro + imu.gyro);
   mid.accel = 0.5 * (last_imu_.accel + imu.accel);
-  predict(mid, dt);
+  predict(mid, dt);  // 利用imu进行递推
   last_imu_ = imu;
 
   // 在 IMU 时刻上做异步观测更新（轮速/GNSS 需通过新鲜度检查）
@@ -128,9 +128,9 @@ void DrEskf::feedGnss(const GnssData& gnss) {
 }
 
 void DrEskf::predict(const ImuData& imu, double dt) {
-  const Vec3d omega = imu.gyro - state_.gyro_bias;
+  const Vec3d omega = imu.gyro - state_.gyro_bias;  // 减去零偏
   const Vec3d accel_body = imu.accel - state_.accel_bias;
-  const Mat3d Rwb = state_.orientation.toRotationMatrix();
+  const Mat3d Rwb = state_.orientation.toRotationMatrix(); // body -> world
   const Vec3d gravity(0.0, 0.0, -config_.gravity);
 
   // 世界系加速度；关闭 use_imu_accel 时加速度项为零，靠轮速/GNSS 约束速度
