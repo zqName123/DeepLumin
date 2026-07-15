@@ -6,6 +6,23 @@
 
 ---
 
+## 0. 当前实现状态同步
+
+截至当前实现，`global_matcher` 已经从占位节点推进到可独立运行和可视化验证的版本，本文档后续设计应以当前接口为基线继续演进。
+
+已完成能力：
+
+1. 已引入 `fast_gicp` 第三方 catkin 包：`DeepLumin/src/third_party/fast_gicp`，默认关闭示例程序，仅编译 `libfast_gicp.so`。
+2. `global_matcher` 默认匹配后端已切换为 `fast_gicp::FastGICP`，同时保留 `gicp` 和 `icp` 作为配置回退。
+3. 已实现全局 PCD 地图加载、按初值 FOV 裁剪子图、两阶段 coarse/fine 匹配、质量门控和结构化结果发布。
+4. 已实现地图段运行时加载/切换接口，当前使用 `std_msgs/String` 命令话题，后续可升级为 service/action。
+5. 已实现 keyframe 测试节点，可使用 `/home/hhy/2004ros/relocalization_ws/key_point_frame` 和 `optimized_poses_tum.txt` 验证完整匹配链路。
+6. 已实现 RViz 对比可视化：全局地图、配准前源帧、目标子图、配准后源帧、初值和匹配轨迹。
+
+当前验证结果：`global_matcher_keyframe_test.launch frame_index:=100` 在 `fast_gicp` 默认参数下可收敛，典型耗时约 47-50 ms，输出 `success=1`、`converged=1`、`inlier_ratio=1.0`、`inlier_rmse≈0.068`。该结果用于说明后端和接口可用，正式阈值仍需按目标地图、点云密度和车辆场景标定。
+
+当前实现仍是单文件主节点为主，后续重构方向仍应按本文档拆分 `core/map/matcher/ros/interface`，但不能改变已发布的 topic/message 语义。
+
 ## 1. 模块定位
 
 `global_matcher` 必须保留为独立模块，不能与 `relocalization` 合并。
@@ -20,7 +37,7 @@
 ```text
 当前点云 + 当前 odom/fused 初值
   -> 根据初值裁剪全局地图 FOV 子图
-  -> 多尺度 GICP/NDT/ICP 精匹配
+  -> FastGICP 默认后端两阶段匹配，PCL GICP/ICP 可配置回退
   -> 计算 fitness / inlier_ratio / inlier_rmse
   -> 输出 T_map_base 或 T_map_odom 校正结果
   -> pose_fusion 接收该结果作为观测更新
@@ -39,11 +56,11 @@ ysw_loc 代码中值得迁移的能力：
 | 当前扫描缓存 | `cb_save_cur_scan` | `ScanBuffer` 或 ROS adapter 缓存 `cloud_registered` |
 | odom 初值缓存 | `cb_save_cur_odom` | 订阅 `/localization/fused_odom`，备选 `/localization/slam_odom`、`/localization/dr_odom` |
 | FOV 子图裁剪 | `crop_global_map_in_FOV` | `ISubmapProvider::getSubmap(center_pose, crop_config)` |
-| 多尺度 GICP | `registration_at_scale(scale*6)` + `registration_at_scale(scale*3)` | `IFineMatcher` 支持 coarse/fine 两阶段 |
+| 多尺度 FastGICP | `registration_at_scale(scale*6)` + `registration_at_scale(scale*3)` | 当前默认 `fast_gicp::FastGICP`，保留 PCL GICP/ICP 回退 |
 | 内点率/RMSE | `computeInlierRatio` | `MatchQualityEvaluator` 统一计算质量 |
 | 地图切换 | `change_map_judge`、`map_num`、`map_locate_vec` | `MapSegmentManager`，不要写入 odom twist 字段 |
 | 手工初值 | `/initialpose` 回调 | 作为 `SetInitialPose` 服务或订阅 RViz initialpose |
-| 可视化输出 | `/submap`、`/cur_scan_in_map` | `/localization/global_matcher/target_submap`、`aligned_scan` |
+| 可视化输出 | `/submap`、`/cur_scan_in_map` | 已实现 `source_scan_initial`、`target_submap`、`aligned_scan`、`global_map` |
 
 ysw_loc 中不应照搬的部分：
 
@@ -61,8 +78,8 @@ ysw_loc 中不应照搬的部分：
 ```text
 global_matcher_node
   |-- RosAdapter
-  |   |-- 订阅当前点云、初值 odom、人工初值、manager 命令
-  |   `-- 发布 result、status、aligned_scan、target_submap
+  |   |-- 订阅当前点云、初值 odom、人工初值、地图命令
+  |   `-- 发布 result、status、source_scan_initial、aligned_scan、target_submap、global_map
   |
   |-- GlobalMatcherCore
   |   |-- SubmapProvider
@@ -165,15 +182,15 @@ struct CropBoxConfig {
 };
 
 struct MatcherConfig {
-  std::string type = "gicp";
+  std::string type = "fast_gicp";
   int num_threads = 4;
-  int max_iterations = 40;
+  int max_iterations = 20;
   double transformation_epsilon = 0.01;
-  double max_correspondence_distance = 2.5;
+  double max_correspondence_distance = 2.0;
   int correspondence_randomness = 20;
-  double source_voxel_leaf = 0.2;
-  double target_voxel_leaf = 0.4;
-  std::vector<double> coarse_to_fine_scales = {6.0, 3.0, 1.0};
+  double source_voxel_leaf = 0.1;
+  double target_voxel_leaf = 0.1;
+  std::vector<double> coarse_to_fine_scales = {6.0, 3.0};
 };
 
 struct QualityGateConfig {
@@ -283,9 +300,10 @@ public:
 
 实现优先级：
 
-1. `GicpMatcher`：优先实现，参考 ysw_loc 的 FastGICP 参数。
-2. `NdtMatcher`：后续可用于井下结构化巷道。
-3. `IcpMatcher`：作为简单 baseline 和调试实现。
+1. `FastGicpMatcher`：当前默认实现，使用 `fast_gicp::FastGICP`，参数对齐 ysw_loc。
+2. `PclGicpMatcher`：当前作为 `matcher/type: gicp` 回退路径。
+3. `IcpMatcher`：当前作为 `matcher/type: icp` baseline 和调试实现。
+4. `NdtMatcher`：后续可用于井下结构化巷道。
 
 ### 6.4 `IMatchQualityEvaluator`
 
@@ -352,9 +370,8 @@ crop_box:
 
 ```text
 initial_guess
-  -> GICP(scale=6.0)
-  -> GICP(scale=3.0)
-  -> GICP(scale=1.0)
+  -> FastGICP(scale=6.0)
+  -> FastGICP(scale=3.0)
   -> final transform
 ```
 
@@ -362,6 +379,7 @@ initial_guess
 
 ```cpp
 Eigen::Matrix4d guess = request.initial_pose_map.matrix();
+// 当前实现固定执行 coarse_scale 与 fine_scale 两次，后续可泛化为列表。
 for (double scale : config.matcher.coarse_to_fine_scales) {
   source_filtered = voxel(source, source_leaf * scale);
   target_filtered = voxel(target, target_leaf * scale);
@@ -437,6 +455,28 @@ odom.twist.twist.linear.x = map_num
 
 应使用结构化字段：`map_id`、`segment_id`、`match_status`。
 
+
+### 8.3 当前已实现的地图段接口
+
+当前 `global_matcher` 已支持单地图加载和运行时地图段加载/切换，接口使用 `std_msgs/String`，便于 manager、命令行和 rosbag 调试。
+
+| Topic | Type | data 格式 | 说明 |
+|---|---|---|---|
+| `/localization/global_matcher/load_map_command` | `std_msgs/String` | `map_id|/abs/path/to/map.pcd[|activate]` | 加载地图段，`activate` 默认 true |
+| `/localization/global_matcher/set_map_segment_command` | `std_msgs/String` | `map_id` | 激活已加载地图段 |
+
+示例：
+
+```bash
+rostopic pub -1 /localization/global_matcher/load_map_command std_msgs/String \
+"data: segment_outin|/home/hhy/2004ros/ysw_loc/src/map/0730map/outin_90.pcd|true"
+
+rostopic pub -1 /localization/global_matcher/set_map_segment_command std_msgs/String \
+"data: default"
+```
+
+该接口只负责加载和激活地图段，不负责判断何时切换。自动切换策略应由 `localization_manager` 根据路线、区域、方向、入口和匹配质量编排。
+
 ---
 
 ## 9. ROS 接口设计
@@ -451,97 +491,113 @@ odom.twist.twist.linear.x = map_num
 | `/localization/slam_odom` | `nav_msgs/Odometry` | 否 | fused 不可用时初值 |
 | `/localization/dr_odom` | `nav_msgs/Odometry` | 否 | 短时 fallback 初值 |
 | `/initialpose` | `geometry_msgs/PoseWithCovarianceStamped` | 否 | RViz 人工初值 |
-| `/localization/manager/trigger_global_match` | Service/Action | 推荐 | manager 触发匹配 |
+| `/localization/manager/trigger_global_match` | Service/Action | 后续扩展 | manager 触发一次匹配，当前实现以 `auto_match` 周期匹配为主 |
 
 ### 9.2 发布
 
 | 话题 | 消息类型 | 说明 |
 |---|---|---|
-| `/localization/global_matcher/result` | `deeplumin_msgs/GlobalMatchResult` 建议新增 | 匹配结果 |
-| `/localization/global_matcher/status` | `deeplumin_msgs/LocalizationStatus` 或扩展消息 | 健康状态 |
-| `/localization/global_matcher/aligned_scan` | `sensor_msgs/PointCloud2` | 对齐后的 source |
-| `/localization/global_matcher/target_submap` | `sensor_msgs/PointCloud2` | 裁剪目标子图 |
+| `/localization/global_matcher/result` | `deeplumin_msgs/GlobalMatchResult` | 匹配结果，`header.frame_id=map`，`child_frame_id=base_link` |
+| `/localization/global_matcher/status` | `deeplumin_msgs/LocalizationStatus` | 健康状态和当前模式 |
+| `/localization/global_matcher/source_scan_initial` | `sensor_msgs/PointCloud2` | 配准前 source 按初值投到 `map` 下，红色可视化 |
+| `/localization/global_matcher/aligned_scan` | `sensor_msgs/PointCloud2` | 配准后的 source，青色可视化 |
+| `/localization/global_matcher/target_submap` | `sensor_msgs/PointCloud2` | 裁剪目标子图，黄色可视化 |
+| `/localization/global_matcher/global_map` | `sensor_msgs/PointCloud2` | RViz 用下采样全局地图，灰色可视化 |
 | `/localization/global_matcher/initial_guess` | `geometry_msgs/PoseStamped` | 调试初值 |
+| `/localization/global_matcher/path` | `nav_msgs/Path` | 匹配结果轨迹 |
 
-### 9.3 服务
+### 9.3 命令接口和后续服务化
+
+当前已实现的运行时命令接口是 topic：
+
+| 话题 | 消息类型 | 说明 |
+|---|---|---|
+| `/localization/global_matcher/load_map_command` | `std_msgs/String` | `map_id|pcd_path[|activate]` |
+| `/localization/global_matcher/set_map_segment_command` | `std_msgs/String` | `map_id` |
+
+后续若 manager 需要严格的请求/响应语义，可在不改变当前 topic 的前提下补充 service/action：
 
 | 服务 | 请求 | 响应 |
 |---|---|---|
-| `/localization/global_matcher/load_map` | map_id、path | success、reason |
+| `/localization/global_matcher/load_map` | map_id、path、activate | success、reason |
 | `/localization/global_matcher/set_map_segment` | map_id | success、current_map_id |
 | `/localization/global_matcher/trigger` | optional initial pose | result |
 | `/localization/global_matcher/reset` | empty | success |
 
 ---
 
-## 10. 消息建议
+## 10. 消息定义
 
-建议在 `deeplumin_msgs/msg/localization/` 增加：
-
-```text
-GlobalMatchResult.msg
-```
-
-字段建议：
+`deeplumin_msgs/msg/localization/GlobalMatchResult.msg` 已新增并通过编译，当前字段为：
 
 ```text
 std_msgs/Header header
+string child_frame_id
+geometry_msgs/PoseWithCovariance pose
 bool success
 bool converged
 string map_id
 string reject_reason
-geometry_msgs/PoseWithCovariance pose
-float32 fitness
-float32 inlier_ratio
-float32 inlier_rmse
+float64 fitness_score
+float64 inlier_ratio
+float64 inlier_rmse
 uint32 inlier_count
 uint32 source_points
 uint32 target_points
-float32 elapsed_ms
+float64 elapsed_ms
+float64 initial_translation_error
+float64 initial_yaw_error
 ```
 
-如果需要调试完整 transform，也可补充：
+语义要求：
 
-```text
-float64[16] transform
-float64 delta_translation
-float64 delta_yaw_deg
-```
+1. `header.frame_id` 是全局地图坐标系，通常为 `map`。
+2. `child_frame_id` 是匹配结果对应的车体坐标系，通常为 `base_link`。
+3. `pose` 表示 `T_map_base_match`，不是 `map->odom`。
+4. `initial_translation_error` 和 `initial_yaw_error` 表示匹配结果相对初值的差异，用于 `pose_fusion` 和 `localization_manager` 门控。
+5. `success=false` 时也必须发布质量字段和 `reject_reason`，便于诊断和失败计数。
 
----
+## 11. 当前配置文件基线
 
-## 11. 配置文件模板
+当前 `config/global_matcher.yaml` 的关键配置如下，后续开发应保持字段兼容：
 
 ```yaml
 frames:
-  map: "map"
-  odom: "odom"
-  base_link: "base_link"
-  lidar: "lidar_link"
+  map: map
+  odom: odom
+  base_link: base_link
 
 topics:
-  source_cloud: "/localization/cloud_registered"
-  initial_odom: "/localization/fused_odom"
-  fallback_slam_odom: "/localization/slam_odom"
-  fallback_dr_odom: "/localization/dr_odom"
-  result: "/localization/global_matcher/result"
-  status: "/localization/global_matcher/status"
-  aligned_scan: "/localization/global_matcher/aligned_scan"
-  target_submap: "/localization/global_matcher/target_submap"
-
-runtime:
-  enable_periodic_match: true
-  match_rate: 1.0
-  min_cloud_interval: 0.2
-  max_initial_pose_age: 0.5
+  source_cloud: /localization/cloud_registered
+  initial_pose: /localization/fused_odom
+  source_odom: /localization/slam_odom
+  manual_initial_pose: /initialpose
+  result: /localization/global_matcher/result
+  status: /localization/global_matcher/status
+  source_initial_scan: /localization/global_matcher/source_scan_initial
+  aligned_scan: /localization/global_matcher/aligned_scan
+  target_submap: /localization/global_matcher/target_submap
+  global_map: /localization/global_matcher/global_map
+  initial_guess: /localization/global_matcher/initial_guess
+  path: /localization/global_matcher/path
+  load_map_command: /localization/global_matcher/load_map_command
+  set_map_segment_command: /localization/global_matcher/set_map_segment_command
 
 map:
-  provider: "pcd"
-  default_map_id: "default"
-  pcd_path: "/home/hhy/2004ros/map/global_map.pcd"
-  map_voxel_leaf: 0.4
+  default_map_id: default
+  pcd_path: /home/hhy/2004ros/ysw_loc/src/map/0730map/yuhsuwan2_loc_rot_72.pcd
+  publish_voxel_leaf: 5.0
+  global_publish_period: 5.0
 
-crop_box:
+runtime:
+  auto_match: true
+  viz_test_mode: false
+  source_cloud_is_odom_frame: true
+  match_rate: 1.0
+  max_cloud_age: 1.0
+  max_path_size: 3000
+
+crop:
   forward: 70.0
   backward: 7.0
   left: 35.0
@@ -550,28 +606,22 @@ crop_box:
   up: 10.0
 
 matcher:
-  type: "gicp"
-  num_threads: 4
-  max_iterations: 40
+  type: fast_gicp
+  source_voxel_leaf: 0.1
+  target_voxel_leaf: 0.1
+  coarse_scale: 6.0
+  fine_scale: 3.0
+  max_iterations: 20
   transformation_epsilon: 0.01
-  max_correspondence_distance: 2.5
-  correspondence_randomness: 20
-  source_voxel_leaf: 0.2
-  target_voxel_leaf: 0.4
-  coarse_to_fine_scales: [6.0, 3.0, 1.0]
-
-quality_gate:
-  accept_fitness: 0.8
-  min_inlier_ratio: 0.55
-  max_inlier_rmse: 0.6
-  inlier_distance: 0.5
-  max_delta_translation: 5.0
-  max_delta_yaw_deg: 15.0
-  min_source_points: 200
-  min_target_points: 1000
+  max_correspondence_distance: 2.0
+  fast_gicp_num_threads: 2
+  fast_gicp_correspondence_randomness: 20
 ```
 
----
+`source_cloud_is_odom_frame` 的语义：
+
+1. 在线 DeepLumin 模式为 `true`：`source_cloud` 在 `odom` 或局部里程计坐标下，节点用 `fused_odom` 与 `slam_odom` 计算 `T_map_source` 初值。
+2. keyframe 测试模式为 `false`：单帧点云在 `base_link` 局部坐标下，TUM 位姿直接作为 `T_map_source` 初值。
 
 ## 12. 与其他模块协作
 
@@ -613,44 +663,40 @@ relocalization 成功：reset fusion 和 global_matcher 初值
 
 ---
 
-## 13. 开发阶段规划
+## 13. 开发状态与后续计划
 
-### P0：消息、配置、接口骨架
+### 已完成
 
-1. 新增 `GlobalMatchResult.msg`。
-2. 新增 `global_matcher.yaml` 和 launch。
-3. 建立 `types/config/interface` 头文件。
-4. `global_matcher_node` 完成参数加载和空转状态发布。
+1. `GlobalMatchResult.msg`、`LocalizationStatus` 发布链路已接通。
+2. PCD 地图加载、无全局匹配下采样、FOV 子图裁剪已实现。
+3. `fast_gicp` 第三方包已引入，默认后端为 `fast_gicp`，保留 `gicp`/`icp` 回退。
+4. 两阶段 coarse/fine 匹配、质量门控、结果轨迹、调试点云发布已实现。
+5. 地图段加载/切换命令接口已实现。
+6. keyframe 测试节点和 RViz 对比可视化已实现。
 
-### P1：地图加载与子图裁剪
+### 后续 P1：接口化重构
 
-1. 实现 `PcdSubmapProvider`。
-2. 实现 ysw_loc 风格 FOV CropBox 裁剪。
-3. 发布 `/target_submap` 验证裁剪结果。
-4. 支持 `/initialpose` 手工初值调试。
+1. 将当前单文件逻辑拆分为 `core/map/matcher/ros`。
+2. 固化 `IFineMatcher`、`ISubmapProvider`、`IMapSegmentManager` 接口。
+3. 保持当前 topic/message/config 向后兼容。
 
-### P2：GICP 匹配
+### 后续 P2：manager 触发与服务化
 
-1. 实现 `GicpMatcher`。
-2. 支持 coarse-to-fine 多尺度匹配。
-3. 发布 `/aligned_scan`。
-4. 输出 transform、fitness、elapsed_ms。
+1. 增加一次性 trigger service/action，保留当前 `auto_match` 周期模式。
+2. 将 `load_map_command`、`set_map_segment_command` 补充为 service。
+3. 增加 pending 状态，防止 manager 重复触发。
 
-### P3：质量评估和 fusion 接入
+### 后续 P3：批量评估和阈值标定
 
-1. 实现 KDTree inlier ratio/RMSE。
-2. 实现质量门控。
-3. 发布结构化 `GlobalMatchResult`。
-4. `pose_fusion` 接收该观测。
+1. 对多个 keyframe 和 rosbag 做成功率、fitness、inlier、RMSE 统计。
+2. 按地图和车辆速度标定 `gate/*` 参数。
+3. 输出用于 `pose_fusion` 的协方差映射建议。
 
-### P4：manager 编排和地图段切换
+### 后续 P4：多地图段策略联调
 
-1. manager 触发 `global_matcher/trigger`。
-2. manager 维护连续失败计数。
-3. 实现 `MapSegmentManager`。
-4. 地图切换和 relocalization 触发联动。
-
----
+1. manager 根据路线和区域决定地图段切换。
+2. global_matcher 只执行加载/激活/匹配，不承载路线业务逻辑。
+3. pose_fusion 按 `map_id` 验收匹配结果，避免不同地图段结果混用。
 
 ## 14. 测试与验收
 
@@ -677,9 +723,12 @@ relocalization 成功：reset fusion 和 global_matcher 初值
 显示：
 
 ```text
-Map: /localization/global_matcher/target_submap
-PointCloud: /localization/global_matcher/aligned_scan
-Pose: /localization/global_matcher/result
+Global map: /localization/global_matcher/global_map
+Source before match: /localization/global_matcher/source_scan_initial
+Target submap: /localization/global_matcher/target_submap
+Aligned source: /localization/global_matcher/aligned_scan
+Initial guess: /localization/global_matcher/initial_guess
+Match path: /localization/global_matcher/path
 Path: /localization/fused_odom path
 ```
 
@@ -687,7 +736,7 @@ Path: /localization/fused_odom path
 
 | 指标 | 建议阈值 |
 |---|---:|
-| 单次匹配耗时 | < 200 ms，后续优化到 < 100 ms |
+| 单次匹配耗时 | fast_gicp keyframe 测试约 47-50 ms；在线目标 < 100 ms |
 | target_submap 点数 | > 1000 |
 | source 点数 | > 200 |
 | inlier_ratio | > 0.55 |
@@ -704,5 +753,5 @@ Path: /localization/fused_odom path
 4. 匹配结果不能直接 reset TF，必须作为观测交给 `pose_fusion` 或由 `localization_manager` 验收。
 5. 全局地图很大时，必须使用子图裁剪或分段加载，不能每帧全图匹配。
 6. 点云坐标系必须明确：source 是 lidar/base/odom/map 哪个系，进入 matcher 前必须转换一致。
-7. FastGICP 可作为优先实现，但接口要允许替换为 PCL GICP、NDT、ICP。
+7. FastGICP 已是当前默认实现，但接口要允许替换为 PCL GICP、NDT、ICP。
 8. 质量门控必须在 core 层实现，不能只靠 RViz 观察。

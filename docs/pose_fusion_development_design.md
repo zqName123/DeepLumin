@@ -6,6 +6,19 @@
 
 ---
 
+## 0. 与当前 global_matcher 实现的同步
+
+`global_matcher` 当前已经具备可运行实现，`pose_fusion` 开发时应直接按以下事实接入，而不是重新定义一套地图匹配接口：
+
+1. 地图匹配结果话题：`/localization/global_matcher/result`。
+2. 消息类型：`deeplumin_msgs/GlobalMatchResult`，语义是 `T_map_base_match`。
+3. `global_matcher` 默认使用 `fast_gicp::FastGICP`，保留 `gicp`/`icp` 配置回退。
+4. 当前匹配结果包含 `map_id`、`success`、`converged`、`fitness_score`、`inlier_ratio`、`inlier_rmse`、`initial_translation_error`、`initial_yaw_error`。
+5. `global_matcher` 不发布最终 TF，也不修改 `map->odom`。`pose_fusion` 仍是唯一最终 TF owner。
+6. RViz 调试点云 `source_scan_initial`、`target_submap`、`aligned_scan` 只用于诊断，不作为 fusion 输入。
+
+因此，`pose_fusion` 的 P3 开发应优先完成 `GlobalMatchResult -> PoseObservation -> map->odom smooth update`，这是达到 ysw_loc 定位效果的关键闭环。
+
 ## 1. 模块定位
 
 `pose_fusion` 是 localization 中唯一负责输出最终定位结果的模块。它不直接做点云匹配、不直接做全局重定位、不直接处理原始 IMU 预积分，而是接收各定位子模块的结果，将它们统一成观测并进行时序融合、质量判断、状态切换和 TF 发布。
@@ -159,6 +172,8 @@ T_map_base_fused = T_map_odom * T_odom_base_current
 T_map_odom_observed = T_map_base_match * inverse(T_odom_base_current)
 ```
 
+注意：当前 `global_matcher` 的 `source_cloud_is_odom_frame=true` 在线模式会使用 `/localization/fused_odom` 与 `/localization/slam_odom` 形成初值。`pose_fusion` 必须稳定发布 `/localization/fused_odom`，否则 global_matcher 会退化为缺少可靠初值的匹配，错误率会显著增加。
+
 正常定位中优先平滑更新 `T_map_odom`，保证 `odom -> base_link` 的短时连续性；发生重定位时才允许硬 reset。
 
 ---
@@ -268,30 +283,35 @@ SLAM 是否可以融合到 DR：
 | `/localization/global_matcher/result` | `deeplumin_msgs/GlobalMatchResult` | 地图匹配结果 |
 | `/localization/global_matcher/status` | `deeplumin_msgs/LocalizationStatus` | 匹配状态 |
 
-最低需要字段：
+当前实际字段：
 
 ```text
-header.stamp
-header.frame_id = map
-child_frame_id = base_link
-pose_map_base
-covariance[36]
-success
-fitness_score
-inlier_ratio
-inlier_rmse
-source_points
-target_points
-map_id
-reject_reason
+std_msgs/Header header              # map frame
+string child_frame_id               # usually base_link
+geometry_msgs/PoseWithCovariance pose
+bool success
+bool converged
+string map_id
+string reject_reason
+float64 fitness_score
+float64 inlier_ratio
+float64 inlier_rmse
+uint32 inlier_count
+uint32 source_points
+uint32 target_points
+float64 elapsed_ms
+float64 initial_translation_error
+float64 initial_yaw_error
 ```
 
 处理策略：
 
-1. `success=false` 只记录诊断，不更新滤波器。
-2. `success=true` 但质量未过门控，拒绝并记录原因。
-3. 小误差校正使用平滑更新。
-4. 大误差但匹配质量非常高时，交给 `localization_manager` 判断是否触发重定位或受控 reset。
+1. `success=false` 或 `converged=false` 只记录诊断，不更新滤波器。
+2. `map_id` 必须与当前 manager/pose_fusion 的 active map 一致，否则拒绝，避免地图段切换期间混用结果。
+3. `pose` 是 `T_map_base_match`，需要结合当前 `T_odom_base_current` 计算 `T_map_odom_observed`。
+4. 小误差校正使用平滑更新或 ESKF pose update。
+5. 大误差但匹配质量非常高时，交给 `localization_manager` 判断是否触发重定位或受控 reset。
+6. `fitness_score` 不同 matcher 后端数值尺度不同；`fast_gicp` 下不能沿用 PCL GICP 的固定阈值，必须结合 `inlier_ratio`、`inlier_rmse` 和初值误差综合判断。
 
 ### 6.4 relocalization 输入
 
@@ -586,14 +606,14 @@ R_global = base_R_global * quality_scale
 
 | 条件 | 默认阈值 |
 |---|---|
-| `success == false` | 拒绝 |
+| `success == false` 或 `converged == false` | 拒绝 |
 | source points 过少 | `< 200` |
 | target points 过少 | `< 1000` |
-| fitness 过大 | `> 0.8-1.2`，按地图调参 |
-| inlier ratio 过低 | `< 0.45-0.60` |
-| inlier RMSE 过大 | `> 0.6-1.0 m` |
-| 与预测横向残差过大 | `> 3-5 m` |
-| yaw 残差过大 | `> 10-20 deg` |
+| fitness 过大 | 按 matcher 和地图标定；fast_gicp 的数值尺度不能沿用 PCL GICP 固定阈值 |
+| inlier ratio 过低 | 默认 `< 0.5` 拒绝，当前 keyframe 验证正常可到 `1.0` |
+| inlier RMSE 过大 | 默认 `> 0.8 m` 拒绝，当前 keyframe 验证约 `0.068 m` |
+| 与预测残差过大 | 普通校正拒绝；大误差只允许 manager 验收后 reset |
+| yaw 残差过大 | 普通校正拒绝；阈值按车速和场景标定 |
 
 ### 9.4 GNSS 协方差策略
 
@@ -694,11 +714,11 @@ GNSS 不允许在室内场景直接 reset。室内误用 GNSS 是定位跳变的
 
 ---
 
-## 12. 消息定义建议
+## 12. 已定义消息和接口
 
 ### 12.1 `GlobalMatchResult.msg`
 
-如果 `global_matcher` 尚未定义专用消息，建议添加：
+该消息已经在 `deeplumin_msgs/msg/localization/GlobalMatchResult.msg` 中定义，`pose_fusion` 直接订阅使用：
 
 ```text
 std_msgs/Header header
@@ -706,47 +726,72 @@ string child_frame_id
 geometry_msgs/PoseWithCovariance pose
 bool success
 bool converged
+string map_id
+string reject_reason
 float64 fitness_score
 float64 inlier_ratio
 float64 inlier_rmse
-int32 inlier_count
-int32 source_points
-int32 target_points
-string map_id
-string reject_reason
+uint32 inlier_count
+uint32 source_points
+uint32 target_points
+float64 elapsed_ms
+float64 initial_translation_error
+float64 initial_yaw_error
 ```
 
+`pose_fusion` 不应依赖可视化点云判断是否融合，只依赖该消息的结构化字段和 manager policy。
+
 ### 12.2 `RelocalizationResult.msg`
+
+该消息已经定义，manager 验收后应将 `accepted=true` 的结果交给 `pose_fusion` 作为 reset 事件：
 
 ```text
 std_msgs/Header header
 string child_frame_id
 geometry_msgs/PoseWithCovariance pose
 bool success
-float64 score
-float64 fitness_score
-float64 yaw_diff
+bool accepted
 string map_id
 string method
 string reject_reason
+float64 score
+float64 descriptor_score
+float64 fitness_score
+float64 inlier_ratio
+float64 inlier_rmse
+uint32 inlier_count
+int32 candidate_index
+int32 keyframe_id
+float64 yaw_diff
+float64 translation_diff
+float64 elapsed_ms
 ```
 
 ### 12.3 `ObserverPolicy.msg`
 
+该消息已经定义，用于 manager 控制各观测源启停和权重：
+
 ```text
 std_msgs/Header header
+string scene_type
+string reason
 bool use_dr
 bool use_slam
 bool use_global_matcher
 bool use_relocalization
 bool use_gnss
+bool use_gnss_position
+bool use_gnss_heading
 float64 dr_weight
 float64 slam_weight
 float64 global_matcher_weight
+float64 relocalization_weight
 float64 gnss_position_weight
 float64 gnss_heading_weight
-string scene_type
-string reason
+bool allow_fusion_reset
+bool allow_dr_reset
+bool allow_global_matcher_trigger
+bool allow_relocalization_trigger
 ```
 
 ### 12.4 `FusionStatus.msg`

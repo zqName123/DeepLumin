@@ -6,6 +6,18 @@
 
 ---
 
+## 0. 与当前 global_matcher 实现的同步
+
+`global_matcher` 当前已经完成可运行版本，manager 文档中的编排策略需要以当前接口为基线：
+
+1. `global_matcher` 默认周期自动匹配，配置项为 `runtime/auto_match` 和 `runtime/match_rate`。
+2. 当前尚未实现严格请求/响应的 trigger service/action，manager 第一阶段可通过 observer policy、启动参数和健康监控间接编排；后续再补 `trigger` 服务。
+3. 地图段加载和切换当前已实现为 `std_msgs/String` 命令话题：`load_map_command`、`set_map_segment_command`。
+4. 匹配结果已通过 `deeplumin_msgs/GlobalMatchResult` 发布，manager 可直接订阅用于健康统计、地图段一致性检查和 relocalization 触发判断。
+5. 可视化点云只用于调试，不作为 manager 决策输入。
+
+manager 后续开发不能再把 `global_matcher` 当占位节点处理，应按“已可用地图约束观测源”纳入联调。
+
 ## 1. 模块定位
 
 `localization_manager` 是定位功能域的编排中枢。它不实现 DR、SLAM、点云匹配、重定位或融合算法，但负责决定这些模块何时启用、何时降权、何时触发、哪些结果可以进入最终融合。
@@ -53,11 +65,11 @@ localization_manager
 | `dr_odometry` | 已有 ESKF、ROS adapter、debug 节点、配置文件 | 监控 `/localization/dr_odom`、`/localization/dr_status` |
 | `slam_odometry` | 已有 Faster-LIO 风格结构和 ysw 配置 | 监控 `/localization/slam_odom`、`/localization/slam_health`、注册点云 |
 | `relocalization` | 已有 Scan Context + GICP、离线/在线配置 | 由 manager 触发，结果由 manager 验收 |
-| `global_matcher` | 目前为占位节点，已有详细开发文档 | manager 后续触发匹配、监控结果和失败计数 |
+| `global_matcher` | 已实现 PCD/地图段加载、FOV 裁剪、fast_gicp 匹配、质量门控、keyframe 可视化测试 | manager 监控结果和失败计数，编排地图段切换，后续补 trigger service |
 | `pose_fusion` | 目前为占位节点，已有详细开发文档 | manager 下发策略、发送 accepted relocalization/reset |
 | `localization_manager` | 当前为占位节点 | 需要补齐本文档定义的编排逻辑 |
 
-结论：当前代码还不能完整承受“传感器退化后继续运行”的系统级要求，因为 `pose_fusion` 和 `localization_manager` 仍是占位节点。完成本文档对应实现后，系统可以支持 LiDAR 短时失效时由 DR 继续预测、SLAM/global_matcher 降权、fusion 协方差增长、manager 标记 degraded，并在 LiDAR 恢复后用 global_matcher/relocalization 拉回地图。
+结论：当前代码已经具备 `global_matcher` 地图约束能力，但还不能完整承受“传感器退化后继续运行”的系统级要求，因为 `pose_fusion` 和 `localization_manager` 仍是占位节点。完成本文档对应实现后，系统可以支持 LiDAR 短时失效时由 DR 继续预测、SLAM/global_matcher 降权、fusion 协方差增长、manager 标记 degraded，并在 LiDAR 恢复后用 global_matcher/relocalization 拉回地图。
 
 ---
 
@@ -407,8 +419,8 @@ manager 与 global_matcher 的关系：
 ```text
 pose_fusion/fused_odom -> global_matcher initial guess
 slam_odometry/cloud_registered -> global_matcher source cloud
-manager -> global_matcher trigger/load_map/set_segment
-global_matcher/result -> pose_fusion observation
+manager -> global_matcher load_map_command / set_map_segment_command
+global_matcher/result -> pose_fusion observation and manager health statistics
 global_matcher/status -> manager health
 ```
 
@@ -416,17 +428,18 @@ global_matcher/status -> manager health
 
 | 接口 | 方向 | 说明 |
 |---|---|---|
-| `/localization/global_matcher/trigger` | manager -> global_matcher | 触发一次匹配 |
-| `/localization/global_matcher/set_map_segment` | manager -> global_matcher | 地图段切换 |
+| `/localization/global_matcher/load_map_command` | manager -> global_matcher | 当前已实现，`map_id|pcd_path[|activate]` |
+| `/localization/global_matcher/set_map_segment_command` | manager -> global_matcher | 当前已实现，`map_id` |
 | `/localization/global_matcher/status` | global_matcher -> manager | 匹配状态 |
 | `/localization/global_matcher/result` | global_matcher -> pose_fusion/manager | 匹配结果 |
+| `/localization/global_matcher/trigger` | manager -> global_matcher | 后续扩展，触发一次匹配 |
 
 manager 动作：
 
-1. 正常定位时按 0.5-2Hz 触发。
-2. GNSS 失效过渡、SLAM 轻度退化、DR/SLAM 残差增大时提高触发频率。
+1. 第一阶段使用 `global_matcher` 自身 `runtime/match_rate` 周期匹配，manager 通过 health/result 监控是否正常。
+2. 后续增加 trigger service 后，manager 在正常定位时按 0.5-2Hz 触发，在 GNSS 失效过渡、SLAM 轻度退化、DR/SLAM 残差增大时提高触发频率。
 3. 匹配失败不直接重定位，连续失败并叠加 fusion 退化才触发 relocalization。
-4. 地图段切换时先让 global_matcher 加载/切换地图，再允许结果进入 fusion。
+4. 地图段切换时先通过 `load_map_command`/`set_map_segment_command` 让 global_matcher 加载/切换地图，再允许对应 `map_id` 的结果进入 fusion。
 
 ### 7.4 pose_fusion
 
@@ -797,16 +810,16 @@ global_matcher 是达到 ysw_loc 定位效果的关键。manager 要把它作为
 
 | 条件 | 触发策略 |
 |---|---|
-| 正常定位 | 低频周期触发，0.5-2Hz |
+| 正常定位 | 当前由 global_matcher `match_rate` 周期运行；后续 manager trigger 为 0.5-2Hz |
 | fusion 协方差增长 | 提高触发频率 |
 | SLAM 轻度退化 | 提高触发频率 |
 | GNSS 从可用变不可用 | 过渡期提高触发频率 |
-| 地图段切换 | 强制触发 |
+| 地图段切换 | 先发 `load_map_command`/`set_map_segment_command`，后续 trigger service 完成后强制触发一次 |
 | 人工命令 | 立即触发 |
 
 ### 11.2 抢占规则
 
-1. global_matcher 正在匹配时，不重复触发。
+1. 当前周期匹配模式下，manager 不重复启动节点；后续 trigger service 模式下，global_matcher 正在匹配时不重复触发。
 2. relocalization 正在执行时，暂停 global_matcher 结果进入 fusion。
 3. global_matcher 大残差结果不能自行 hard reset；只能作为观测或上报 manager。
 4. global_matcher 连续失败不等于定位丢失，需要结合 fusion/SLAM/DR 状态判断。
@@ -825,9 +838,9 @@ global_matcher 是达到 ysw_loc 定位效果的关键。manager 要把它作为
 | `/localization/slam_health` | `deeplumin_msgs/SlamHealth` | SLAM 健康 |
 | `/localization/fused_odom` | `nav_msgs/Odometry` | 最终定位 |
 | `/localization/fusion_status` | 建议新增 `FusionStatus` | fusion 状态 |
-| `/localization/global_matcher/status` | `LocalizationStatus` 或专用消息 | 匹配状态 |
-| `/localization/global_matcher/result` | 建议新增 `GlobalMatchResult` | 匹配结果 |
-| `/localization/relocalization/result` | 建议新增 `RelocalizationResult` | 重定位候选 |
+| `/localization/global_matcher/status` | `deeplumin_msgs/LocalizationStatus` | 匹配状态 |
+| `/localization/global_matcher/result` | `deeplumin_msgs/GlobalMatchResult` | 匹配结果 |
+| `/localization/relocalization/result` | `deeplumin_msgs/RelocalizationResult` | 重定位候选 |
 | `/gnss_chc_data` | `deeplumin_msgs/Gpchc` | GNSS |
 | `/can_receive_info` | `deeplumin_msgs/CanReceiveInfo` | CAN 轮速 |
 | `/ouster/imu` | `sensor_msgs/Imu` | IMU |
@@ -839,17 +852,19 @@ global_matcher 是达到 ysw_loc 定位效果的关键。manager 要把它作为
 | Topic | Type | 说明 |
 |---|---|---|
 | `/localization/manager/status` | `deeplumin_msgs/LocalizationStatus` | 聚合定位状态 |
-| `/localization/manager/observer_policy` | 建议新增 `ObserverPolicy` | 观测策略 |
-| `/localization/manager/accepted_relocalization` | 建议新增 `RelocalizationResult` | 已验收重定位 |
+| `/localization/manager/observer_policy` | `deeplumin_msgs/ObserverPolicy` | 观测策略 |
+| `/localization/manager/accepted_relocalization` | `deeplumin_msgs/RelocalizationResult` | 已验收重定位 |
 | `/localization/manager/events` | `diagnostic_msgs/KeyValue[]` 或自定义 | reset/触发/拒绝事件 |
 
-### 12.3 服务
+### 12.3 服务和命令接口
 
-| Service | 说明 |
+| 接口 | 说明 |
 |---|---|
 | `/localization/manager/set_mode` | 切换 `LOCALIZATION/PURE_DR/PURE_SLAM/MAPPING` |
 | `/localization/manager/set_scene` | 手动设置 `OUTDOOR/INDOOR/TUNNEL/MINE` |
-| `/localization/manager/trigger_global_match` | 手动触发 global_matcher |
+| `/localization/global_matcher/load_map_command` | 当前已实现的 topic 命令，`std_msgs/String`，格式 `map_id|pcd_path[|activate]` |
+| `/localization/global_matcher/set_map_segment_command` | 当前已实现的 topic 命令，`std_msgs/String`，格式 `map_id` |
+| `/localization/manager/trigger_global_match` | 后续手动触发 global_matcher，一期可仅记录事件 |
 | `/localization/manager/trigger_relocalization` | 手动触发 relocalization |
 | `/localization/manager/reset_localization` | reset pose_fusion，并清理状态 |
 | `/localization/manager/save_state` | 保存当前可靠定位，用于下次启动 |
@@ -1032,7 +1047,11 @@ scene_policy:
 
 global_matcher:
   enabled: true
-  periodic_trigger: true
+  current_mode: auto_match_topic_monitor
+  result_topic: /localization/global_matcher/result
+  status_topic: /localization/global_matcher/status
+  load_map_command_topic: /localization/global_matcher/load_map_command
+  set_map_segment_command_topic: /localization/global_matcher/set_map_segment_command
   normal_period_sec: 1.0
   degraded_period_sec: 0.5
   min_trigger_interval_sec: 0.3
@@ -1091,12 +1110,12 @@ gnss:
 
 ### P3：global_matcher 编排
 
-1. 实现周期触发。
-2. 实现退化触发。
-3. 实现触发冷却和 pending 锁。
-4. 监控匹配结果和连续失败计数。
+1. 第一阶段订阅已实现的 `/localization/global_matcher/result` 和 `/localization/global_matcher/status`，建立健康统计和失败计数。
+2. 接入地图段命令话题：`/localization/global_matcher/load_map_command`、`/localization/global_matcher/set_map_segment_command`。
+3. 检查 `map_id`、`success`、`converged`、`inlier_ratio`、`inlier_rmse` 和初值误差，决定是否允许结果进入 pose_fusion。
+4. 后续实现 trigger service 后，再实现周期触发、退化触发、冷却和 pending 锁。
 
-验收：global_matcher 能被 manager 周期触发，结果进入 pose_fusion 后最终轨迹贴合地图。
+验收：manager 能监控 global_matcher 结果，地图段切换后只接受当前 `map_id` 的匹配结果；接入 trigger service 后，能周期触发并使最终轨迹贴合地图。
 
 ### P4：relocalization 编排和验收
 
