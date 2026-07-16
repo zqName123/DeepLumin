@@ -2,6 +2,16 @@ frames:
   map: map
   odom: odom
   base_link: base_link
+  lidar: lidar_link
+
+# 传感器安装外参，约定 T_base_sensor：sensor 坐标 -> base_link。
+# 当 source_cloud_frame=lidar 或输入点云 header.frame_id 为 lidar 时使用。
+extrinsics:
+  base_to_lidar:
+    translation: [0.0, 0.0, 0.0]
+    rotation: [1.0, 0.0, 0.0,
+               0.0, 1.0, 0.0,
+               0.0, 0.0, 1.0]
 
 topics:
   source_cloud: /localization/cloud_registered
@@ -40,6 +50,8 @@ runtime:
   viz_test_mode: false
   # DeepLumin slam_odometry publishes /localization/cloud_registered in odom frame.
   source_cloud_is_odom_frame: true
+  # auto: use cloud header.frame_id when source_cloud_is_odom_frame=false; valid values: auto, odom, base_link, lidar.
+  source_cloud_frame: auto
   match_rate: 1.0
   max_cloud_age: 1.0
   max_path_size: 3000

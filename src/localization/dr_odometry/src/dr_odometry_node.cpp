@@ -32,6 +32,7 @@ class DrOdometryNode {
     config_ = dr_odometry_ros::loadDrConfig(pnh_);
     topics_ = dr_odometry_ros::loadTopicConfig(pnh_);
     frames_ = dr_odometry_ros::loadFrameConfig(pnh_);
+    extrinsics_ = dr_odometry_ros::loadExtrinsicConfig(pnh_);
     pnh_.param<bool>("can_speed_is_kmh", can_speed_is_kmh_, true);
     eskf_.initialize(config_);
 
@@ -64,14 +65,18 @@ class DrOdometryNode {
   }
 
  private:
-  void onImu(const sensor_msgs::Imu::ConstPtr& msg) { eskf_.feedImu(dr_odometry_ros::fromRos(*msg)); }
+  void onImu(const sensor_msgs::Imu::ConstPtr& msg) {
+    eskf_.feedImu(dr_odometry_ros::transformImuToBase(dr_odometry_ros::fromRos(*msg),
+                                                      extrinsics_.base_to_imu));
+  }
 
   void onCan(const deeplumin_msgs::CanReceiveInfo::ConstPtr& msg) {
     eskf_.feedCan(dr_odometry_ros::fromRos(*msg, can_speed_is_kmh_));
   }
 
   void onGnss(const deeplumin_msgs::Gpchc::ConstPtr& msg) {
-    eskf_.feedGnss(dr_odometry_ros::fromRos(*msg));
+    eskf_.feedGnss(dr_odometry_ros::transformGnssToBase(dr_odometry_ros::fromRos(*msg),
+                                                        extrinsics_.base_to_gnss));
   }
 
   /**
@@ -109,6 +114,7 @@ class DrOdometryNode {
   dr_odometry::DrConfig config_;
   dr_odometry_ros::TopicConfig topics_;
   dr_odometry_ros::FrameConfig frames_;
+  dr_odometry_ros::ExtrinsicConfig extrinsics_;
   dr_odometry::DrEskf eskf_;
   bool can_speed_is_kmh_ = true;
   ros::Subscriber imu_sub_;

@@ -153,4 +153,18 @@ struct FrameConfig {
     std::string lidar = "lidar_link";
 };
 
+/**
+ * 传感器安装外参，约定 T_base_sensor：把 sensor 坐标中的点/向量变换到 base_link。
+ * 默认单位外参，使当前数据集和历史输出保持不变。
+ */
+struct SensorExtrinsic {
+    Vec3d translation = Vec3d::Zero();
+    Mat3d rotation = Mat3d::Identity();
+};
+
+struct ExtrinsicConfig {
+    SensorExtrinsic base_to_imu;
+    SensorExtrinsic base_to_lidar;
+};
+
 }  // namespace localization

@@ -1,7 +1,39 @@
 #include <relocalization/ros/param_loader.hpp>
 
+#include <vector>
+
 namespace relocalization_ros {
 namespace {
+
+
+bool loadVector3(ros::NodeHandle& pnh, const std::string& key, Eigen::Vector3d* value) {
+  std::vector<double> flat;
+  if (!pnh.getParam(key, flat) || flat.size() != 3) {
+    return false;
+  }
+  *value = Eigen::Vector3d(flat[0], flat[1], flat[2]);
+  return true;
+}
+
+bool loadMatrix3(ros::NodeHandle& pnh, const std::string& key, Eigen::Matrix3d* value) {
+  std::vector<double> flat;
+  if (!pnh.getParam(key, flat) || flat.size() != 9) {
+    return false;
+  }
+  *value << flat[0], flat[1], flat[2], flat[3], flat[4], flat[5], flat[6], flat[7], flat[8];
+  return true;
+}
+
+Eigen::Matrix4d loadExtrinsic(ros::NodeHandle& pnh, const std::string& key) {
+  Eigen::Vector3d translation = Eigen::Vector3d::Zero();
+  Eigen::Matrix3d rotation = Eigen::Matrix3d::Identity();
+  loadVector3(pnh, key + "/translation", &translation);
+  loadMatrix3(pnh, key + "/rotation", &rotation);
+  Eigen::Matrix4d transform = Eigen::Matrix4d::Identity();
+  transform.block<3, 3>(0, 0) = rotation;
+  transform.block<3, 1>(0, 3) = translation;
+  return transform;
+}
 
 void loadCommonCoreConfig(ros::NodeHandle& pnh, relocalization::RelocalizationCoreConfig& cfg) {
   pnh.param<std::string>("descriptor/type", cfg.descriptor_type, "scan_context");
@@ -96,6 +128,9 @@ OnlineRelocalizationConfig loadOnlineRelocalizationConfig(ros::NodeHandle& pnh) 
   pnh.param<std::string>("lidar_topic", cfg.lidar_topic, "/ouster/points");
   pnh.param<std::string>("frame_id", cfg.frame_id, "map");
   pnh.param<std::string>("child_frame_id", cfg.child_frame_id, "base_link");
+  pnh.param<std::string>("lidar_frame_id", cfg.lidar_frame_id, "lidar_link");
+  pnh.param<std::string>("query_cloud_frame", cfg.query_cloud_frame, "auto");
+  cfg.base_to_lidar = loadExtrinsic(pnh, "extrinsics/base_to_lidar");
   pnh.param<std::string>("result_topic", cfg.result_topic, "/localization/relocalization/result");
   pnh.param<std::string>("map_id", cfg.map_id, "default");
   pnh.param<std::string>("method", cfg.method, "scan_context_gicp");

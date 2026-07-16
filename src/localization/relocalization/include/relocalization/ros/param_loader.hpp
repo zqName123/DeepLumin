@@ -5,6 +5,8 @@
 
 #include <ros/ros.h>
 
+#include <Eigen/Dense>
+
 namespace relocalization_ros {
 
 struct BagEvalConfig {
@@ -33,6 +35,9 @@ struct OnlineRelocalizationConfig {
   std::string lidar_topic = "/ouster/points";
   std::string frame_id = "map";
   std::string child_frame_id = "base_link";
+  std::string lidar_frame_id = "lidar_link";
+  std::string query_cloud_frame = "auto";
+  Eigen::Matrix4d base_to_lidar = Eigen::Matrix4d::Identity();
   std::string result_topic = "/localization/relocalization/result";
   std::string map_id = "default";
   std::string method = "scan_context_gicp";

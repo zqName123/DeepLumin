@@ -13,11 +13,50 @@
 #include <cstdint>
 #include <string>
 
+
+namespace {
+
+Eigen::Matrix4d sensorExtrinsicToMatrix(const localization::SensorExtrinsic& ext) {
+    Eigen::Matrix4d t = Eigen::Matrix4d::Identity();
+    t.block<3, 3>(0, 0) = ext.rotation;
+    t.block<3, 1>(0, 3) = ext.translation;
+    return t;
+}
+
+Eigen::Matrix4d odomToMatrix(const localization::OdomResult& odom) {
+    Eigen::Matrix4d t = Eigen::Matrix4d::Identity();
+    t.block<3, 3>(0, 0) = odom.orientation.normalized().toRotationMatrix();
+    t.block<3, 1>(0, 3) = odom.position;
+    return t;
+}
+
+localization::OdomResult matrixToOdom(const localization::OdomResult& src,
+                                      const Eigen::Matrix4d& transform) {
+    localization::OdomResult out = src;
+    out.position = transform.block<3, 1>(0, 3);
+    out.orientation = localization::Quatd(transform.block<3, 3>(0, 0)).normalized();
+    return out;
+}
+
+localization::OdomResult transformSensorOdomToBase(
+    const localization::OdomResult& sensor_odom,
+    const localization::SensorExtrinsic& base_to_sensor) {
+    if (!sensor_odom.valid) {
+        return sensor_odom;
+    }
+    const Eigen::Matrix4d t_odom_sensor = odomToMatrix(sensor_odom);
+    const Eigen::Matrix4d t_base_sensor = sensorExtrinsicToMatrix(base_to_sensor);
+    return matrixToOdom(sensor_odom, t_odom_sensor * t_base_sensor.inverse());
+}
+
+}  // namespace
+
 class SlamOdometryNode {
 public:
     explicit SlamOdometryNode(ros::NodeHandle& nh) : nh_(nh), pnh_("~") {
         localization::registerDefaultPlugins();
         frames_ = localization_ros::loadFrameConfig(pnh_);
+        extrinsics_ = localization_ros::loadExtrinsicConfig(pnh_);
         sensor_topics_ = localization_ros::loadSensorTopicsConfig(pnh_);
         output_topics_ = localization_ros::loadOutputTopicsConfig(pnh_);
         slam_config_ = localization_ros::loadSlamConfig(pnh_);
@@ -75,7 +114,8 @@ public:
             return;
         }
 
-        const auto odom = slam_->getOdometry();
+        const auto odom_sensor = slam_->getOdometry();
+        const auto odom = transformSensorOdomToBase(odom_sensor, extrinsics_.base_to_imu);
         updateNoPointTimeStartupState(odom);
         const auto local_map = slam_->getLocalMap();
         const auto current_scan = slam_->getCurrentScan();
@@ -98,8 +138,11 @@ public:
             scan_world.frame_id = frames_.odom;
             scan_world.cloud.reset(new localization::PointCloud());
             scan_world.cloud->reserve(current_scan.cloud->size());
-            const Eigen::Matrix3d R = odom.orientation.toRotationMatrix();
-            const Eigen::Vector3d t = odom.position;
+            const Eigen::Matrix4d t_odom_base = odomToMatrix(odom);
+            const Eigen::Matrix4d t_base_lidar = sensorExtrinsicToMatrix(extrinsics_.base_to_lidar);
+            const Eigen::Matrix4d t_odom_lidar = t_odom_base * t_base_lidar;
+            const Eigen::Matrix3d R = t_odom_lidar.block<3, 3>(0, 0);
+            const Eigen::Vector3d t = t_odom_lidar.block<3, 1>(0, 3);
             for (const auto& pt : current_scan.cloud->points) {
                 const Eigen::Vector3d pw = R * Eigen::Vector3d(pt.x, pt.y, pt.z) + t;
                 localization::PointType out = pt;
@@ -234,6 +277,7 @@ private:
     ros::NodeHandle nh_;
     ros::NodeHandle pnh_;
     localization::FrameConfig frames_;
+    localization::ExtrinsicConfig extrinsics_;
     localization::SlamConfig slam_config_;
     bool publish_tf_ = true;
     bool enable_imu_warmup_ = true;

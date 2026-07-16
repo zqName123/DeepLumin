@@ -18,6 +18,7 @@
 #include <ros/ros.h>
 #include <sensor_msgs/Imu.h>
 
+#include <Eigen/Dense>
 #include <string>
 
 namespace dr_odometry_ros {
@@ -41,15 +42,37 @@ struct FrameConfig {
   std::string can = "local1";
 };
 
+/**
+ * @brief 传感器到车体的安装外参。
+ *
+ * 约定：base_to_sensor 表示 T_base_sensor，即“传感器坐标表达的点/向量”
+ * 变换到 base_link 坐标系。默认单位外参，保持现有行为不变。
+ */
+struct SensorExtrinsic {
+  dr_odometry::Vec3d translation = dr_odometry::Vec3d::Zero();
+  dr_odometry::Mat3d rotation = dr_odometry::Mat3d::Identity();
+};
+
+struct ExtrinsicConfig {
+  SensorExtrinsic base_to_imu;
+  SensorExtrinsic base_to_gnss;
+  SensorExtrinsic base_to_can;
+};
+
 /** @brief 从参数服务器加载 dr/* → DrConfig。 */
 dr_odometry::DrConfig loadDrConfig(ros::NodeHandle& nh);
 /** @brief 从参数服务器加载 topics/*。 */
 TopicConfig loadTopicConfig(ros::NodeHandle& nh);
 /** @brief 从参数服务器加载 frames/*。 */
 FrameConfig loadFrameConfig(ros::NodeHandle& nh);
+/** @brief 从参数服务器加载 extrinsics/*。 */
+ExtrinsicConfig loadExtrinsicConfig(ros::NodeHandle& nh);
 
 /** @brief sensor_msgs/Imu → 内部 ImuData（时间戳、gyro、accel）。 */
 dr_odometry::ImuData fromRos(const sensor_msgs::Imu& msg);
+/** @brief 将 IMU 角速度/加速度从 imu 坐标系转到 base_link 坐标系。 */
+dr_odometry::ImuData transformImuToBase(const dr_odometry::ImuData& data,
+                                        const SensorExtrinsic& base_to_imu);
 
 /**
  * @brief CanReceiveInfo → CanData。
@@ -63,6 +86,9 @@ dr_odometry::CanData fromRos(const deeplumin_msgs::CanReceiveInfo& msg, bool spe
  * 并填充 heading/position/velocity 有效标志供滤波门控。
  */
 dr_odometry::GnssData fromRos(const deeplumin_msgs::Gpchc& msg);
+/** @brief 将 GNSS 姿态观测按安装 yaw 偏置转成 base_link 航向。 */
+dr_odometry::GnssData transformGnssToBase(const dr_odometry::GnssData& data,
+                                          const SensorExtrinsic& base_to_gnss);
 
 /** @brief 内部 OdomResult → nav_msgs/Odometry（含 6x6 pose 协方差）。 */
 nav_msgs::Odometry toRosOdom(const dr_odometry::OdomResult& odom,

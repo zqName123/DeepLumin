@@ -7,6 +7,7 @@
 #include "dr_odometry/core/math_utils.hpp"
 
 #include <cmath>
+#include <vector>
 
 namespace dr_odometry_ros {
 namespace {
@@ -26,6 +27,35 @@ double headingDegToYawRad(double heading_deg) {
 /** @brief 粗判 GNSS 解状态：status>0 视为可用（具体枚举依华测/驱动定义）。 */
 bool gnssStatusValid(int status) {
   return status > 0;
+}
+
+bool loadVector3(ros::NodeHandle& nh, const std::string& key, dr_odometry::Vec3d& value) {
+  std::vector<double> flat;
+  if (!nh.getParam(key, flat) || flat.size() != 3) {
+    return false;
+  }
+  value << flat[0], flat[1], flat[2];
+  return true;
+}
+
+bool loadMatrix3(ros::NodeHandle& nh, const std::string& key, dr_odometry::Mat3d& value) {
+  std::vector<double> flat;
+  if (!nh.getParam(key, flat) || flat.size() != 9) {
+    return false;
+  }
+  value << flat[0], flat[1], flat[2], flat[3], flat[4], flat[5], flat[6], flat[7], flat[8];
+  return true;
+}
+
+SensorExtrinsic loadSensorExtrinsic(ros::NodeHandle& nh, const std::string& key) {
+  SensorExtrinsic ext;
+  loadVector3(nh, key + "/translation", ext.translation);
+  loadMatrix3(nh, key + "/rotation", ext.rotation);
+  return ext;
+}
+
+double yawFromRotation(const dr_odometry::Mat3d& rotation) {
+  return std::atan2(rotation(1, 0), rotation(0, 0));
 }
 }  // namespace
 
@@ -80,6 +110,14 @@ FrameConfig loadFrameConfig(ros::NodeHandle& nh) {
   return cfg;
 }
 
+ExtrinsicConfig loadExtrinsicConfig(ros::NodeHandle& nh) {
+  ExtrinsicConfig cfg;
+  cfg.base_to_imu = loadSensorExtrinsic(nh, "extrinsics/base_to_imu");
+  cfg.base_to_gnss = loadSensorExtrinsic(nh, "extrinsics/base_to_gnss");
+  cfg.base_to_can = loadSensorExtrinsic(nh, "extrinsics/base_to_can");
+  return cfg;
+}
+
 dr_odometry::ImuData fromRos(const sensor_msgs::Imu& msg) {
   dr_odometry::ImuData data;
   data.timestamp = msg.header.stamp.toSec();
@@ -88,6 +126,14 @@ dr_odometry::ImuData fromRos(const sensor_msgs::Imu& msg) {
   data.accel = dr_odometry::Vec3d(msg.linear_acceleration.x, msg.linear_acceleration.y,
                                   msg.linear_acceleration.z);
   return data;
+}
+
+dr_odometry::ImuData transformImuToBase(const dr_odometry::ImuData& data,
+                                        const SensorExtrinsic& base_to_imu) {
+  dr_odometry::ImuData out = data;
+  out.gyro = base_to_imu.rotation * data.gyro;
+  out.accel = base_to_imu.rotation * data.accel;
+  return out;
 }
 
 dr_odometry::CanData fromRos(const deeplumin_msgs::CanReceiveInfo& msg, bool speed_is_kmh) {
@@ -125,6 +171,14 @@ dr_odometry::GnssData fromRos(const deeplumin_msgs::Gpchc& msg) {
   data.velocity_valid = gnssStatusValid(msg.status) && std::isfinite(msg.ve) &&
                         std::isfinite(msg.vn) && std::isfinite(msg.vu);
   return data;
+}
+
+dr_odometry::GnssData transformGnssToBase(const dr_odometry::GnssData& data,
+                                          const SensorExtrinsic& base_to_gnss) {
+  dr_odometry::GnssData out = data;
+  const double sensor_yaw_in_base = yawFromRotation(base_to_gnss.rotation);
+  out.heading_rad = dr_odometry::math::normalizeAngle(data.heading_rad - sensor_yaw_in_base);
+  return out;
 }
 
 nav_msgs::Odometry toRosOdom(const dr_odometry::OdomResult& odom,

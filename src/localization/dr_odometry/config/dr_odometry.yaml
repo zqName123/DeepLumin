@@ -22,6 +22,27 @@ frames:
 
 # ---------- 话题（topics）----------
 # 输入：IMU / CAN / GNSS；输出：DR 里程计 / 状态 / 轨迹
+
+# ---------- 传感器安装外参（extrinsics）----------
+# 约定：base_to_sensor 表示 T_base_sensor，即把 sensor 坐标中的点/向量变换到 base_link。
+# 默认单位外参保持当前行为；车辆传感器不与 base_link 重合时只需修改这里。
+extrinsics:
+  base_to_imu:
+    translation: [0.0, 0.0, 0.0]
+    rotation: [1.0, 0.0, 0.0,
+               0.0, 1.0, 0.0,
+               0.0, 0.0, 1.0]
+  base_to_gnss:
+    translation: [0.0, 0.0, 0.0]
+    rotation: [1.0, 0.0, 0.0,
+               0.0, 1.0, 0.0,
+               0.0, 0.0, 1.0]
+  base_to_can:
+    translation: [0.0, 0.0, 0.0]
+    rotation: [1.0, 0.0, 0.0,
+               0.0, 1.0, 0.0,
+               0.0, 0.0, 1.0]
+
 topics:
   imu: "/ouster/imu"                    # sensor_msgs/Imu
   can: "/can_receive_info"              # deeplumin_msgs/CanReceiveInfo

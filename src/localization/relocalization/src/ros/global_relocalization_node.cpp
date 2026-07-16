@@ -119,6 +119,8 @@ class GlobalRelocalizationNode {
     ROS_INFO_STREAM("result_topic=" << config_.result_topic
                     << " frame_id=" << config_.frame_id
                     << " child_frame_id=" << config_.child_frame_id
+                    << " lidar_frame_id=" << config_.lidar_frame_id
+                    << " query_cloud_frame=" << config_.query_cloud_frame
                     << " map_id=" << config_.map_id
                     << " method=" << config_.method);
     ROS_INFO_STREAM("query_frame.rotate_xy_y_negx=" << (config_.query_rotate_xy_y_negx ? "true" : "false")
@@ -135,6 +137,12 @@ class GlobalRelocalizationNode {
     relocalization::CloudPtr query_local = std::abs(query_frame_yaw_rad) > 1e-9
         ? relocalization::rotateCloudYaw(raw, query_frame_yaw_rad)
         : raw;
+    const std::string source_mode = (config_.query_cloud_frame == "auto")
+        ? msg->header.frame_id
+        : config_.query_cloud_frame;
+    if (source_mode == "lidar" || source_mode == config_.lidar_frame_id) {
+      query_local = relocalization::transformCloud(query_local, config_.base_to_lidar);
+    }
     relocalization::CloudPtr source = relocalization::preprocessCloud(query_local,
                                                                       config_.core.database.preprocess);
     const auto query = core_.relocalize(source);

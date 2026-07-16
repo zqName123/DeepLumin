@@ -127,6 +127,40 @@ CloudPtr downsample(const CloudConstPtr& input, double leaf) {
   return output;
 }
 
+
+bool loadVector3(ros::NodeHandle& nh, const std::string& key, Eigen::Vector3f* value) {
+  std::vector<double> flat;
+  if (!nh.getParam(key, flat) || flat.size() != 3) {
+    return false;
+  }
+  *value = Eigen::Vector3f(static_cast<float>(flat[0]),
+                          static_cast<float>(flat[1]),
+                          static_cast<float>(flat[2]));
+  return true;
+}
+
+bool loadMatrix3(ros::NodeHandle& nh, const std::string& key, Eigen::Matrix3f* value) {
+  std::vector<double> flat;
+  if (!nh.getParam(key, flat) || flat.size() != 9) {
+    return false;
+  }
+  *value << static_cast<float>(flat[0]), static_cast<float>(flat[1]), static_cast<float>(flat[2]),
+            static_cast<float>(flat[3]), static_cast<float>(flat[4]), static_cast<float>(flat[5]),
+            static_cast<float>(flat[6]), static_cast<float>(flat[7]), static_cast<float>(flat[8]);
+  return true;
+}
+
+Eigen::Matrix4f loadExtrinsic(ros::NodeHandle& nh, const std::string& key) {
+  Eigen::Vector3f translation = Eigen::Vector3f::Zero();
+  Eigen::Matrix3f rotation = Eigen::Matrix3f::Identity();
+  loadVector3(nh, key + "/translation", &translation);
+  loadMatrix3(nh, key + "/rotation", &rotation);
+  Eigen::Matrix4f transform = Eigen::Matrix4f::Identity();
+  transform.block<3, 3>(0, 0) = rotation;
+  transform.block<3, 1>(0, 3) = translation;
+  return transform;
+}
+
 CloudPtr removeInvalid(const CloudConstPtr& input) {
   CloudPtr output(new CloudT());
   if (!input) {
@@ -178,6 +212,8 @@ class GlobalMatcherNode {
     pnh_.param<std::string>("frames/map", map_frame_, "map");
     pnh_.param<std::string>("frames/odom", odom_frame_, "odom");
     pnh_.param<std::string>("frames/base_link", base_frame_, "base_link");
+    pnh_.param<std::string>("frames/lidar", lidar_frame_, "lidar_link");
+    base_to_lidar_ = loadExtrinsic(pnh_, "extrinsics/base_to_lidar");
 
     pnh_.param<std::string>("topics/source_cloud", source_cloud_topic_, "/localization/cloud_registered");
     pnh_.param<std::string>("topics/initial_pose", initial_pose_topic_, "/localization/fused_odom");
@@ -202,6 +238,7 @@ class GlobalMatcherNode {
     pnh_.param<bool>("runtime/auto_match", auto_match_, true);
     pnh_.param<bool>("runtime/viz_test_mode", viz_test_mode_, false);
     pnh_.param<bool>("runtime/source_cloud_is_odom_frame", source_cloud_is_odom_frame_, true);
+    pnh_.param<std::string>("runtime/source_cloud_frame", source_cloud_frame_, "auto");
     pnh_.param<double>("runtime/match_rate", match_rate_, 1.0);
     pnh_.param<double>("runtime/max_cloud_age", max_cloud_age_, 1.0);
     pnh_.param<int>("runtime/max_path_size", max_path_size_, 3000);
@@ -432,6 +469,7 @@ class GlobalMatcherNode {
     Eigen::Matrix4f source_base = Eigen::Matrix4f::Identity();
     bool have_initial = false;
     bool have_source_odom = false;
+    std::string source_frame;
 
     {
       std::lock_guard<std::mutex> lock(mutex_);
@@ -441,6 +479,7 @@ class GlobalMatcherNode {
       source_base = latest_source_base_;
       have_initial = have_initial_map_base_;
       have_source_odom = have_source_odom_;
+      source_frame = latest_source_frame_;
     }
 
     if (!global_map_ || global_map_->empty()) {
@@ -462,7 +501,10 @@ class GlobalMatcherNode {
     }
 
     Eigen::Matrix4f initial_map_source = Eigen::Matrix4f::Identity();
-    if (source_cloud_is_odom_frame_) {
+    const std::string source_mode = (source_cloud_frame_ == "auto") ? source_frame : source_cloud_frame_;
+    const bool source_is_odom = source_cloud_is_odom_frame_ || source_mode == "odom" || source_mode == odom_frame_;
+    const bool source_is_lidar = source_mode == "lidar" || source_mode == lidar_frame_;
+    if (source_is_odom) {
       if (have_initial && have_source_odom) {
         initial_map_source = initial_map_base * source_base.inverse();
       } else if (have_initial) {
@@ -472,9 +514,12 @@ class GlobalMatcherNode {
         initial_map_source = Eigen::Matrix4f::Identity();
         ROS_WARN_THROTTLE(2.0, "[global_matcher] no initial pose, using identity map->odom guess");
       }
+    } else if (source_is_lidar) {
+      source_base = base_to_lidar_.inverse();
+      initial_map_source = (have_initial ? initial_map_base : Eigen::Matrix4f::Identity()) * base_to_lidar_;
     } else {
-      initial_map_source = have_initial ? initial_map_base : Eigen::Matrix4f::Identity();
       source_base = Eigen::Matrix4f::Identity();
+      initial_map_source = have_initial ? initial_map_base : Eigen::Matrix4f::Identity();
     }
     const Eigen::Matrix4f initial_map_base_for_crop = initial_map_source * source_base;
 
@@ -838,6 +883,7 @@ class GlobalMatcherNode {
   std::string map_frame_;
   std::string odom_frame_;
   std::string base_frame_;
+  std::string lidar_frame_;
   std::string source_cloud_topic_;
   std::string initial_pose_topic_;
   std::string source_odom_topic_;
@@ -856,10 +902,12 @@ class GlobalMatcherNode {
   std::string load_map_command_topic_;
   std::string set_map_segment_command_topic_;
   std::string matcher_type_;
+  std::string source_cloud_frame_ = "auto";
 
   bool auto_match_ = true;
   bool viz_test_mode_ = false;
   bool source_cloud_is_odom_frame_ = true;
+  Eigen::Matrix4f base_to_lidar_ = Eigen::Matrix4f::Identity();
   double match_rate_ = 1.0;
   double max_cloud_age_ = 1.0;
   int max_path_size_ = 3000;

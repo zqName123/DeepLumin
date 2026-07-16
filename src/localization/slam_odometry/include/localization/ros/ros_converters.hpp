@@ -13,6 +13,7 @@
 namespace localization_ros {
 
 localization::FrameConfig loadFrameConfig(ros::NodeHandle& nh);
+localization::ExtrinsicConfig loadExtrinsicConfig(ros::NodeHandle& nh);
 localization::SlamConfig loadSlamConfig(ros::NodeHandle& nh);
 
 localization::ImuData fromRos(const sensor_msgs::Imu& msg);

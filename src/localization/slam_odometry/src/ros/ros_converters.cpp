@@ -48,6 +48,31 @@ void loadExtrinsicT(ros::NodeHandle& nh, localization::Vec3d& T) {
     }
 }
 
+bool loadVector3(ros::NodeHandle& nh, const std::string& key, localization::Vec3d& value) {
+    std::vector<double> flat;
+    if (!nh.getParam(key, flat) || flat.size() != 3) {
+        return false;
+    }
+    value << flat[0], flat[1], flat[2];
+    return true;
+}
+
+bool loadMatrix3(ros::NodeHandle& nh, const std::string& key, localization::Mat3d& value) {
+    std::vector<double> flat;
+    if (!nh.getParam(key, flat) || flat.size() != 9) {
+        return false;
+    }
+    value << flat[0], flat[1], flat[2], flat[3], flat[4], flat[5], flat[6], flat[7], flat[8];
+    return true;
+}
+
+localization::SensorExtrinsic loadSensorExtrinsic(ros::NodeHandle& nh, const std::string& key) {
+    localization::SensorExtrinsic ext;
+    loadVector3(nh, key + "/translation", ext.translation);
+    loadMatrix3(nh, key + "/rotation", ext.rotation);
+    return ext;
+}
+
 }  // namespace
 
 localization::FrameConfig loadFrameConfig(ros::NodeHandle& nh) {
@@ -57,6 +82,13 @@ localization::FrameConfig loadFrameConfig(ros::NodeHandle& nh) {
     nh.param<std::string>("localization/frames/base_link", cfg.base_link, "base_link");
     nh.param<std::string>("localization/frames/imu", cfg.imu, "imu_link");
     nh.param<std::string>("localization/frames/lidar", cfg.lidar, "lidar_link");
+    return cfg;
+}
+
+localization::ExtrinsicConfig loadExtrinsicConfig(ros::NodeHandle& nh) {
+    localization::ExtrinsicConfig cfg;
+    cfg.base_to_imu = loadSensorExtrinsic(nh, "localization/extrinsics/base_to_imu");
+    cfg.base_to_lidar = loadSensorExtrinsic(nh, "localization/extrinsics/base_to_lidar");
     return cfg;
 }
 

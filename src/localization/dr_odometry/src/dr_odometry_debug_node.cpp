@@ -42,6 +42,7 @@ class DrOdometryDebugNode {
     config_ = dr_odometry_ros::loadDrConfig(pnh_);
     topics_ = dr_odometry_ros::loadTopicConfig(pnh_);
     frames_ = dr_odometry_ros::loadFrameConfig(pnh_);
+    extrinsics_ = dr_odometry_ros::loadExtrinsicConfig(pnh_);
 
     // ---- 调试覆盖：launch 写入的 debug/* 优先于 yaml 的 dr/* ----
     // use_imu_ 只决定是否订阅 IMU，不写进 DrConfig（滤波侧默认总假设有 IMU 预测）
@@ -94,7 +95,10 @@ class DrOdometryDebugNode {
 
  private:
   /** IMU：转内部 ImuData 后喂滤波；首帧负责 initialize，后续走 predict + 观测更新。 */
-  void onImu(const sensor_msgs::Imu::ConstPtr& msg) { eskf_.feedImu(dr_odometry_ros::fromRos(*msg)); }
+  void onImu(const sensor_msgs::Imu::ConstPtr& msg) {
+    eskf_.feedImu(dr_odometry_ros::transformImuToBase(dr_odometry_ros::fromRos(*msg),
+                                                      extrinsics_.base_to_imu));
+  }
 
   /** CAN：车速（含档位方向）写入滤波缓存，真正修正在 IMU 驱动的 correctWheel。 */
   void onCan(const deeplumin_msgs::CanReceiveInfo::ConstPtr& msg) {
@@ -102,7 +106,10 @@ class DrOdometryDebugNode {
   }
 
   /** GNSS：缓存观测；首帧有效位置可定 ENU 原点，有效航向可预置 yaw。 */
-  void onGnss(const deeplumin_msgs::Gpchc::ConstPtr& msg) { eskf_.feedGnss(dr_odometry_ros::fromRos(*msg)); }
+  void onGnss(const deeplumin_msgs::Gpchc::ConstPtr& msg) {
+    eskf_.feedGnss(dr_odometry_ros::transformGnssToBase(dr_odometry_ros::fromRos(*msg),
+                                                        extrinsics_.base_to_gnss));
+  }
 
   /**
    * @brief 发布当前 DR 结果。
@@ -142,6 +149,7 @@ class DrOdometryDebugNode {
   dr_odometry::DrConfig config_;           ///< ESKF 与发布相关配置（含被 debug 覆盖后的开关）
   dr_odometry_ros::TopicConfig topics_;    ///< 输入输出话题名
   dr_odometry_ros::FrameConfig frames_;    ///< 坐标系名
+  dr_odometry_ros::ExtrinsicConfig extrinsics_;  ///< 传感器到 base_link 的安装外参
   dr_odometry::DrEskf eskf_;               ///< 误差状态卡尔曼滤波核心
 
   bool use_imu_ = true;           ///< 调试：是否订阅 IMU

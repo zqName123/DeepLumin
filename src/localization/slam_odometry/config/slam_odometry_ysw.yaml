@@ -10,6 +10,21 @@ localization:
     imu: "imu_link"
     lidar: "lidar_link"
 
+  # 传感器安装外参，约定 T_base_sensor：sensor 坐标 -> base_link。
+  # 注意：slam/faster_lio/mapping/extrinsic_* 是 Faster-LIO 内部 IMU-LiDAR 外参；
+  # 这里用于模块对外发布 odom->base_link 和 cloud_registered。默认单位保持现有效果。
+  extrinsics:
+    base_to_imu:
+      translation: [0.0, 0.0, 0.0]
+      rotation: [1.0, 0.0, 0.0,
+                 0.0, 1.0, 0.0,
+                 0.0, 0.0, 1.0]
+    base_to_lidar:
+      translation: [0.0, 0.0, 0.0]
+      rotation: [1.0, 0.0, 0.0,
+                 0.0, 1.0, 0.0,
+                 0.0, 0.0, 1.0]
+
 # 传感器输入（与 ysw_loc faster-lio common 段对齐）
 sensors:
   imu_topic: "/ouster/imu"
