@@ -5,6 +5,8 @@ set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
+
+
 find_package(deeplumin_cmake REQUIRED)
 
 find_package(catkin REQUIRED COMPONENTS
@@ -54,9 +56,21 @@ target_include_directories(relocalization_core PUBLIC
   ${EIGEN3_INCLUDE_DIRS}
 )
 
+target_compile_options(relocalization_core PRIVATE
+  -O3
+  -DNDEBUG
+)
+
+
 add_executable(global_relocalization_node src/ros/global_relocalization_node.cpp)
 add_dependencies(global_relocalization_node ${catkin_EXPORTED_TARGETS})
 target_link_libraries(global_relocalization_node relocalization_core ${catkin_LIBRARIES} ${PCL_LIBRARIES})
+
+target_compile_options(global_relocalization_node PRIVATE
+  -O3
+  -DNDEBUG
+)
+
 
 add_executable(bag_eval_node src/ros/bag_eval_node.cpp)
 add_dependencies(bag_eval_node ${catkin_EXPORTED_TARGETS})

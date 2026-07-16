@@ -32,6 +32,10 @@ struct OnlineRelocalizationConfig {
   relocalization::RelocalizationCoreConfig core;
   std::string lidar_topic = "/ouster/points";
   std::string frame_id = "map";
+  std::string child_frame_id = "base_link";
+  std::string result_topic = "/localization/relocalization/result";
+  std::string map_id = "default";
+  std::string method = "scan_context_gicp";
   bool query_rotate_xy_y_negx = false;
   double query_frame_yaw_deg = 0.0;
 };

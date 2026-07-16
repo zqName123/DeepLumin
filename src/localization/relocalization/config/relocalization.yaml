@@ -47,6 +47,10 @@ log_topk_candidates: true     # 打印每个 query 的 SC Top-K 候选
 # ---------- 在线重定位 / 评估通用 ----------
 lidar_topic: "/ouster/points"
 frame_id: "map"
+child_frame_id: "base_link"
+result_topic: "/localization/relocalization/result"
+map_id: "default"
+method: "scan_context_gicp"
 top_k: 20
 eval_stride: 100
 max_queries: 30

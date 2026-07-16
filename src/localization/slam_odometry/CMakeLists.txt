@@ -4,6 +4,13 @@ project(slam_odometry)
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
+if(NOT CMAKE_BUILD_TYPE)
+    set(CMAKE_BUILD_TYPE "" CACHE STRING "Build type" FORCE)
+endif()
+
+
+add_compile_options(-ffp-contract=off) # 浮点融合关闭，保证精度
+
 find_package(deeplumin_cmake REQUIRED)
 
 find_package(catkin REQUIRED COMPONENTS
@@ -41,6 +48,7 @@ include_directories(
 add_library(slam_odometry_core
   src/slam/faster_lio_impl.cpp
   src/slam/laser_mapping_core.cpp
+  src/factory/factory_registry.cpp
   src/ros/pointcloud_preprocess.cpp
   src/ros/ros_converters.cpp
   src/ros/sensor_topics.cpp
@@ -48,7 +56,12 @@ add_library(slam_odometry_core
   ${FASTER_LIO_ROOT}/src/utils.cc
 )
 add_dependencies(slam_odometry_core ${catkin_EXPORTED_TARGETS})
-target_compile_options(slam_odometry_core PRIVATE -pthread)
+target_compile_options(slam_odometry_core PRIVATE 
+  -pthread
+  $<$<CONFIG:Release>:-O2>
+  $<$<CONFIG:Release>:-fno-fast-math>
+  $<$<CONFIG:Release>:-ffp-contract=off>
+)
 target_link_libraries(slam_odometry_core
   ${catkin_LIBRARIES}
   ${PCL_LIBRARIES}

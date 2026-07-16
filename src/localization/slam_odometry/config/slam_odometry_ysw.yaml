@@ -53,6 +53,18 @@ dr:
 
 slam:
   type: "faster_lio"
+  publish_tf: true
+  # auto: first LiDAR frame decides. If point time exists, use normal Faster-LIO feed.
+  # none: point cloud has no per-point time; limit processOnce during startup.
+  point_time_mode: "auto"
+  startup:
+    enable_imu_warmup: true
+    imu_warmup_duration: 1.0
+    min_imu_samples: 20
+  no_point_time:
+    startup_process_rate: 2.0
+    normal_process_rate: 10.0
+    startup_valid_frames: 20
   output_topic: "/localization/slam_odom"
   local_map_topic: "/localization/local_map"
   faster_lio:

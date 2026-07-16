@@ -16,7 +16,11 @@
       -> 候选子图构建 + GICP 精配准
       -> 发布重定位位姿
 
-  发布话题（命名空间 /global_relocalization/）：
+  标准发布话题：
+    /localization/relocalization/result : deeplumin_msgs/RelocalizationResult
+      给 localization_manager / pose_fusion 使用，语义为 map -> base_link。
+
+  兼容调试话题（命名空间 /global_relocalization/）：
     reloc_pose           : geometry_msgs/PoseStamped  重定位结果位姿 (map 坐标系)
     reloc_status         : std_msgs/String            状态字符串 (success/score/fitness 等)
     reloc_aligned_scan   : sensor_msgs/PointCloud2    GICP 对齐后的当前点云

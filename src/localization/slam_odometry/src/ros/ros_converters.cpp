@@ -129,7 +129,7 @@ localization::TimestampedPointCloud fromRosOuster(const sensor_msgs::PointCloud2
     const int plsize = static_cast<int>(pl_orig.size());
     pc.cloud->reserve(plsize);
     for (int i = 0; i < plsize; ++i) {
-        if (cfg.point_filter_num > 0 && i % cfg.point_filter_num != 0) {
+        if (i % cfg.point_filter_num != 0) {
             continue;
         }
         const auto& src = pl_orig.points[i];
@@ -154,6 +154,7 @@ localization::TimestampedPointCloud fromRosOuster(const sensor_msgs::PointCloud2
     pc.cloud->is_dense = false;
     return pc;
 }
+
 
 localization::TimestampedPointCloud fromRosLidar(const sensor_msgs::PointCloud2& msg,
                                                  const localization::SlamConfig& cfg) {

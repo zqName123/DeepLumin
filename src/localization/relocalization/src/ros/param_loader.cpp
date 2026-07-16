@@ -95,6 +95,10 @@ OnlineRelocalizationConfig loadOnlineRelocalizationConfig(ros::NodeHandle& pnh) 
   loadCommonCoreConfig(pnh, cfg.core);
   pnh.param<std::string>("lidar_topic", cfg.lidar_topic, "/ouster/points");
   pnh.param<std::string>("frame_id", cfg.frame_id, "map");
+  pnh.param<std::string>("child_frame_id", cfg.child_frame_id, "base_link");
+  pnh.param<std::string>("result_topic", cfg.result_topic, "/localization/relocalization/result");
+  pnh.param<std::string>("map_id", cfg.map_id, "default");
+  pnh.param<std::string>("method", cfg.method, "scan_context_gicp");
   pnh.param<bool>("query_frame/rotate_xy_y_negx", cfg.query_rotate_xy_y_negx, false);
   pnh.param<double>("query_frame/yaw_deg", cfg.query_frame_yaw_deg, 0.0);
   return cfg;

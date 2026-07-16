@@ -1,6 +1,8 @@
 #include <relocalization/core/relocalization_core.hpp>
 #include <relocalization/ros/param_loader.hpp>
 
+#include <deeplumin_msgs/RelocalizationResult.h>
+
 #include <geometry_msgs/PoseStamped.h>
 #include <pcl_conversions/pcl_conversions.h>
 #include <ros/ros.h>
@@ -13,20 +15,87 @@
 
 namespace {
 
-geometry_msgs::PoseStamped toPoseMsg(const Eigen::Matrix4d& tform, const std::string& frame_id) {
-  geometry_msgs::PoseStamped msg;
-  msg.header.stamp = ros::Time::now();
-  msg.header.frame_id = frame_id;
-  msg.pose.position.x = tform(0, 3);
-  msg.pose.position.y = tform(1, 3);
-  msg.pose.position.z = tform(2, 3);
+geometry_msgs::Pose matrixToPose(const Eigen::Matrix4d& tform) {
+  geometry_msgs::Pose pose;
+  pose.position.x = tform(0, 3);
+  pose.position.y = tform(1, 3);
+  pose.position.z = tform(2, 3);
   Eigen::Quaterniond q(tform.block<3, 3>(0, 0));
   q.normalize();
-  msg.pose.orientation.x = q.x();
-  msg.pose.orientation.y = q.y();
-  msg.pose.orientation.z = q.z();
-  msg.pose.orientation.w = q.w();
+  pose.orientation.x = q.x();
+  pose.orientation.y = q.y();
+  pose.orientation.z = q.z();
+  pose.orientation.w = q.w();
+  return pose;
+}
+
+geometry_msgs::PoseStamped toPoseMsg(const Eigen::Matrix4d& tform,
+                                     const std::string& frame_id,
+                                     const ros::Time& stamp) {
+  geometry_msgs::PoseStamped msg;
+  msg.header.stamp = stamp;
+  msg.header.frame_id = frame_id;
+  msg.pose = matrixToPose(tform);
   return msg;
+}
+
+void fillPoseCovariance(geometry_msgs::PoseWithCovariance& pose,
+                        const relocalization::MatchResult& result) {
+  for (double& v : pose.covariance) {
+    v = 0.0;
+  }
+  const double rmse = std::isfinite(result.inlier_rmse) ? result.inlier_rmse : 10.0;
+  const double cov_pos = std::max(0.01, rmse * rmse);
+  const double yaw_std = std::max(0.5 * M_PI / 180.0, std::abs(result.delta_yaw));
+  pose.covariance[0] = cov_pos;
+  pose.covariance[7] = cov_pos;
+  pose.covariance[14] = std::max(0.04, cov_pos);
+  pose.covariance[21] = 0.05;
+  pose.covariance[28] = 0.05;
+  pose.covariance[35] = yaw_std * yaw_std;
+}
+
+deeplumin_msgs::RelocalizationResult toResultMsg(
+    const relocalization::MatchResult& result,
+    const relocalization_ros::OnlineRelocalizationConfig& config,
+    const ros::Time& stamp,
+    const std::string& reject_reason) {
+  deeplumin_msgs::RelocalizationResult msg;
+  msg.header.stamp = stamp;
+  msg.header.frame_id = config.frame_id;
+  msg.child_frame_id = config.child_frame_id;
+  msg.pose.pose = matrixToPose(result.transform);
+  fillPoseCovariance(msg.pose, result);
+  msg.success = result.success;
+  msg.accepted = false;
+  msg.map_id = config.map_id;
+  msg.method = config.method;
+  msg.reject_reason = reject_reason;
+  msg.score = result.fitness;
+  msg.descriptor_score = result.scan_context_score;
+  msg.fitness_score = result.fitness;
+  msg.inlier_ratio = result.inlier_ratio;
+  msg.inlier_rmse = result.inlier_rmse;
+  msg.inlier_count = static_cast<uint32_t>(std::max(0, result.inlier_count));
+  msg.candidate_index = -1;
+  msg.keyframe_id = result.candidate_id;
+  msg.yaw_diff = result.delta_yaw;
+  msg.translation_diff = result.delta_translation;
+  msg.elapsed_ms = result.elapsed_ms;
+  return msg;
+}
+
+std::string rejectReason(const relocalization::MatchResult& result) {
+  if (result.success) {
+    return "";
+  }
+  if (result.candidate_id < 0) {
+    return "no_candidate";
+  }
+  if (!result.converged) {
+    return "gicp_not_converged";
+  }
+  return "quality_gate_failed";
 }
 
 }  // namespace
@@ -41,11 +110,17 @@ class GlobalRelocalizationNode {
 
     lidar_sub_ = nh_.subscribe(config_.lidar_topic, 1, &GlobalRelocalizationNode::onCloud, this);
     pose_pub_ = nh_.advertise<geometry_msgs::PoseStamped>("reloc_pose", 1, true);
+    result_pub_ = nh_.advertise<deeplumin_msgs::RelocalizationResult>(config_.result_topic, 1, true);
     status_pub_ = nh_.advertise<std_msgs::String>("reloc_status", 1, true);
     aligned_pub_ = nh_.advertise<sensor_msgs::PointCloud2>("reloc_aligned_scan", 1, true);
     target_pub_ = nh_.advertise<sensor_msgs::PointCloud2>("reloc_target_submap", 1, true);
 
     ROS_INFO_STREAM("Loaded " << core_.descriptor().size() << " descriptors");
+    ROS_INFO_STREAM("result_topic=" << config_.result_topic
+                    << " frame_id=" << config_.frame_id
+                    << " child_frame_id=" << config_.child_frame_id
+                    << " map_id=" << config_.map_id
+                    << " method=" << config_.method);
     ROS_INFO_STREAM("query_frame.rotate_xy_y_negx=" << (config_.query_rotate_xy_y_negx ? "true" : "false")
                     << " yaw_deg=" << config_.query_frame_yaw_deg);
   }
@@ -64,6 +139,8 @@ class GlobalRelocalizationNode {
                                                                       config_.core.database.preprocess);
     const auto query = core_.relocalize(source);
     const auto& result = query.match;
+    const ros::Time stamp = msg->header.stamp.isZero() ? ros::Time::now() : msg->header.stamp;
+    const std::string reject_reason = rejectReason(result);
 
     std_msgs::String status;
     std::ostringstream ss;
@@ -79,24 +156,25 @@ class GlobalRelocalizationNode {
        << " elapsed_ms=" << result.elapsed_ms;
     status.data = ss.str();
     status_pub_.publish(status);
+    result_pub_.publish(toResultMsg(result, config_, stamp, reject_reason));
 
     if (!result.success) {
       ROS_WARN_STREAM(status.data);
       return;
     }
 
-    pose_pub_.publish(toPoseMsg(result.transform, config_.frame_id));
+    pose_pub_.publish(toPoseMsg(result.transform, config_.frame_id, stamp));
     if (result.aligned && aligned_pub_.getNumSubscribers() > 0) {
       sensor_msgs::PointCloud2 out;
       pcl::toROSMsg(*result.aligned, out);
-      out.header.stamp = ros::Time::now();
+      out.header.stamp = stamp;
       out.header.frame_id = config_.frame_id;
       aligned_pub_.publish(out);
     }
     if (result.target && target_pub_.getNumSubscribers() > 0) {
       sensor_msgs::PointCloud2 out;
       pcl::toROSMsg(*result.target, out);
-      out.header.stamp = ros::Time::now();
+      out.header.stamp = stamp;
       out.header.frame_id = config_.frame_id;
       target_pub_.publish(out);
     }
@@ -107,6 +185,7 @@ class GlobalRelocalizationNode {
   ros::NodeHandle pnh_;
   ros::Subscriber lidar_sub_;
   ros::Publisher pose_pub_;
+  ros::Publisher result_pub_;
   ros::Publisher status_pub_;
   ros::Publisher aligned_pub_;
   ros::Publisher target_pub_;
