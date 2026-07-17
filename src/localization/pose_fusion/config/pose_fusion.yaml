@@ -1,0 +1,75 @@
+frames:
+  map: map
+  odom: odom
+  base_link: base_link
+
+map:
+  default_map_id: default
+
+topics:
+  dr_odom: /localization/dr_odom
+  dr_status: /localization/dr_status
+  slam_odom: /localization/slam_odom
+  slam_health: /localization/slam_health
+  global_matcher_result: /localization/global_matcher/result
+  global_matcher_status: /localization/global_matcher/status
+  accepted_relocalization: /localization/manager/accepted_relocalization
+  observer_policy: /localization/manager/observer_policy
+  initial_pose: /initialpose
+  fused_odom: /localization/fused_odom
+  fused_pose: /localization/fused_pose
+  fused_path: /localization/fused_path
+  fusion_status: /localization/fusion_status
+
+runtime:
+  output_rate_hz: 100.0
+  publish_tf: true
+  publish_map_to_odom_tf: true
+  # Full system default: avoid competing with dr/slam odom->base_link debug TF.
+  publish_odom_to_base_tf: false
+  publish_path: true
+  max_path_size: 5000
+  allow_debug_relocalization_direct: false
+
+initialization:
+  allow_initialpose: true
+  # If no /initialpose or accepted relocalization is available, start from map==odom
+  # on the first valid DR message so bag/debug tests can run.
+  allow_dr_initialization: true
+  # Allows slam_odometry-only debugging and short DR outage operation.
+  allow_slam_initialization: true
+  initial_cov_position: 1.0
+  initial_cov_yaw_deg: 5.0
+
+prediction:
+  max_dr_gap: 0.2
+  max_dr_delta_translation: 5.0
+  max_dr_delta_yaw_deg: 45.0
+  process_noise_position: 0.05
+  process_noise_yaw_deg: 0.5
+
+observers:
+  slam:
+    enabled: true
+    smooth_gain: 0.08
+    max_position_residual: 3.0
+    max_yaw_residual_deg: 25.0
+  global_matcher:
+    enabled: true
+    allow_converged_false: true
+    base_gain: 0.15
+    min_gain: 0.02
+    max_gain: 0.30
+    target_inlier_ratio: 0.70
+    target_rmse: 0.30
+    min_inlier_ratio: 0.50
+    max_inlier_rmse: 0.80
+    max_fitness: 20.0
+    max_position_residual: 5.0
+    max_yaw_residual_deg: 20.0
+
+buffer:
+  max_dr_age: 0.5
+  max_slam_age: 1.0
+  max_global_matcher_age: 3.0
+  max_relocalization_age: 3.0

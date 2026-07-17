@@ -136,7 +136,8 @@ dr_odometry::ImuData transformImuToBase(const dr_odometry::ImuData& data,
   return out;
 }
 
-dr_odometry::CanData fromRos(const deeplumin_msgs::CanReceiveInfo& msg, bool speed_is_kmh) {
+dr_odometry::CanData fromRos(const deeplumin_msgs::CanReceiveInfo& msg, bool speed_is_kmh,
+                              bool use_valid_flag) {
   dr_odometry::CanData data;
   // stamp 为空时用当前时间，避免未知时间戳被滤波判定为过期
   data.timestamp = msg.header.stamp.isZero() ? ros::Time::now().toSec() : msg.header.stamp.toSec();
@@ -144,7 +145,7 @@ dr_odometry::CanData fromRos(const deeplumin_msgs::CanReceiveInfo& msg, bool spe
   const double direction = (static_cast<int>(std::round(msg.gear)) == 2) ? -1.0 : 1.0;
   data.speed_mps = direction * msg.speed * (speed_is_kmh ? (1.0 / 3.6) : 1.0);
   data.gear = msg.gear;
-  data.valid = msg.valid;
+  data.valid = use_valid_flag ? msg.valid : std::isfinite(data.speed_mps);
   return data;
 }
 

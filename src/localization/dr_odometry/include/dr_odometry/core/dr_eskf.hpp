@@ -57,7 +57,7 @@ class DrEskf {
   /** @brief 按配置更新航向 / ENU 速度 / ENU 位置。 */
   void correctGnss(const GnssData& gnss);
   /** @brief 标准线性卡尔曼更新 + Joseph 形式协方差，再 injectError。 */
-  void update(const Eigen::VectorXd& residual, const Eigen::MatrixXd& H,
+  bool update(const Eigen::VectorXd& residual, const Eigen::MatrixXd& H,
               const Eigen::MatrixXd& R);
   /** @brief 将误差状态注入名义状态（姿态用小角度右乘）。 */
   void injectError(const Eigen::Matrix<double, 15, 1>& dx);
@@ -72,6 +72,19 @@ class DrEskf {
   bool has_last_imu_ = false;
   bool has_can_ = false;
   bool has_gnss_ = false;
+
+  std::uint64_t imu_count_ = 0;
+  std::uint64_t can_count_ = 0;
+  std::uint64_t gnss_count_ = 0;
+  std::uint64_t predict_count_ = 0;
+  std::uint64_t wheel_update_count_ = 0;
+  std::uint64_t gnss_heading_update_count_ = 0;
+  std::uint64_t gnss_velocity_update_count_ = 0;
+  std::uint64_t gnss_position_update_count_ = 0;
+  std::uint64_t invalid_imu_count_ = 0;
+  std::uint64_t nonpositive_imu_dt_count_ = 0;
+  std::uint64_t stale_wheel_count_ = 0;
+  std::uint64_t stale_gnss_count_ = 0;
 
   // LLA→ENU 局部原点（首次 position_valid 的 GNSS）
   bool origin_set_ = false;

@@ -78,7 +78,7 @@ target_include_directories(slam_odometry_core PUBLIC
 
 add_executable(slam_odometry_node src/slam_odometry_node.cpp)
 add_dependencies(slam_odometry_node ${catkin_EXPORTED_TARGETS})
-target_link_libraries(slam_odometry_node slam_odometry_core ${catkin_LIBRARIES})
+target_link_libraries(slam_odometry_node slam_odometry_core ${catkin_LIBRARIES} ${PCL_LIBRARIES})
 
 install(TARGETS slam_odometry_core slam_odometry_node
   ARCHIVE DESTINATION ${CATKIN_PACKAGE_LIB_DESTINATION}

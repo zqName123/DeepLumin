@@ -14,6 +14,7 @@
 
 #include "dr_odometry/core/dr_eskf.hpp"
 #include "dr_odometry/ros/ros_adapter.hpp"
+#include "dr_odometry/ros/global_map_viz.hpp"
 
 #include <deeplumin_msgs/CanReceiveInfo.h>
 #include <deeplumin_msgs/Gpchc.h>
@@ -21,6 +22,20 @@
 #include <ros/ros.h>
 #include <sensor_msgs/Imu.h>
 #include <tf/transform_broadcaster.h>
+
+#include <cmath>
+
+
+namespace {
+
+const char* yesNo(bool value) { return value ? "true" : "false"; }
+
+double yawDeg(const dr_odometry::Quatd& q) {
+  const auto r = q.normalized().toRotationMatrix();
+  return std::atan2(r(1, 0), r(0, 0)) * 180.0 / M_PI;
+}
+
+}  // namespace
 
 /**
  * @brief 正式版 DR 节点：生产配置下持续输出局部里程计。
@@ -34,6 +49,7 @@ class DrOdometryNode {
     frames_ = dr_odometry_ros::loadFrameConfig(pnh_);
     extrinsics_ = dr_odometry_ros::loadExtrinsicConfig(pnh_);
     pnh_.param<bool>("can_speed_is_kmh", can_speed_is_kmh_, true);
+    pnh_.param<bool>("can_use_valid_flag", can_use_valid_flag_, false);
     eskf_.initialize(config_);
 
     // 正式节点：IMU / CAN 必订；GNSS 按配置
@@ -47,11 +63,16 @@ class DrOdometryNode {
     status_pub_ = nh_.advertise<deeplumin_msgs::LocalizationStatus>(topics_.status, 10);
     path_pub_ = nh_.advertise<nav_msgs::Path>(topics_.path, 5);
     path_.header.frame_id = frames_.odom;
+    global_map_viz_.setup(nh_, pnh_, "/localization/dr_odometry/global_map", "map", "dr_odometry");
 
     ROS_INFO("[dr_odometry] imu=%s can=%s gnss=%s use_gnss=%s use_wheel=%s output=%s",
              topics_.imu.c_str(), topics_.can.c_str(), topics_.gnss.c_str(),
-             config_.use_gnss ? "true" : "false", config_.use_wheel ? "true" : "false",
-             topics_.odom.c_str());
+             yesNo(config_.use_gnss), yesNo(config_.use_wheel), topics_.odom.c_str());
+    ROS_INFO("[dr_odometry][Config] rate=%.1fHz tf=%s imu_accel=%s wheel=%s gnss=%s heading=%s velocity=%s position=%s can_kmh=%s can_valid_flag=%s frames=%s->%s",
+             config_.output_rate, yesNo(config_.publish_tf), yesNo(config_.use_imu_accel),
+             yesNo(config_.use_wheel), yesNo(config_.use_gnss), yesNo(config_.use_gnss_heading),
+             yesNo(config_.use_gnss_velocity), yesNo(config_.use_gnss_position), yesNo(can_speed_is_kmh_),
+             yesNo(can_use_valid_flag_), frames_.odom.c_str(), frames_.base_link.c_str());
   }
 
   /** @brief 固定频率：spinOnce 处理传感器回调，再发布最新状态。 */
@@ -66,17 +87,35 @@ class DrOdometryNode {
 
  private:
   void onImu(const sensor_msgs::Imu::ConstPtr& msg) {
-    eskf_.feedImu(dr_odometry_ros::transformImuToBase(dr_odometry_ros::fromRos(*msg),
-                                                      extrinsics_.base_to_imu));
+    const auto imu = dr_odometry_ros::transformImuToBase(dr_odometry_ros::fromRos(*msg),
+                                                         extrinsics_.base_to_imu);
+    ROS_INFO_ONCE("[dr_odometry][Input] first IMU stamp=%.9f frame=%s", imu.timestamp,
+                  msg->header.frame_id.c_str());
+    ROS_INFO_THROTTLE(5.0, "[dr_odometry][Input] imu stamp=%.3f gyro=(%.4f %.4f %.4f) accel=(%.3f %.3f %.3f)",
+                      imu.timestamp, imu.gyro.x(), imu.gyro.y(), imu.gyro.z(),
+                      imu.accel.x(), imu.accel.y(), imu.accel.z());
+    eskf_.feedImu(imu);
   }
 
   void onCan(const deeplumin_msgs::CanReceiveInfo::ConstPtr& msg) {
-    eskf_.feedCan(dr_odometry_ros::fromRos(*msg, can_speed_is_kmh_));
+    const auto can = dr_odometry_ros::fromRos(*msg, can_speed_is_kmh_, can_use_valid_flag_);
+    ROS_INFO_ONCE("[dr_odometry][Input] first CAN stamp=%.9f frame=%s", can.timestamp,
+                  msg->header.frame_id.c_str());
+    ROS_INFO_THROTTLE(5.0, "[dr_odometry][Input] can stamp=%.3f raw_speed=%.3f gear=%.1f speed_mps=%.3f raw_valid=%s final_valid=%s",
+                      can.timestamp, msg->speed, msg->gear, can.speed_mps, yesNo(msg->valid), yesNo(can.valid));
+    eskf_.feedCan(can);
   }
 
   void onGnss(const deeplumin_msgs::Gpchc::ConstPtr& msg) {
-    eskf_.feedGnss(dr_odometry_ros::transformGnssToBase(dr_odometry_ros::fromRos(*msg),
-                                                        extrinsics_.base_to_gnss));
+    const auto gnss = dr_odometry_ros::transformGnssToBase(dr_odometry_ros::fromRos(*msg),
+                                                           extrinsics_.base_to_gnss);
+    ROS_INFO_ONCE("[dr_odometry][Input] first GNSS stamp=%.9f frame=%s status=%d", gnss.timestamp,
+                  msg->header.frame_id.c_str(), gnss.status);
+    ROS_INFO_THROTTLE(5.0, "[dr_odometry][Input] gnss stamp=%.3f status=%d heading=%.2fdeg yaw=%.2fdeg v_enu=(%.3f %.3f %.3f) valid(h/p/v)=%s/%s/%s",
+                      gnss.timestamp, gnss.status, msg->heading, gnss.heading_rad * 180.0 / M_PI,
+                      gnss.velocity_enu.x(), gnss.velocity_enu.y(), gnss.velocity_enu.z(),
+                      yesNo(gnss.heading_valid), yesNo(gnss.position_valid), yesNo(gnss.velocity_valid));
+    eskf_.feedGnss(gnss);
   }
 
   /**
@@ -86,6 +125,13 @@ class DrOdometryNode {
   void publish() {
     const auto odom = eskf_.odometry();
     if (!odom.valid) {
+      const auto health = eskf_.health(ros::Time::now().toSec());
+      ROS_WARN_THROTTLE(2.0, "[dr_odometry][State] waiting odom init: imu=%s can=%s gnss=%s counts(i/c/g)=%lu/%lu/%lu invalid_imu=%lu",
+                        yesNo(health.has_imu), yesNo(health.has_wheel), yesNo(health.has_gnss),
+                        static_cast<unsigned long>(health.imu_count),
+                        static_cast<unsigned long>(health.can_count),
+                        static_cast<unsigned long>(health.gnss_count),
+                        static_cast<unsigned long>(health.invalid_imu_count));
       return;
     }
     const auto odom_msg = dr_odometry_ros::toRosOdom(odom, frames_.odom, frames_.base_link);
@@ -105,7 +151,18 @@ class DrOdometryNode {
     }
     path_pub_.publish(path_);
 
-    const auto health = eskf_.health(ros::Time::now().toSec());
+    const auto health = eskf_.health(odom.timestamp);
+    ROS_INFO_THROTTLE(1.0, "[dr_odometry][Odom] t=%.3f pos=(%.3f %.3f %.3f) vel=(%.3f %.3f %.3f) yaw=%.2fdeg pred=%lu wheel_upd=%lu gnss_h/v/p=%lu/%lu/%lu ages(w/g)=%.3f/%.3f stale(w/g)=%lu/%lu",
+                      odom.timestamp, odom.position.x(), odom.position.y(), odom.position.z(),
+                      odom.velocity.x(), odom.velocity.y(), odom.velocity.z(), yawDeg(odom.orientation),
+                      static_cast<unsigned long>(health.predict_count),
+                      static_cast<unsigned long>(health.wheel_update_count),
+                      static_cast<unsigned long>(health.gnss_heading_update_count),
+                      static_cast<unsigned long>(health.gnss_velocity_update_count),
+                      static_cast<unsigned long>(health.gnss_position_update_count),
+                      health.wheel_age, health.gnss_age,
+                      static_cast<unsigned long>(health.stale_wheel_count),
+                      static_cast<unsigned long>(health.stale_gnss_count));
     status_pub_.publish(dr_odometry_ros::toStatusMsg(health, ros::Time::now()));
   }
 
@@ -116,7 +173,9 @@ class DrOdometryNode {
   dr_odometry_ros::FrameConfig frames_;
   dr_odometry_ros::ExtrinsicConfig extrinsics_;
   dr_odometry::DrEskf eskf_;
+  dr_odometry_ros::GlobalMapVizPublisher global_map_viz_;
   bool can_speed_is_kmh_ = true;
+  bool can_use_valid_flag_ = false;
   ros::Subscriber imu_sub_;
   ros::Subscriber can_sub_;
   ros::Subscriber gnss_sub_;

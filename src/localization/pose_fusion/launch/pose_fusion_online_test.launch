@@ -1,0 +1,79 @@
+<launch>
+  <!--
+    Online integration test for the first pose_fusion version.
+
+    Pipeline:
+      bag sensors -> dr_odometry + slam_odometry
+      slam cloud/odom + fused initial pose -> global_matcher
+      dr/slam/global_matcher -> pose_fusion
+
+    Default map is the same ysw_loc PCD used by global_matcher.yaml.
+  -->
+  <arg name="dr_config" default="$(find dr_odometry)/config/dr_odometry.yaml" />
+  <arg name="slam_config" default="$(find slam_odometry)/config/slam_odometry_ysw.yaml" />
+  <arg name="global_matcher_config" default="$(find global_matcher)/config/global_matcher.yaml" />
+  <arg name="pose_fusion_config" default="$(find pose_fusion)/config/pose_fusion.yaml" />
+  <!-- <arg name="pcd_path" default="/home/hhy/2004ros/ysw_loc/src/map/0730map/yuhsuwan2_loc_rot_72.pcd" />  -->
+  <arg name="pcd_path" default="/home/hhy/2004ros/relocalization_ws/global_map_manual_imu.pcd" />
+
+  <arg name="bag" default="/home/hhy/2004ros/data/2026-07-14-11-17-21.bag" />
+  <arg name="play_bag" default="true" />
+  <arg name="bag_rate" default="1.0" />
+  <arg name="bag_delay" default="2.0" />
+  <arg name="clock" default="false" />
+  <arg name="rviz" default="true" />
+  <arg name="path_compare" default="true" />
+  <arg name="compare_dr" default="true" />
+  <arg name="compare_slam" default="true" />
+  <arg name="compare_fused" default="true" />
+
+  <param name="/use_sim_time" value="$(arg clock)" />
+
+  <node pkg="dr_odometry" type="dr_odometry_node" name="dr_odometry" output="screen">
+    <rosparam file="$(arg dr_config)" command="load" />
+    <!-- Fusion owns the final TF chain in this test. DR still publishes odom/path/status. -->
+    <param name="dr/publish_tf" value="false" />
+  </node>
+
+  <node pkg="slam_odometry" type="slam_odometry_node" name="slam_odometry" output="screen">
+    <rosparam command="load" file="$(arg slam_config)" />
+    <!-- Keep slam odometry and cloud outputs, but avoid TF ownership conflicts during fusion test. -->
+    <param name="slam/publish_tf" value="false" />
+  </node>
+
+  <node pkg="pose_fusion" type="pose_fusion_node" name="pose_fusion" output="screen">
+    <rosparam file="$(arg pose_fusion_config)" command="load" />
+    <param name="runtime/publish_tf" value="true" />
+    <param name="runtime/publish_map_to_odom_tf" value="true" />
+    <param name="runtime/publish_odom_to_base_tf" value="true" />
+  </node>
+
+  <node pkg="global_matcher" type="global_matcher_node" name="global_matcher" output="screen">
+    <rosparam file="$(arg global_matcher_config)" command="load" />
+    <param name="map/pcd_path" value="$(arg pcd_path)" />
+    <param name="topics/source_cloud" value="/localization/cloud_registered" />
+    <param name="topics/initial_pose" value="/localization/fused_odom" />
+    <param name="topics/source_odom" value="/localization/slam_odom" />
+    <param name="topics/result" value="/localization/global_matcher/result" />
+  </node>
+
+  <node if="$(arg path_compare)" pkg="pose_fusion" type="pose_fusion_path_compare_node"
+        name="pose_fusion_path_compare" output="screen">
+    <param name="map_frame" value="map" />
+    <param name="enable_dr" value="$(arg compare_dr)" />
+    <param name="enable_slam" value="$(arg compare_slam)" />
+    <param name="enable_fused" value="$(arg compare_fused)" />
+    <param name="topics/dr_odom" value="/localization/dr_odom" />
+    <param name="topics/slam_odom" value="/localization/slam_odom" />
+    <param name="topics/fused_odom" value="/localization/fused_odom" />
+    <param name="topics/dr_path_map" value="/localization/compare/dr_path_map" />
+    <param name="topics/slam_path_map" value="/localization/compare/slam_path_map" />
+    <param name="topics/fused_path_map" value="/localization/compare/fused_path_map" />
+  </node>
+
+  <node if="$(arg rviz)" pkg="rviz" type="rviz" name="pose_fusion_online_test_rviz"
+        args="-d $(find pose_fusion)/rviz/pose_fusion_online_test.rviz" />
+
+  <node if="$(arg play_bag)" pkg="rosbag" type="play" name="pose_fusion_test_bag"
+        args="--clock --delay=$(arg bag_delay) -r $(arg bag_rate) $(arg bag)" output="screen" />
+</launch>

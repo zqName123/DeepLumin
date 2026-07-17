@@ -1,0 +1,9 @@
+<launch>
+  <arg name="config" default="$(find pose_fusion)/config/pose_fusion.yaml" />
+  <arg name="node_name" default="pose_fusion" />
+  <arg name="output" default="screen" />
+
+  <node pkg="pose_fusion" type="pose_fusion_node" name="$(arg node_name)" output="$(arg output)">
+    <rosparam file="$(arg config)" command="load" />
+  </node>
+</launch>

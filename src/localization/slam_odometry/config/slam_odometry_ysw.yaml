@@ -46,6 +46,15 @@ outputs:
   global_map_topic: "/localization/global_map"
   loop_markers_topic: "/localization/loop_markers"
 
+# 全局地图可视化（仅 RViz，算法不使用）。调试 launch 可覆盖 publish_global_map/pcd_path。
+map:
+  publish_global_map: false
+  pcd_path: /home/hhy/2004ros/relocalization_ws/global_map_manual_imu.pcd
+  global_map_topic: /localization/slam_odometry/global_map
+  frame_id: odom
+  publish_voxel_leaf: 5.0
+  publish_period: 5.0
+
 dr:
   output_rate: 100
   imu:
@@ -106,7 +115,7 @@ slam:
       cube_side_length: 2000.0
     filter_size_surf: 0.5   # 降采样分辨率：与原始 ouster64.yaml 一致，过小会保留过多点导致处理变慢
     filter_size_map: 0.5    # 地图增量更新的最近邻间距阈值，0→倾向全部加入
-    max_iteration: 4        # IEKF 最大迭代次数：原始 Faster-LIO 默认为 4，3 次收敛不足导致残差偏大
+    max_iteration: 5        # IEKF 最大迭代次数：原始 Faster-LIO 默认为 4，3 次收敛不足导致残差偏大
     esti_plane_threshold: 0.1
     degeneracy_threshold: 100.0
 

@@ -19,6 +19,18 @@ constexpr double kEarthE2 = 6.69437999014e-3;
 bool finiteVec(const Vec3d& v) {
   return std::isfinite(v.x()) && std::isfinite(v.y()) && std::isfinite(v.z());
 }
+
+template <typename Derived>
+bool finiteEigen(const Eigen::MatrixBase<Derived>& m) {
+  for (Eigen::Index r = 0; r < m.rows(); ++r) {
+    for (Eigen::Index c = 0; c < m.cols(); ++c) {
+      if (!std::isfinite(m(r, c))) {
+        return false;
+      }
+    }
+  }
+  return true;
+}
 }  // namespace
 
 bool DrEskf::initialize(const DrConfig& config) {
@@ -38,6 +50,18 @@ bool DrEskf::initialize(const DrConfig& config) {
   has_last_imu_ = false;
   has_can_ = false;
   has_gnss_ = false;
+  imu_count_ = 0;
+  can_count_ = 0;
+  gnss_count_ = 0;
+  predict_count_ = 0;
+  wheel_update_count_ = 0;
+  gnss_heading_update_count_ = 0;
+  gnss_velocity_update_count_ = 0;
+  gnss_position_update_count_ = 0;
+  invalid_imu_count_ = 0;
+  nonpositive_imu_dt_count_ = 0;
+  stale_wheel_count_ = 0;
+  stale_gnss_count_ = 0;
   origin_set_ = false;
   return true;
 }
@@ -56,7 +80,9 @@ void DrEskf::initializeFromImu(const ImuData& imu) {
 }
 
 void DrEskf::feedImu(const ImuData& imu) {
+  ++imu_count_;
   if (!std::isfinite(imu.timestamp) || !finiteVec(imu.gyro) || !finiteVec(imu.accel)) {
+    ++invalid_imu_count_;
     return;
   }
   // 首帧：只初始化，不做预测（尚无上一帧算 dt）
@@ -73,6 +99,7 @@ void DrEskf::feedImu(const ImuData& imu) {
   double dt = imu.timestamp - last_imu_.timestamp;
   if (dt <= 0.0) {
     // 乱序或重复时间戳：刷新缓存，跳过本次
+    ++nonpositive_imu_dt_count_;
     last_imu_ = imu;
     return;
   }
@@ -85,18 +112,24 @@ void DrEskf::feedImu(const ImuData& imu) {
   mid.gyro = 0.5 * (last_imu_.gyro + imu.gyro);
   mid.accel = 0.5 * (last_imu_.accel + imu.accel);
   predict(mid, dt);  // 利用imu进行递推
+  ++predict_count_;
   last_imu_ = imu;
 
   // 在 IMU 时刻上做异步观测更新（轮速/GNSS 需通过新鲜度检查）
   if (config_.use_wheel) {
     correctWheel(imu.timestamp);
   }
-  if (config_.use_gnss && has_gnss_ && gnssFresh(imu.timestamp, last_gnss_)) {
-    correctGnss(last_gnss_);
+  if (config_.use_gnss && has_gnss_) {
+    if (gnssFresh(imu.timestamp, last_gnss_)) {
+      correctGnss(last_gnss_);
+    } else {
+      ++stale_gnss_count_;
+    }
   }
 }
 
 void DrEskf::feedCan(const CanData& can) {
+  ++can_count_;
   if (!std::isfinite(can.timestamp) || !std::isfinite(can.speed_mps)) {
     return;
   }
@@ -105,7 +138,7 @@ void DrEskf::feedCan(const CanData& can) {
 }
 
 void DrEskf::feedGnss(const GnssData& gnss) {
-  
+  ++gnss_count_;
   if (!std::isfinite(gnss.timestamp)) {
     return;
   }
@@ -179,33 +212,56 @@ bool DrEskf::gnssFresh(double timestamp, const GnssData& gnss) const {
 
 void DrEskf::correctWheel(double timestamp) {
   if (!wheelFresh(timestamp)) {
+    ++stale_wheel_count_;
     return;
   }
 
-  // 观测：车体速度 z = [v_wheel, 0, 0]，预测 h = R^T v_world
-  const Mat3d Rwb = state_.orientation.toRotationMatrix();
-  const Vec3d v_body = Rwb.transpose() * state_.velocity;
-  Eigen::Vector3d z;
-  z << last_can_.speed_mps, 0.0, 0.0;
-  const Eigen::Vector3d residual = z - v_body;
+  // 稳定模式：用当前 yaw 把轮速投到世界系，作为世界系速度观测。
+  // 轮速只修正速度；方向由 GNSS heading/IMU 陀螺维护，避免轮速残差反向注入姿态。
+  const double yaw = math::yawFromQuat(state_.orientation);
+  const double cy = std::cos(yaw);
+  const double sy = std::sin(yaw);
+  const Vec3d measured_velocity(last_can_.speed_mps * cy,
+                                last_can_.speed_mps * sy,
+                                0.0);
+  const Vec3d residual = measured_velocity - state_.velocity;
+  if (!finiteVec(measured_velocity) || !finiteVec(residual)) {
+    return;
+  }
 
-  // H：对 (v, θ) 的雅可比；与预测侧定义对齐后整体取负（见实现细节）
+  // 粗门限只防止异常观测/已发散状态继续向滤波器注入 NaN 或极大修正。
+  const double horizontal_error = residual.head<2>().norm();
+  const double horizontal_gate = std::max(8.0, 3.0 * std::abs(last_can_.speed_mps) + 3.0);
+  const double vertical_gate = std::max(5.0, 2.0 * std::abs(last_can_.speed_mps) + 3.0);
+  if (horizontal_error > horizontal_gate || std::abs(residual.z()) > vertical_gate) {
+    return;
+  }
+
   Eigen::Matrix<double, 3, 15> H = Eigen::Matrix<double, 3, 15>::Zero();
-  H.block<3, 3>(0, 3) = Rwb.transpose();
-  H.block<3, 3>(0, 6) = -Rwb.transpose() * math::skew(state_.velocity);
-  H = -H;
+  H.block<3, 3>(0, 3) = Mat3d::Identity();
 
-  Eigen::Matrix3d R = Eigen::Matrix3d::Zero();
-  R(0, 0) = config_.wheel_velocity_noise * config_.wheel_velocity_noise;
-  R(1, 1) = config_.nonholonomic_noise * config_.nonholonomic_noise;
-  R(2, 2) = config_.nonholonomic_noise * config_.nonholonomic_noise;
-  update(residual, H, R);
+  Mat3d R_yaw = Mat3d::Identity();
+  R_yaw(0, 0) = cy;
+  R_yaw(0, 1) = -sy;
+  R_yaw(1, 0) = sy;
+  R_yaw(1, 1) = cy;
+
+  Eigen::Matrix3d R_body = Eigen::Matrix3d::Zero();
+  R_body(0, 0) = config_.wheel_velocity_noise * config_.wheel_velocity_noise;
+  R_body(1, 1) = config_.nonholonomic_noise * config_.nonholonomic_noise;
+  R_body(2, 2) = config_.nonholonomic_noise * config_.nonholonomic_noise;
+  const Eigen::Matrix3d R = R_yaw * R_body * R_yaw.transpose();
+
+  if (update(residual, H, R)) {
+    ++wheel_update_count_;
+  }
 }
 
 void DrEskf::correctGnss(const GnssData& gnss) {
   // 航向：低速时车体航向与 GNSS heading 可能不一致，需车速门限
+  const double heading_speed = has_can_ ? std::abs(last_can_.speed_mps) : std::abs(gnss.speed_mps);
   if (config_.use_gnss_heading && gnss.heading_valid &&
-      std::abs(last_can_.speed_mps) >= config_.min_wheel_speed_for_heading) {
+      heading_speed >= config_.min_wheel_speed_for_heading) {
     Eigen::Matrix<double, 1, 15> H = Eigen::Matrix<double, 1, 15>::Zero();
     H(0, 8) = 1.0;  // 观测直接约束误差姿态的 yaw 分量 δθ_z
     Eigen::Matrix<double, 1, 1> R;
@@ -213,7 +269,9 @@ void DrEskf::correctGnss(const GnssData& gnss) {
     R(0, 0) = std_rad * std_rad;
     Eigen::Matrix<double, 1, 1> residual;
     residual(0) = math::normalizeAngle(gnss.heading_rad - math::yawFromQuat(state_.orientation));
-    update(residual, H, R);
+    if (update(residual, H, R)) {
+      ++gnss_heading_update_count_;
+    }
   }
 
   // ENU 速度：直接观测世界系速度
@@ -222,7 +280,9 @@ void DrEskf::correctGnss(const GnssData& gnss) {
     H.block<3, 3>(0, 3) = Mat3d::Identity();
     Eigen::Matrix3d R = Eigen::Matrix3d::Identity() * config_.gnss_velocity_noise * config_.gnss_velocity_noise;
     const Vec3d residual = gnss.velocity_enu - state_.velocity;
-    update(residual, H, R);
+    if (update(residual, H, R)) {
+      ++gnss_velocity_update_count_;
+    }
   }
 
   // ENU 位置：需已建立局部原点
@@ -232,23 +292,51 @@ void DrEskf::correctGnss(const GnssData& gnss) {
     Eigen::Matrix<double, 3, 15> H = Eigen::Matrix<double, 3, 15>::Zero();
     H.block<3, 3>(0, 0) = Mat3d::Identity();
     Eigen::Matrix3d R = Eigen::Matrix3d::Identity() * config_.gnss_position_noise * config_.gnss_position_noise;
-    update(pos - state_.position, H, R);
+    if (update(pos - state_.position, H, R)) {
+      ++gnss_position_update_count_;
+    }
   }
 }
 
-void DrEskf::update(const Eigen::VectorXd& residual, const Eigen::MatrixXd& H,
+bool DrEskf::update(const Eigen::VectorXd& residual, const Eigen::MatrixXd& H,
                     const Eigen::MatrixXd& R) {
-  if (residual.size() == 0) {
-    return;
+  if (residual.size() == 0 || H.rows() != residual.size() || H.cols() != 15 ||
+      R.rows() != residual.size() || R.cols() != residual.size()) {
+    return false;
   }
-  // K = P H^T (H P H^T + R)^{-1}
+  if (!finiteEigen(residual) || !finiteEigen(H) || !finiteEigen(R) ||
+      !finiteEigen(state_.covariance)) {
+    return false;
+  }
+
   const Eigen::MatrixXd S = H * state_.covariance * H.transpose() + R;
-  const Eigen::MatrixXd K = state_.covariance * H.transpose() * S.inverse();
+  if (!finiteEigen(S)) {
+    return false;
+  }
+
+  Eigen::LDLT<Eigen::MatrixXd> ldlt(S);
+  if (ldlt.info() != Eigen::Success) {
+    return false;
+  }
+
+  const Eigen::MatrixXd PHt = state_.covariance * H.transpose();
+  const Eigen::MatrixXd K = ldlt.solve(PHt.transpose()).transpose();
   const Eigen::Matrix<double, 15, 1> dx = K * residual;
-  injectError(dx);
-  // Joseph 形式，数值上更稳
+  if (!finiteEigen(K) || !finiteEigen(dx)) {
+    return false;
+  }
+
   const Eigen::Matrix<double, 15, 15> I = Eigen::Matrix<double, 15, 15>::Identity();
-  state_.covariance = (I - K * H) * state_.covariance * (I - K * H).transpose() + K * R * K.transpose();
+  Eigen::Matrix<double, 15, 15> new_covariance =
+      (I - K * H) * state_.covariance * (I - K * H).transpose() + K * R * K.transpose();
+  new_covariance = 0.5 * (new_covariance + new_covariance.transpose());
+  if (!finiteEigen(new_covariance)) {
+    return false;
+  }
+
+  injectError(dx);
+  state_.covariance = new_covariance;
+  return true;
 }
 
 void DrEskf::injectError(const Eigen::Matrix<double, 15, 1>& dx) {
@@ -266,11 +354,24 @@ DrHealth DrEskf::health(double now) const {
   health.has_wheel = has_can_;
   health.has_gnss = has_gnss_;
   health.gnss_heading_used = config_.use_gnss && config_.use_gnss_heading && has_gnss_ && last_gnss_.heading_valid;
+  health.gnss_velocity_used = config_.use_gnss && config_.use_gnss_velocity && has_gnss_ && last_gnss_.velocity_valid;
   health.gnss_position_used = config_.use_gnss && config_.use_gnss_position && has_gnss_ && last_gnss_.position_valid;
   health.wheel_used = config_.use_wheel && has_can_;
   health.last_update_time = state_.timestamp;
   health.wheel_age = has_can_ ? std::abs(now - last_can_.timestamp) : 1e9;
   health.gnss_age = has_gnss_ ? std::abs(now - last_gnss_.timestamp) : 1e9;
+  health.imu_count = imu_count_;
+  health.can_count = can_count_;
+  health.gnss_count = gnss_count_;
+  health.predict_count = predict_count_;
+  health.wheel_update_count = wheel_update_count_;
+  health.gnss_heading_update_count = gnss_heading_update_count_;
+  health.gnss_velocity_update_count = gnss_velocity_update_count_;
+  health.gnss_position_update_count = gnss_position_update_count_;
+  health.invalid_imu_count = invalid_imu_count_;
+  health.nonpositive_imu_dt_count = nonpositive_imu_dt_count_;
+  health.stale_wheel_count = stale_wheel_count_;
+  health.stale_gnss_count = stale_gnss_count_;
   return health;
 }
 

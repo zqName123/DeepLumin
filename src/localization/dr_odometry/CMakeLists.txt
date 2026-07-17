@@ -22,21 +22,25 @@ find_package(catkin REQUIRED COMPONENTS
   geometry_msgs
   sensor_msgs
   nav_msgs
+  pcl_ros
+  pcl_conversions
   tf
   deeplumin_msgs
 )
 find_package(Eigen3 ${DEEPLUMIN_EIGEN_VERSION} EXACT REQUIRED)
+find_package(PCL ${DEEPLUMIN_PCL_VERSION} EXACT REQUIRED COMPONENTS common io filters)
 
 catkin_package(
   INCLUDE_DIRS include
   LIBRARIES dr_odometry_core
-  CATKIN_DEPENDS roscpp std_msgs geometry_msgs sensor_msgs nav_msgs tf deeplumin_msgs
+  CATKIN_DEPENDS roscpp std_msgs geometry_msgs sensor_msgs nav_msgs pcl_ros pcl_conversions tf deeplumin_msgs
 )
 
 include_directories(
   include
   ${catkin_INCLUDE_DIRS}
   ${EIGEN3_INCLUDE_DIRS}
+  ${PCL_INCLUDE_DIRS}
 )
 
 # ---------- 核心库：算法 + 适配，不含 main ----------
@@ -46,16 +50,16 @@ add_library(dr_odometry_core
 )
 add_dependencies(dr_odometry_core ${catkin_EXPORTED_TARGETS})
 target_link_libraries(dr_odometry_core ${catkin_LIBRARIES})
-target_include_directories(dr_odometry_core PUBLIC include ${catkin_INCLUDE_DIRS} ${EIGEN3_INCLUDE_DIRS})
+target_include_directories(dr_odometry_core PUBLIC include ${catkin_INCLUDE_DIRS} ${EIGEN3_INCLUDE_DIRS} ${PCL_INCLUDE_DIRS})
 
 # ---------- 正式 / 调试节点 ----------
 add_executable(dr_odometry_node src/dr_odometry_node.cpp)
 add_dependencies(dr_odometry_node ${catkin_EXPORTED_TARGETS})
-target_link_libraries(dr_odometry_node dr_odometry_core ${catkin_LIBRARIES})
+target_link_libraries(dr_odometry_node dr_odometry_core ${catkin_LIBRARIES} ${PCL_LIBRARIES})
 
 add_executable(dr_odometry_debug_node src/dr_odometry_debug_node.cpp)
 add_dependencies(dr_odometry_debug_node ${catkin_EXPORTED_TARGETS})
-target_link_libraries(dr_odometry_debug_node dr_odometry_core ${catkin_LIBRARIES})
+target_link_libraries(dr_odometry_debug_node dr_odometry_core ${catkin_LIBRARIES} ${PCL_LIBRARIES})
 
 install(TARGETS dr_odometry_core dr_odometry_node dr_odometry_debug_node
   ARCHIVE DESTINATION ${CATKIN_PACKAGE_LIB_DESTINATION}

@@ -40,12 +40,17 @@
   <!-- GNSS 绝对位置（LLA→ENU）观测；默认关闭，DR 更侧重相对运动一致性 -->
   <arg name="use_gnss_position" default="false" />
   <!-- GNSS ENU 速度观测（ve/vn/vu） -->
-  <arg name="use_gnss_velocity" default="true" />
+  <arg name="use_gnss_velocity" default="false" />
   <!-- 预测时是否使用 IMU 线加速度积分；false 则主要靠轮速约束传播速度 -->
-  <arg name="use_imu_accel" default="false" />
+  <arg name="use_imu_accel" default="true" />
 
   <!-- 算法与话题/坐标系配置文件，默认指向包内 dr_odometry.yaml -->
   <arg name="config" default="$(find dr_odometry)/config/dr_odometry.yaml" />
+  <arg name="publish_global_map" default="true" />
+  <arg name="pcd_path" default="/home/hhy/2004ros/relocalization_ws/global_map_manual_imu.pcd" />
+  <arg name="global_map_topic" default="/localization/dr_odometry/global_map" />
+  <arg name="global_map_voxel_leaf" default="5.0" />
+  <arg name="global_map_frame" default="odom" />
 
   <!-- 将 yaml 中的 frames / topics / dr / can_speed_is_kmh 加载到参数服务器 -->
   <rosparam file="$(arg config)" command="load" />
@@ -65,5 +70,10 @@
     <param name="debug/use_gnss_position" value="$(arg use_gnss_position)" />
     <param name="debug/use_gnss_velocity" value="$(arg use_gnss_velocity)" />
     <param name="debug/use_imu_accel" value="$(arg use_imu_accel)" />
+    <param name="map/publish_global_map" value="$(arg publish_global_map)" />
+    <param name="map/pcd_path" value="$(arg pcd_path)" />
+    <param name="map/global_map_topic" value="$(arg global_map_topic)" />
+    <param name="map/frame_id" value="$(arg global_map_frame)" />
+    <param name="map/publish_voxel_leaf" value="$(arg global_map_voxel_leaf)" />
   </node>
 </launch>

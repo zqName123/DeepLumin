@@ -1,5 +1,6 @@
 #include <localization/factory/factory_registry.hpp>
 #include <localization/ros/ros_converters.hpp>
+#include <localization/ros/global_map_viz.hpp>
 #include <localization/ros/sensor_topics.hpp>
 #include <localization/slam/faster_lio_impl.hpp>
 
@@ -93,6 +94,7 @@ public:
         local_map_pub_ = nh_.advertise<sensor_msgs::PointCloud2>(output_topics_.local_map, 10);
         registered_scan_pub_ =
             nh_.advertise<sensor_msgs::PointCloud2>(output_topics_.registered_scan, 10);
+        global_map_viz_.setup(nh_, pnh_, output_topics_.global_map, frames_.map, "slam_odometry");
 
         ROS_INFO("[slam_odometry] imu=%s lidar=%s odom=%s local_map=%s registered_scan=%s",
                  sensor_topics_.imu.c_str(), sensor_topics_.lidar.c_str(),
@@ -300,6 +302,7 @@ private:
     localization_ros::SensorTopicsConfig sensor_topics_;
     localization_ros::OutputTopicsConfig output_topics_;
     std::shared_ptr<localization::ISlamOdometry> slam_;
+    localization_ros::GlobalMapVizPublisher global_map_viz_;
     ros::Subscriber imu_sub_;
     ros::Subscriber lidar_sub_;
     ros::Publisher odom_pub_;

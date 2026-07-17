@@ -20,6 +20,16 @@ frames:
   gnss: "gnss_sensor"       # GNSS 天线/组合导航坐标系名（外参预留）
   can: "local1"             # 车速相关坐标系名（预留）
 
+# ---------- 全局地图可视化（仅 RViz，算法不使用）----------
+# publish_global_map 默认 false，避免正式 DR 节点重复加载大地图；调试 launch 可覆盖为 true。
+map:
+  publish_global_map: false
+  pcd_path: /home/hhy/2004ros/relocalization_ws/global_map_manual_imu.pcd
+  global_map_topic: /localization/dr_odometry/global_map
+  frame_id: odom
+  publish_voxel_leaf: 5.0
+  publish_period: 5.0
+
 # ---------- 话题（topics）----------
 # 输入：IMU / CAN / GNSS；输出：DR 里程计 / 状态 / 轨迹
 
@@ -55,19 +65,22 @@ topics:
 #   true  → msg.speed 按 km/h，适配层会 /3.6 转成 m/s（与 ysw_loc 约定一致）
 #   false → 上游已是 m/s，不再换算
 can_speed_is_kmh: true
+# 当前 bag 中 /can_receive_info.valid 可能一直为 false；默认不强依赖该标志，
+# 只要 speed 有限就允许轮速参与。正式接入可信 CAN 状态时可改为 true。
+can_use_valid_flag: false
 
 # ---------- DR / ESKF 算法参数（命名空间 dr/）----------
 dr:
   # 节点主循环发布频率（Hz）；滤波预测仍由 IMU 回调驱动
   output_rate: 100.0
   # 是否发布 odom → base_link 的 TF
-  publish_tf: true
+  publish_tf: false
 
   # ---- 观测开关（正式节点用这里；调试节点可被 debug/* 覆盖）----
   use_imu_accel: true       # 预测是否用 IMU 加速度；false 时速度主要靠轮速/GNSS 修正
   use_wheel: true           # 轮速 + 非完整约束（侧向/垂向速度≈0）
-  use_gnss: false            # 是否启用 GNSS 相关更新（以及是否订阅 GNSS）
-  use_gnss_heading: false    # 航向观测（需车速超过 min_wheel_speed_for_heading）
+  use_gnss: true            # 是否启用 GNSS 相关更新（以及是否订阅 GNSS）
+  use_gnss_heading: true    # 航向观测（需车速超过 min_wheel_speed_for_heading）
   use_gnss_velocity: false   # ENU 速度观测
   use_gnss_position: false  # 绝对位置观测；默认关，避免强绑 GNSS 原点漂移问题
 

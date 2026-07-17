@@ -15,10 +15,21 @@
 <launch>
   <!-- 配置文件路径，可用 launch 参数覆盖为自定义 yaml -->
   <arg name="config" default="$(find dr_odometry)/config/dr_odometry.yaml" />
+  <arg name="publish_global_map" default="false" />
+  <arg name="pcd_path" default="/home/hhy/2004ros/relocalization_ws/global_map_manual_imu.pcd" />
+  <arg name="global_map_topic" default="/localization/dr_odometry/global_map" />
+  <arg name="global_map_voxel_leaf" default="5.0" />
+  <arg name="global_map_frame" default="odom" />
 
   <!-- 加载 frames / topics / dr / can_speed_is_kmh 等到参数服务器 -->
   <rosparam file="$(arg config)" command="load" />
 
   <!-- 正式 DR 节点：输出 odom / path / status，可选发布 odom→base_link TF -->
-  <node pkg="dr_odometry" type="dr_odometry_node" name="dr_odometry" output="screen" />
+  <node pkg="dr_odometry" type="dr_odometry_node" name="dr_odometry" output="screen">
+    <param name="map/publish_global_map" value="$(arg publish_global_map)" />
+    <param name="map/pcd_path" value="$(arg pcd_path)" />
+    <param name="map/global_map_topic" value="$(arg global_map_topic)" />
+    <param name="map/frame_id" value="$(arg global_map_frame)" />
+    <param name="map/publish_voxel_leaf" value="$(arg global_map_voxel_leaf)" />
+  </node>
 </launch>

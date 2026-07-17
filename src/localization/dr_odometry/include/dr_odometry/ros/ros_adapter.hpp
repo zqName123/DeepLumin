@@ -77,8 +77,10 @@ dr_odometry::ImuData transformImuToBase(const dr_odometry::ImuData& data,
 /**
  * @brief CanReceiveInfo → CanData。
  * @param speed_is_kmh true 时将 speed 从 km/h 转为 m/s；gear≈2 视为倒车取负速。
+ * @param use_valid_flag true 时严格使用 msg.valid；false 时只要速度有限就认为可用。
  */
-dr_odometry::CanData fromRos(const deeplumin_msgs::CanReceiveInfo& msg, bool speed_is_kmh);
+dr_odometry::CanData fromRos(const deeplumin_msgs::CanReceiveInfo& msg, bool speed_is_kmh,
+                             bool use_valid_flag);
 
 /**
  * @brief Gpchc → GnssData。

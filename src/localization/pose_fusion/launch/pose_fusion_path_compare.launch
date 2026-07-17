@@ -1,0 +1,22 @@
+<launch>
+  <arg name="map_frame" default="map" />
+  <arg name="enable_dr" default="true" />
+  <arg name="enable_slam" default="true" />
+  <arg name="enable_fused" default="true" />
+  <arg name="dr_odom" default="/localization/dr_odom" />
+  <arg name="slam_odom" default="/localization/slam_odom" />
+  <arg name="fused_odom" default="/localization/fused_odom" />
+
+  <node pkg="pose_fusion" type="pose_fusion_path_compare_node" name="pose_fusion_path_compare" output="screen">
+    <param name="map_frame" value="$(arg map_frame)" />
+    <param name="enable_dr" value="$(arg enable_dr)" />
+    <param name="enable_slam" value="$(arg enable_slam)" />
+    <param name="enable_fused" value="$(arg enable_fused)" />
+    <param name="topics/dr_odom" value="$(arg dr_odom)" />
+    <param name="topics/slam_odom" value="$(arg slam_odom)" />
+    <param name="topics/fused_odom" value="$(arg fused_odom)" />
+    <param name="topics/dr_path_map" value="/localization/compare/dr_path_map" />
+    <param name="topics/slam_path_map" value="/localization/compare/slam_path_map" />
+    <param name="topics/fused_path_map" value="/localization/compare/fused_path_map" />
+  </node>
+</launch>

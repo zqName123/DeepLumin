@@ -1,5 +1,7 @@
 #pragma once
 
+#include <cstdint>
+
 /**
  * @file types.hpp
  * @brief DR 核心层公共数据类型（与 ROS 解耦）。
@@ -119,11 +121,24 @@ struct DrHealth {
   bool has_wheel = false;
   bool has_gnss = false;
   bool gnss_heading_used = false;
+  bool gnss_velocity_used = false;
   bool gnss_position_used = false;
   bool wheel_used = false;
   double last_update_time = 0.0;
   double wheel_age = 1e9;
   double gnss_age = 1e9;
+  std::uint64_t imu_count = 0;
+  std::uint64_t can_count = 0;
+  std::uint64_t gnss_count = 0;
+  std::uint64_t predict_count = 0;
+  std::uint64_t wheel_update_count = 0;
+  std::uint64_t gnss_heading_update_count = 0;
+  std::uint64_t gnss_velocity_update_count = 0;
+  std::uint64_t gnss_position_update_count = 0;
+  std::uint64_t invalid_imu_count = 0;
+  std::uint64_t nonpositive_imu_dt_count = 0;
+  std::uint64_t stale_wheel_count = 0;
+  std::uint64_t stale_gnss_count = 0;
 };
 
 /**

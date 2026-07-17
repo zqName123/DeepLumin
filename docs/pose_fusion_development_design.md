@@ -117,7 +117,7 @@ pose_fusion/
 │   │   ├── config.hpp
 │   │   └── math_utils.hpp
 │   ├── core/
-│   │   ├── fusion_core.hpp
+│   │   ├── pose_fusion_core.hpp
 │   │   ├── observation_buffer.hpp
 │   │   ├── quality_gate.hpp
 │   │   ├── covariance_manager.hpp
@@ -137,6 +137,90 @@ pose_fusion/
 ├── launch/pose_fusion.launch
 └── test/
 ```
+
+
+
+### 3.1 ROS 与 core 解耦落地规范
+
+`pose_fusion` 必须延续 DeepLumin localization 的分层模式：ROS 只负责通信和参数，融合算法核心只接收普通 C++ 数据结构。这样后续可以替换 ROS1/ROS2、换消息类型、做离线回放或单元测试，而不改融合算法。
+
+代码边界如下：
+
+| 层级 | 目录 | 可以依赖 | 禁止依赖 | 职责 |
+|---|---|---|---|---|
+| `common` | `include/pose_fusion/common` | Eigen、STL | ROS message、tf2、roscpp | 基础类型、配置、SE3 数学、枚举 |
+| `interface` | `include/pose_fusion/interface` | common | ROS | `IPoseFusion`、观测模型接口、可替换融合器接口 |
+| `core` | `include/pose_fusion/core`、`src/core` | common/interface | ROS | 预测、更新、门控、状态机、协方差、观测缓存 |
+| `ros` | `include/pose_fusion/ros`、`src/ros` | ROS、tf2、deeplumin_msgs、core | 业务算法写死在回调中 | 参数加载、消息转换、订阅发布、TF 管理 |
+| node | `src/pose_fusion_node.cpp` | ros adapter | 复杂算法逻辑 | 组装对象、启动主循环 |
+
+核心类建议：
+
+```cpp
+class PoseFusionCore {
+ public:
+  bool initialize(const FusionConfig& config, const ResetObservation& initial);
+  void setObserverPolicy(const ObserverPolicyData& policy);
+  void feedDrOdom(const PoseObservation& obs);
+  void feedSlamOdom(const PoseObservation& obs);
+  void feedGlobalMatch(const PoseObservation& obs);
+  void feedGnss(const PoseObservation& pose, const YawObservation& yaw);
+  void reset(const ResetObservation& reset);
+  FusionOutput tick(double now);
+  FusionStatusData status(double now) const;
+};
+```
+
+ROS 回调中只能做三件事：
+
+```text
+ROS msg -> ros_adapter 转成 core observation -> core.feed* -> 记录接收时间
+```
+
+不能在 ROS 回调里直接写融合状态、直接改 TF、直接判断复杂状态机。所有这些逻辑必须在 `PoseFusionCore::tick()` 或 core 内部方法中完成。
+
+### 3.2 功能融合架构
+
+`pose_fusion` 不是把所有位姿简单加权平均，而是分层融合：
+
+```text
+Prediction layer:
+  DR odom delta / optional wheel velocity
+  -> 提供高频、连续、低延迟的短时运动
+
+Local constraint layer:
+  SLAM odom relative pose / local pose consistency
+  -> 约束 DR 漂移，增强 GNSS 失效和短时 LiDAR 可用时的局部稳定性
+
+Global constraint layer:
+  global_matcher / GNSS position-heading
+  -> 校正 map 一致性，主要作用在 map->odom 或 map-frame fused pose
+
+Recovery layer:
+  manager-accepted relocalization / manual initialpose
+  -> 受控 reset，清缓存，重建 map->odom
+
+Policy and health layer:
+  localization_manager ObserverPolicy + module status
+  -> 决定各观测是否启用、权重、是否允许 reset
+```
+
+工程上推荐首版采用“双状态”结构：
+
+```text
+T_odom_base_local     # 局部连续位姿，由 DR delta 传播，SLAM 辅助校正
+T_map_odom            # 全局校正变换，由 global_matcher/GNSS/relocalization 更新
+T_map_base_fused = T_map_odom * T_odom_base_local
+```
+
+这种结构的优势是：
+
+1. `odom -> base_link` 保持连续，不因低频地图匹配跳变。
+2. 地图匹配只调整 `map -> odom`，等价于 ysw_loc 中用全局定位结果校正全局位姿。
+3. LiDAR 暂时退化时，`T_odom_base_local` 可继续由 DR 推进，短时间不中断输出。
+4. 重定位时可直接重建 `T_map_odom`，不需要破坏 DR/SLAM 局部轨迹缓存。
+
+P1 之后如果实现完整 ESKF，也仍建议保留 `T_map_odom` 作为全局锚点，而不是让低频全局观测直接造成局部 odom 跳变。
 
 ---
 
@@ -176,16 +260,66 @@ T_map_odom_observed = T_map_base_match * inverse(T_odom_base_current)
 
 正常定位中优先平滑更新 `T_map_odom`，保证 `odom -> base_link` 的短时连续性；发生重定位时才允许硬 reset。
 
+
+### 4.1 当前已统一的模块输出语义
+
+在进入 `pose_fusion` 开发前，各模块应按以下语义输出，`pose_fusion` 以此作为接口前提：
+
+| 模块 | 输出 | frame 语义 | pose_fusion 用法 |
+|---|---|---|---|
+| `dr_odometry` | `/localization/dr_odom` | `odom -> base_link` | 高频局部预测源 |
+| `slam_odometry` | `/localization/slam_odom` | `odom -> base_link` | 局部 LiDAR-IMU 约束 |
+| `global_matcher` | `/localization/global_matcher/result` | `map -> base_link` | 正常定位地图校正观测 |
+| `relocalization` | manager 验收后的 result | `map -> base_link` | 恢复/初始化 reset 事件 |
+
+传感器外参已经在各模块 ROS 适配层处理：IMU、LiDAR、GNSS 等输入在模块内部转换为 `base_link` 语义后再输出。因此 `pose_fusion` 首版不再重复做 `lidar_link/imu_link/gnss_sensor -> base_link` 的安装外参补偿，只需要：
+
+1. 校验 `header.frame_id` 和 `child_frame_id` 是否符合配置。
+2. 对不符合的消息给出明确拒绝原因。
+3. 后续如接入原始 GNSS pose 或其他传感器观测，再通过 `tf2` 或配置外参转换到 `base_link`。
+
+### 4.2 最终 TF 归属
+
+最终在线系统推荐只让 `pose_fusion` 发布：
+
+```text
+map -> odom
+```
+
+`dr_odometry` 和 `slam_odometry` 可在单模块调试时发布 `odom -> base_link`，但在完整系统联调时应避免多个节点同时发布同名 `odom -> base_link`。最终给下游使用的 `/localization/fused_odom` 表达 `map -> base_link` 的融合位姿；TF 树中 `map -> odom` 由 fusion 发布，局部 `odom -> base_link` 可由 selected local odom 或 fusion 自身发布，具体由 `tf/output_mode` 配置决定。
+
 ---
 
 ## 5. 状态定义
 
-`pose_fusion` 推荐使用 15 维误差状态 ESKF 或等价的误差状态融合框架。由于 IMU 原始积分已经在 `dr_odometry` 中处理，`pose_fusion` 的传播可以先以 DR delta 为主，后续再扩展为直接 IMU 传播。
+`pose_fusion` 推荐分阶段实现。首版为了快速达到 ysw_loc 的工程效果，应显式维护局部连续位姿和全局校正；后续再扩展为完整 15 维误差状态 ESKF。
 
-名义状态：
+P0 名义状态：
 
 ```cpp
 struct FusionState {
+  double timestamp = 0.0;
+
+  // 局部连续状态，语义为 odom -> base_link。
+  Eigen::Vector3d p_odom = Eigen::Vector3d::Zero();
+  Eigen::Quaterniond q_odom = Eigen::Quaterniond::Identity();
+  Eigen::Vector3d v_odom = Eigen::Vector3d::Zero();
+
+  // 全局校正锚点，语义为 map -> odom。
+  Eigen::Vector3d p_map_odom = Eigen::Vector3d::Zero();
+  Eigen::Quaterniond q_map_odom = Eigen::Quaterniond::Identity();
+
+  // 对最终 map -> base_link 位姿的不确定度估计。
+  Eigen::Matrix<double, 6, 6> pose_covariance = Eigen::Matrix<double, 6, 6>::Identity();
+
+  bool initialized = false;
+};
+```
+
+P1 完整 ESKF 状态：
+
+```cpp
+struct EskfFusionState {
   double timestamp = 0.0;
   Eigen::Vector3d p_map = Eigen::Vector3d::Zero();
   Eigen::Vector3d v_map = Eigen::Vector3d::Zero();
@@ -210,6 +344,22 @@ delta_x = [delta_p, delta_v, delta_theta, delta_bg, delta_ba]
 | P1 | IMU 或 DR motion model | pose/velocity/yaw 观测更新 | 更强鲁棒性和长时间 GNSS 失效能力 |
 
 P0 阶段不要把实现做复杂。先保证 DR 连续预测 + SLAM/GLOBAL 校正 + reset 机制正确，再扩展完整 IMU 状态传播。
+
+
+P0 阶段的核心状态更新关系：
+
+```text
+DR/SLAM local update:
+  update T_odom_base_local
+
+Global matcher/GNSS absolute update:
+  update T_map_odom
+
+Final output:
+  T_map_base = T_map_odom * T_odom_base_local
+```
+
+这不是“理论退化版本”，而是工程上更稳定的初版：低频全局观测不会破坏高频局部连续性，且与 ROS TF 的 `map -> odom -> base_link` 结构一致。
 
 ---
 
@@ -306,7 +456,7 @@ float64 initial_yaw_error
 
 处理策略：
 
-1. `success=false` 或 `converged=false` 只记录诊断，不更新滤波器。
+1. `success=false` 必须拒绝；`converged=false` 按当前 `global_matcher` 实现只作为软诊断，若 inlier、RMSE、残差等质量门控通过，可以低权重接受。
 2. `map_id` 必须与当前 manager/pose_fusion 的 active map 一致，否则拒绝，避免地图段切换期间混用结果。
 3. `pose` 是 `T_map_base_match`，需要结合当前 `T_odom_base_current` 计算 `T_map_odom_observed`。
 4. 小误差校正使用平滑更新或 ESKF pose update。
@@ -548,6 +698,37 @@ q_new = slerp(q_old, q_match, alpha)
 
 如果使用 ESKF 观测更新，则通过调节 `R_global_matcher` 实现平滑，不再额外插值。工程上建议 P0 阶段先实现 `map -> odom` 平滑修正，P1 阶段再切换为完整 ESKF 更新。
 
+
+推荐 P0 的 `map -> odom` 平滑校正流程：
+
+```text
+输入:
+  T_map_base_match      # global_matcher 输出
+  T_odom_base_current   # 当前局部连续位姿
+
+计算:
+  T_map_odom_obs = T_map_base_match * inverse(T_odom_base_current)
+  residual = Log(inverse(T_map_odom_current) * T_map_odom_obs)
+
+门控:
+  if residual too large and no manager approval:
+    reject or mark pending_soft_reset
+
+平滑:
+  T_map_odom <- InterpolateSE3(T_map_odom_current, T_map_odom_obs, alpha)
+```
+
+其中 `alpha` 不应固定写死，应由匹配质量动态决定：
+
+```text
+alpha = base_gain
+alpha *= clamp(inlier_ratio / target_inlier_ratio, 0.3, 1.5)
+alpha *= clamp(target_rmse / max(inlier_rmse, 1e-3), 0.3, 1.5)
+alpha = clamp(alpha, min_gain, max_gain)
+```
+
+这样好的匹配更快拉回地图，质量一般的匹配只慢速修正，不会把错误瞬间写入最终定位。
+
 ---
 
 ## 9. 质量门控和协方差
@@ -606,7 +787,7 @@ R_global = base_R_global * quality_scale
 
 | 条件 | 默认阈值 |
 |---|---|
-| `success == false` 或 `converged == false` | 拒绝 |
+| `success == false` | 拒绝 |
 | source points 过少 | `< 200` |
 | target points 过少 | `< 1000` |
 | fitness 过大 | 按 matcher 和地图标定；fast_gicp 的数值尺度不能沿用 PCL GICP 固定阈值 |
@@ -998,7 +1179,94 @@ pose_fusion 检测到 DR 也不可用:
 
 ---
 
-## 15. 达到 ysw_loc 效果的关键实现点
+
+
+## 15. 鲁棒融合的工程与理论实现
+
+### 15.1 工程原则
+
+鲁棒不是只靠一个滤波器公式，而是靠“观测分层、门控、降权、状态机、可解释诊断”共同实现。`pose_fusion` 必须满足以下原则：
+
+1. 预测源和校正源解耦：DR/SLAM 负责连续性，global_matcher/GNSS 负责全局一致性。
+2. 低频强观测不能直接打断高频输出：全局校正默认更新 `map -> odom`，不直接跳 `odom -> base_link`。
+3. 每个观测都有生命周期：received、validated、accepted、rejected、expired。
+4. 每次拒绝必须有具体原因：timeout、frame_mismatch、map_id_mismatch、large_residual、bad_quality、policy_disabled。
+5. 任何硬 reset 必须来自 manager、人工初值或明确配置的调试模式，不能由普通观测自动触发。
+
+### 15.2 理论一致性
+
+理论上，多源融合应满足以下观测模型：
+
+| 来源 | 观测空间 | 推荐模型 | 主要约束 |
+|---|---|---|---|
+| DR | SE(3) relative delta | motion propagation | 短时连续、速度方向 |
+| SLAM | SE(3) local pose/delta | relative pose update | LiDAR-IMU 局部一致性 |
+| global_matcher | SE(3) absolute map pose | absolute pose update or map->odom update | 地图一致性 |
+| GNSS | position/yaw absolute | position/yaw update | 露天全局约束 |
+| relocalization | SE(3) absolute reset | reset event | 丢失恢复 |
+
+对于 SE(3) 残差，姿态误差必须使用李群 Log，而不是欧拉角直接相减：
+
+```text
+r_T = Log( inverse(T_pred) * T_obs )
+r = [r_translation, r_rotation]
+```
+
+对于低频绝对观测，P0 阶段可把残差作用在 `T_map_odom` 上；P1 阶段再把它作为 ESKF 的 pose update。两者理论上都等价于约束最终 `T_map_base`，区别是工程实现的连续性和复杂度。
+
+### 15.3 传感器退化处理
+
+定位系统必须能承受短时传感器退化：
+
+| 退化情况 | fusion 行为 | 输出状态 |
+|---|---|---|
+| LiDAR/SLAM 短时失效 | DR 继续传播，SLAM 观测超时降权 | `DR_ONLY` 或 `DEGRADED` |
+| global_matcher 连续失败 | 保持 DR+SLAM 输出，不更新 map->odom | `LOCAL_FUSION` |
+| GNSS 失效 | 禁用 GNSS 观测，不 reset | 视地图约束进入 `MAP_CONSTRAINED` 或 `LOCAL_FUSION` |
+| DR 短时缺失但 SLAM 可用 | SLAM delta 作为临时传播 | `LOCAL_FUSION` |
+| DR 和 SLAM 同时失效 | 停止 valid 输出或冻结短时输出，等待恢复 | `FAILURE` |
+| 重定位成功 | manager 验收后 hard reset | `MAP_CONSTRAINED` |
+
+短时 LiDAR 失效时，允许定位继续运行的条件：
+
+```text
+DR fresh == true
+AND last valid fused covariance below threshold
+AND outage_duration < max_dead_reckoning_duration
+```
+
+超过阈值后仍可发布预测，但 `FusionStatus.output_valid` 应降为 false 或质量分显著降低，避免规划控制误用。
+
+### 15.4 异常观测防护
+
+必须实现以下防护：
+
+1. 协方差下限：任何观测协方差不能小于配置下限，避免某个模块“过度自信”。
+2. 协方差上限：过大协方差只记录诊断，不参与更新。
+3. 残差门控：位置、yaw、SE(3) 马氏距离分别检查。
+4. 连续一致性：大残差 global_matcher 需要连续 N 次方向一致才允许 soft reset。
+5. 时间回退保护：时间戳倒退时清对应来源缓存，不跨旧数据积分。
+6. 地图编号保护：`map_id` 不一致时绝不融合。
+7. 场景策略保护：manager 禁用的观测即使质量好也不使用。
+
+### 15.5 与 ysw_loc 效果对齐的融合形式
+
+为了达到 ysw_loc 的实际定位效果，首版实现应优先完成以下闭环：
+
+```text
+slam/dr local odom -> pose_fusion fused pose -> global_matcher initial guess
+             ^                                      |
+             |                                      v
+       local continuity                  map/submap match result
+             |                                      |
+             +---------- map->odom correction <-----+
+```
+
+这条闭环比“把所有 odom 做平均”重要得多。只要 `global_matcher` 的匹配结果没有真正进入 `pose_fusion` 并校正 `map -> odom`，DeepLumin 的最终定位就不会达到 ysw_loc 的地图贴合效果。
+
+---
+
+## 16. 达到 ysw_loc 效果的关键实现点
 
 ysw_loc 的效果主要来自两个部分：
 
@@ -1026,7 +1294,7 @@ DeepLumin 中对应必须做到：
 
 ---
 
-## 16. 开发阶段
+## 17. 开发阶段
 
 ### P0：基础框架和接口
 
@@ -1084,7 +1352,7 @@ DeepLumin 中对应必须做到：
 
 ---
 
-## 17. 测试和验收
+## 18. 测试和验收
 
 ### 17.1 单元测试
 
@@ -1128,7 +1396,7 @@ DeepLumin 中对应必须做到：
 
 ---
 
-## 18. 实现注意事项
+## 19. 实现注意事项
 
 1. 不要在多个模块同时发布最终 `map -> odom`。
 2. 不要让 `relocalization` 绕过 manager 直接 reset。
@@ -1143,7 +1411,7 @@ DeepLumin 中对应必须做到：
 
 ---
 
-## 19. 最小可落地版本
+## 20. 最小可落地版本
 
 为了尽快达到 ysw_loc 效果，推荐最小实现如下：
 
@@ -1158,3 +1426,59 @@ DeepLumin 中对应必须做到：
 ```
 
 这个版本已经具备 ysw_loc 的核心闭环：局部连续运动 + 地图匹配校正。后续再逐步增强 GNSS 场景化、完整 ESKF 传播、SLAM 反馈 DR 和更细的状态机策略。
+
+---
+
+## 21. 首轮代码实现清单
+
+开发 `pose_fusion` 时按以下顺序落地，避免一开始就把完整 ESKF、GNSS、manager 全部耦在一起：
+
+### 21.1 必须先建的 core 文件
+
+```text
+include/pose_fusion/common/types.hpp
+include/pose_fusion/common/config.hpp
+include/pose_fusion/common/math_utils.hpp
+include/pose_fusion/core/pose_fusion_core.hpp
+include/pose_fusion/core/observation_buffer.hpp
+include/pose_fusion/core/quality_gate.hpp
+include/pose_fusion/core/fusion_state_machine.hpp
+src/core/pose_fusion_core.cpp
+src/core/observation_buffer.cpp
+src/core/quality_gate.cpp
+src/core/fusion_state_machine.cpp
+```
+
+### 21.2 ROS 适配文件
+
+```text
+include/pose_fusion/ros/ros_adapter.hpp
+include/pose_fusion/ros/param_loader.hpp
+include/pose_fusion/ros/tf_manager.hpp
+src/ros/ros_adapter.cpp
+src/ros/param_loader.cpp
+src/ros/tf_manager.cpp
+src/pose_fusion_node.cpp
+config/pose_fusion.yaml
+launch/pose_fusion.launch
+```
+
+### 21.3 第一版必须完成的功能
+
+1. 参数加载和节点启动。
+2. `/initialpose` 初始化。
+3. 订阅 `/localization/dr_odom`，用 DR delta 推进 `T_odom_base_local`。
+4. 发布 `/localization/fused_odom`、`/localization/fused_pose`、`/localization/fused_path`、`FusionStatus`。
+5. 订阅 `/localization/global_matcher/result`，通过质量门控后平滑更新 `T_map_odom`。
+6. 输出 reject reason，方便 rosbag 调试。
+
+### 21.4 第二版再加入
+
+1. SLAM 局部相对观测更新。
+2. manager `ObserverPolicy`。
+3. manager accepted relocalization reset。
+4. GNSS 场景化观测。
+5. 完整 ESKF pose/velocity/yaw update。
+
+首轮实现只要把 DR 连续预测和 global_matcher 地图校正闭环跑通，就已经具备 ysw_loc 的核心定位形态。
+
