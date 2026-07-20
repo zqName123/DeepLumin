@@ -1,3 +1,8 @@
+/**
+ * @file fusion_state_machine.cpp
+ * @brief 状态名仅用于诊断与 FusionStatus 展示，不直接改变滤波增益
+ */
+
 #include "pose_fusion/core/fusion_state_machine.hpp"
 
 namespace pose_fusion {
@@ -11,6 +16,7 @@ void FusionStateMachine::update(const FusionStatusData& status) {
     state_ = FusionStateName::FAILURE;
     return;
   }
+  // 有全局匹配 → 地图约束；否则有 SLAM → 局部融合；否则有 DR → 纯推算；都无 → 降级
   if (status.is_global_matcher_available) {
     state_ = FusionStateName::MAP_CONSTRAINED;
   } else if (status.is_slam_available) {

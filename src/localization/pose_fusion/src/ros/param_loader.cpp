@@ -1,3 +1,11 @@
+/**
+ * @file param_loader.cpp
+ * @brief YAML → FusionConfig：键路径与 pose_fusion.yaml 层级一一对应
+ *
+ * 例如 YAML 中 frames.map 经 rosparam load 后键为 "frames/map"。
+ * 第三个参数为默认值（来自 types.hpp 中结构体字段初值）。
+ */
+
 #include "pose_fusion/ros/param_loader.hpp"
 
 namespace pose_fusion_ros {
@@ -5,11 +13,13 @@ namespace pose_fusion_ros {
 pose_fusion::FusionConfig loadFusionConfig(ros::NodeHandle& pnh) {
   pose_fusion::FusionConfig cfg;
 
+  // --- frames / map ---
   pnh.param<std::string>("frames/map", cfg.frames.map, cfg.frames.map);
   pnh.param<std::string>("frames/odom", cfg.frames.odom, cfg.frames.odom);
   pnh.param<std::string>("frames/base_link", cfg.frames.base_link, cfg.frames.base_link);
   pnh.param<std::string>("map/default_map_id", cfg.default_map_id, cfg.default_map_id);
 
+  // --- topics ---
   pnh.param<std::string>("topics/dr_odom", cfg.topics.dr_odom, cfg.topics.dr_odom);
   pnh.param<std::string>("topics/dr_status", cfg.topics.dr_status, cfg.topics.dr_status);
   pnh.param<std::string>("topics/slam_odom", cfg.topics.slam_odom, cfg.topics.slam_odom);
@@ -28,6 +38,7 @@ pose_fusion::FusionConfig loadFusionConfig(ros::NodeHandle& pnh) {
   pnh.param<std::string>("topics/fused_path", cfg.topics.fused_path, cfg.topics.fused_path);
   pnh.param<std::string>("topics/fusion_status", cfg.topics.fusion_status, cfg.topics.fusion_status);
 
+  // --- runtime ---
   pnh.param<double>("runtime/output_rate_hz", cfg.runtime.output_rate_hz, cfg.runtime.output_rate_hz);
   pnh.param<bool>("runtime/publish_tf", cfg.runtime.publish_tf, cfg.runtime.publish_tf);
   pnh.param<bool>("runtime/publish_map_to_odom_tf", cfg.runtime.publish_map_to_odom_tf,
@@ -39,6 +50,7 @@ pose_fusion::FusionConfig loadFusionConfig(ros::NodeHandle& pnh) {
   pnh.param<bool>("runtime/allow_debug_relocalization_direct", cfg.runtime.allow_debug_relocalization_direct,
                   cfg.runtime.allow_debug_relocalization_direct);
 
+  // --- initialization ---
   pnh.param<bool>("initialization/allow_initialpose", cfg.initialization.allow_initialpose,
                   cfg.initialization.allow_initialpose);
   pnh.param<bool>("initialization/allow_dr_initialization", cfg.initialization.allow_dr_initialization,
@@ -50,6 +62,7 @@ pose_fusion::FusionConfig loadFusionConfig(ros::NodeHandle& pnh) {
   pnh.param<double>("initialization/initial_cov_yaw_deg", cfg.initialization.initial_cov_yaw_deg,
                     cfg.initialization.initial_cov_yaw_deg);
 
+  // --- prediction (DR) ---
   pnh.param<double>("prediction/max_dr_gap", cfg.prediction.max_dr_gap, cfg.prediction.max_dr_gap);
   pnh.param<double>("prediction/max_dr_delta_translation", cfg.prediction.max_dr_delta_translation,
                     cfg.prediction.max_dr_delta_translation);
@@ -60,6 +73,7 @@ pose_fusion::FusionConfig loadFusionConfig(ros::NodeHandle& pnh) {
   pnh.param<double>("prediction/process_noise_yaw_deg", cfg.prediction.process_noise_yaw_deg,
                     cfg.prediction.process_noise_yaw_deg);
 
+  // --- observers/slam ---
   pnh.param<bool>("observers/slam/enabled", cfg.slam.enabled, cfg.slam.enabled);
   pnh.param<double>("observers/slam/smooth_gain", cfg.slam.smooth_gain, cfg.slam.smooth_gain);
   pnh.param<double>("observers/slam/max_position_residual", cfg.slam.max_position_residual,
@@ -67,6 +81,7 @@ pose_fusion::FusionConfig loadFusionConfig(ros::NodeHandle& pnh) {
   pnh.param<double>("observers/slam/max_yaw_residual_deg", cfg.slam.max_yaw_residual_deg,
                     cfg.slam.max_yaw_residual_deg);
 
+  // --- observers/global_matcher ---
   pnh.param<bool>("observers/global_matcher/enabled", cfg.global_matcher.enabled,
                   cfg.global_matcher.enabled);
   pnh.param<bool>("observers/global_matcher/allow_converged_false",
@@ -98,6 +113,7 @@ pose_fusion::FusionConfig loadFusionConfig(ros::NodeHandle& pnh) {
                     cfg.global_matcher.max_yaw_residual_deg,
                     cfg.global_matcher.max_yaw_residual_deg);
 
+  // --- buffer (freshness) ---
   pnh.param<double>("buffer/max_dr_age", cfg.buffer.max_dr_age, cfg.buffer.max_dr_age);
   pnh.param<double>("buffer/max_slam_age", cfg.buffer.max_slam_age, cfg.buffer.max_slam_age);
   pnh.param<double>("buffer/max_global_matcher_age", cfg.buffer.max_global_matcher_age,

@@ -1,8 +1,14 @@
+/**
+ * @file ros_adapter.cpp
+ * @brief 消息编解码实现；保持数值布局与 ROS 惯用约定一致（协方差行优先 6x6）
+ */
+
 #include "pose_fusion/ros/ros_adapter.hpp"
 
 namespace pose_fusion_ros {
 namespace {
 
+/** geometry_msgs/Pose → Pose3d；非法四元数回退为单位元 */
 pose_fusion::Pose3d poseFromRos(const geometry_msgs::Pose& msg) {
   pose_fusion::Pose3d pose;
   pose.position = pose_fusion::Vec3d(msg.position.x, msg.position.y, msg.position.z);
@@ -27,6 +33,7 @@ void fillRosPose(const pose_fusion::Pose3d& pose, geometry_msgs::Pose* msg) {
   msg->orientation.w = q.w();
 }
 
+/** ROS 36 元协方差数组（行优先）→ Eigen Mat6d */
 pose_fusion::Mat6d covarianceFromRos(const boost::array<double, 36>& cov) {
   pose_fusion::Mat6d out;
   for (int i = 0; i < 36; ++i) {
@@ -46,7 +53,7 @@ void fillRosCovariance(const pose_fusion::Mat6d& cov, boost::array<double, 36>* 
 pose_fusion::PoseObservation fromOdom(const nav_msgs::Odometry& msg,
                                       pose_fusion::ObservationSource source) {
   pose_fusion::PoseObservation obs;
-  obs.source = source;
+  obs.source = source;  // DR 或 SLAM，由调用方指定
   obs.timestamp = msg.header.stamp.toSec();
   obs.pose = poseFromRos(msg.pose.pose);
   obs.velocity = pose_fusion::Vec3d(msg.twist.twist.linear.x,
@@ -63,12 +70,13 @@ pose_fusion::PoseObservation fromGlobalMatch(const deeplumin_msgs::GlobalMatchRe
   pose_fusion::PoseObservation obs;
   obs.source = pose_fusion::ObservationSource::GLOBAL_MATCHER;
   obs.timestamp = msg.header.stamp.toSec();
-  obs.pose = poseFromRos(msg.pose.pose);
+  obs.pose = poseFromRos(msg.pose.pose);  // 期望为 map 系 map_base
   obs.covariance = covarianceFromRos(msg.pose.covariance);
   obs.frame_id = msg.header.frame_id;
   obs.child_frame_id = msg.child_frame_id;
   obs.map_id = msg.map_id;
   obs.valid = true;
+  // 匹配质量字段供 QualityGate 与增益自适应使用
   obs.success = msg.success;
   obs.converged = msg.converged;
   obs.reject_reason = msg.reject_reason;
@@ -86,7 +94,7 @@ pose_fusion::ResetObservation fromInitialPose(const geometry_msgs::PoseWithCovar
   obs.source = pose_fusion::ObservationSource::MANUAL;
   obs.timestamp = msg.header.stamp.toSec();
   if (obs.timestamp <= 0.0) {
-    obs.timestamp = ros::Time::now().toSec();
+    obs.timestamp = ros::Time::now().toSec();  // RViz 有时 stamp=0
   }
   obs.map_base = poseFromRos(msg.pose.pose);
   obs.covariance = covarianceFromRos(msg.pose.covariance);
@@ -110,6 +118,7 @@ pose_fusion::ResetObservation fromRelocalization(const deeplumin_msgs::Relocaliz
   obs.map_id = msg.map_id;
   obs.reason = "accepted_relocalization";
   obs.approved_by = "localization_manager";
+  // 仅当上游标记 success 且 accepted 时视为有效重置
   obs.valid = msg.success && msg.accepted;
   return obs;
 }
@@ -176,6 +185,7 @@ deeplumin_msgs::FusionStatus toStatusMsg(const pose_fusion::FusionStatusData& st
   msg.last_slam_age = status.last_slam_age;
   msg.last_global_matcher_age = status.last_global_matcher_age;
   msg.last_relocalization_age = status.last_relocalization_age;
+  // 以下传感器 age 本模块不直接消费，填占位大值 / false
   msg.last_gnss_age = 1e9;
   msg.last_can_age = 1e9;
   msg.last_imu_age = 1e9;

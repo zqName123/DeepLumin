@@ -1,5 +1,13 @@
 #pragma once
 
+/**
+ * @file ros_adapter.hpp
+ * @brief ROS 消息 ↔ 融合内部类型的双向转换（节点与 core 之间的边界）
+ *
+ * from*：订阅回调中把 ROS 消息变成 PoseObservation / ResetObservation / Policy
+ * to*  ：定时器中把 FusionOutput / FusionStatusData 变成可发布消息或 TF
+ */
+
 #include "pose_fusion/common/types.hpp"
 
 #include <deeplumin_msgs/FusionStatus.h>

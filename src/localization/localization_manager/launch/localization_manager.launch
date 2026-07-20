@@ -1,0 +1,42 @@
+<?xml version="1.0"?>
+<!--
+  localization_manager.launch — 定位系统管理节点启动入口
+
+  职责：
+    作为定位子系统的“大脑/调度器”，不直接做位姿融合，而是：
+      1) 监控 DR / SLAM / Fusion / Global Matcher / Relocalization / GNSS 健康度
+      2) 判定当前场景（室内/室外/半室外）
+      3) 输出 ManagerState 与 ObserverPolicy，指导 pose_fusion 等下游模块
+
+  典型调用：
+    roslaunch localization_manager localization_manager.launch
+    roslaunch localization_manager localization_manager.launch config_file:=/path/to/custom.yaml
+
+  启动后执行链路：
+    1) roslaunch 加载 localization_manager.yaml 到节点私有参数 ~
+    2) 启动 localization_manager_node
+    3) main() → LocalizationManagerNode 构造
+         → loadConfig → core.initialize
+         → 订阅各模块状态/里程计 → 发布 policy/status/accepted_relocalization
+    4) ros::spin()：异步回调更新健康快照；定时器 onTimer 驱动状态机与策略输出
+
+  与 pose_fusion 的关系：
+    manager 发布 /localization/manager/observer_policy
+      → pose_fusion 订阅并 setObserverPolicy（控制各观测源开关与权重）
+    manager 发布 /localization/manager/accepted_relocalization
+      → pose_fusion 订阅并 reset（硬重置融合状态）
+-->
+<launch>
+  <!-- 管理器参数文件；默认使用包内 config/localization_manager.yaml -->
+  <arg name="config_file" default="$(find localization_manager)/config/localization_manager.yaml" />
+
+  <!--
+    启动管理节点：
+      type=localization_manager_node 对应 CMakeLists 中的可执行目标
+      name=localization_manager 成为 ROS 图中的节点名
+  -->
+  <node pkg="localization_manager" type="localization_manager_node" name="localization_manager" output="screen">
+    <!-- 将 YAML 整文件 load 到 ~ 私有命名空间，供 loadConfig() 读取 -->
+    <rosparam file="$(arg config_file)" command="load" />
+  </node>
+</launch>

@@ -1,3 +1,8 @@
+/**
+ * @file types.cpp
+ * @brief 枚举到字符串，供 FusionStatus / 诊断日志使用
+ */
+
 #include "pose_fusion/common/types.hpp"
 
 namespace pose_fusion {

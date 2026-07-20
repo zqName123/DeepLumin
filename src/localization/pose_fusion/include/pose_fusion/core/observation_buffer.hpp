@@ -1,5 +1,14 @@
 #pragma once
 
+/**
+ * @file observation_buffer.hpp
+ * @brief 各观测源“最新一帧”缓存
+ *
+ * 用途：
+ *   1) feed* 时先写入，保证 tick() 惰性初始化能读到数据
+ *   2) 保留最近一帧供调试 / 扩展（当前核心主要用 last_*_time_ 做 freshness）
+ */
+
 #include "pose_fusion/common/types.hpp"
 
 #include <optional>

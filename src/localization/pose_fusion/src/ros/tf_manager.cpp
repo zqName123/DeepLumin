@@ -1,3 +1,8 @@
+/**
+ * @file tf_manager.cpp
+ * @brief TF 广播：output.map_odom → map/odom；可选 output.odom_base → odom/base_link
+ */
+
 #include "pose_fusion/ros/tf_manager.hpp"
 #include "pose_fusion/ros/ros_adapter.hpp"
 

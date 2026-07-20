@@ -1,3 +1,8 @@
+/**
+ * @file quality_gate.cpp
+ * @brief 质量门实现：所有拒绝原因字符串保持稳定，便于日志与 FusionStatus 排查
+ */
+
 #include "pose_fusion/core/quality_gate.hpp"
 
 #include <sstream>
@@ -21,6 +26,7 @@ bool QualityGate::validatePoseObservation(const PoseObservation& obs, std::strin
     if (reason) *reason = "non_finite_pose";
     return false;
   }
+  // DR/SLAM 期望在 odom 系；GM/GNSS 期望在 map 系
   if (obs.source == ObservationSource::DR || obs.source == ObservationSource::SLAM) {
     if (!obs.frame_id.empty() && obs.frame_id != config_.frames.odom) {
       if (reason) *reason = "local_observation_frame_mismatch:" + obs.frame_id;

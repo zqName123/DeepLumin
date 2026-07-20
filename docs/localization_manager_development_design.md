@@ -67,9 +67,45 @@ localization_manager
 | `relocalization` | 已有 Scan Context + GICP、离线/在线配置 | 由 manager 触发，结果由 manager 验收 |
 | `global_matcher` | 已实现 PCD/地图段加载、FOV 裁剪、fast_gicp 匹配、质量门控、keyframe 可视化测试 | manager 监控结果和失败计数，编排地图段切换，后续补 trigger service |
 | `pose_fusion` | 已完成第一版：可接收 DR/SLAM/global_matcher/accepted relocalization/observer policy，维护 `T_map_odom` 并发布 fused odom/path/TF | manager 必须提供统一初始位姿、下发 observer policy、验收 relocalization/reset |
-| `localization_manager` | 当前仍为占位节点 | 下一步优先实现系统初始化、初始位姿下发、GNSS 场景策略、模块健康聚合和与 pose_fusion 第一版联调 |
+| `localization_manager` | 已实现第一版编排节点：订阅健康/重定位/GNSS/初值，发布 `manager/status`、`observer_policy` 和 `accepted_relocalization` | 下一步补齐 trigger/service、pose_fusion reset 闭环和更严格的场景验收 |
 
-结论：当前代码已经具备 `global_matcher` 地图约束能力，`pose_fusion` 也已有第一版融合链路；当前最缺的是 `localization_manager` 对系统初始化和场景策略的编排。没有 manager 下发统一初始位姿时，DR/SLAM 各自以本模块的 `odom` 起点运行，方向和原点可能不同，RViz 中很难直接看到有效融合效果。完成本文档对应实现后，系统可以先由 manager 将 RViz `/initialpose`、`relocalization` 或可靠 GNSS 产生的 `T_map_base_init` 下发给 `pose_fusion`，再进入 DR/SLAM/global_matcher 的连续定位与融合；LiDAR 短时失效时由 DR 继续预测，SLAM/global_matcher 降权，fusion 协方差增长，manager 标记 degraded，并在 LiDAR 恢复后用 global_matcher/relocalization 拉回地图。
+结论：当前代码已经具备 `global_matcher` 地图约束能力，`pose_fusion` 也已有第一版融合链路；`localization_manager` 第一版已经落地，负责统一监控、策略发布和重定位结果验收。当前还没有做完的是 manager 对 `pose_fusion` 的直接 reset/service 闭环、`global_matcher` 的 trigger service，以及更严格的 GNSS 自动场景判定。后续完整系统中，`/initialpose` 不应再直接给 `pose_fusion` 使用，而应先进入 manager，经过 2D 初值补全、地图高度估计或初始匹配验收后，再由 `/localization/manager/initial_pose` 下发给 `pose_fusion`。
+
+## 2.1 当前已落地的第一版 manager
+
+当前仓库里的 `localization_manager` 已经不是空壳，而是一个可运行的编排节点：
+
+1. 代码结构已拆成 `core` / `ros` / `node` 三层。
+2. 已订阅 `dr_status`、`slam_health`、`fused_odom`、`fusion_status`、`global_matcher/status`、`global_matcher/result`、`relocalization/result`、`/initialpose`、`/gnss_chc_data` 和 `scene_state`。
+3. 已发布 `manager/status`、`observer_policy`、`accepted_relocalization` 和 `manager/initial_pose`。
+4. 已具备基础状态机：`WAIT_INITIAL_POSE`、`LOCALIZATION`、`GLOBAL_MATCHING`、`RELOCALIZING`、`DEGRADED`、`FAILURE`。
+5. 已能把验收后的 relocalization 结果转发给 `pose_fusion`。
+6. 已能发布场景策略，供后续把 GNSS 是否参与融合、DR 是否使用 GNSS heading/velocity/position 继续细化。
+7. 当前仍欠缺的是 `pose_fusion` 对 `manager/initial_pose` 的直接接入，以及 `global_matcher` / `relocalization` 的 trigger service 闭环。
+
+### 2.2 当前版本的真实边界
+
+第一版 `localization_manager` 解决的是“系统如何统一编排”，不是“系统如何自动闭环到最优结果”。因此当前实现应按下面边界理解：
+
+1. `manager/status` 和 `observer_policy` 已经可以直接参与联调。
+2. `accepted_relocalization` 已经具备“一次性发布”的语义，但它仍依赖外部 relocalization 节点先产出候选结果。
+3. `manager/initial_pose` 已经会发布，但 `pose_fusion` 还需要显式接入它，才能让初值真正由 manager 接管。
+4. `global_matcher` 目前可以被监控和验收，但还没有真正的 trigger service 闭环，所以 manager 只能先做健康评估和地图段一致性判断。
+5. `relocalization` 当前也是“可验收、可转发”，但还没有完整的触发-回传-验收-重置闭环。
+6. GNSS 目前只建议作为场景判定和 DR 策略输入，不建议在 bag 测试里直接作为初始化坐标来源。
+7. 这版 manager 的目标是把后续开发收敛成固定顺序，而不是让各模块各自决定坐标系和 reset 逻辑。
+
+### 2.3 当前初始化链路的不足
+
+当前 `localization_manager_node::onInitialPose()` 的实现是：收到 RViz `/initialpose` 后，检查 `allow_manual_initialpose`，调用 `core_.onInitialPose()`，然后通过 `toInitialPoseMsg()` 直接转发到 `/localization/manager/initial_pose`。这只能算第一版转发逻辑，存在明显不足：
+
+1. RViz 2D Pose Estimate 本质只可靠提供 `x/y/yaw`，`z/roll/pitch` 通常不可信。
+2. 当前转发没有参考地图补齐 z，在有坡度、高差或矿区地图时，初始高度错误会影响局部地图裁剪和后续匹配。
+3. 当前没有把 manual initial pose 区分为 `2D coarse candidate` 和 `3D accepted initial pose`。
+4. 当前没有触发 global_matcher 做初始配准确认，因此人工初值误差较大时容易直接污染 `pose_fusion`。
+5. 当前没有记录 z 的来源，后续排查时不知道初始高度来自 RViz、地图高度、GNSS 还是匹配结果。
+
+因此后续优化目标是：manager 不再把 `/initialpose` 当作完整位姿，而是把它当作二维粗初值候选，经过高度补齐和质量验收后再发布。
 
 ---
 
@@ -143,9 +179,9 @@ manager 支持三类来源，优先级如下：
 
 | 优先级 | 来源 | Topic/接口 | 适用场景 | 备注 |
 |---:|---|---|---|---|
-| 1 | RViz 人工初值 | `/initialpose` | bag 调试、人工指定地图内起点 | 最适合当前 bag 测试；不依赖 GNSS 坐标与地图一致 |
-| 2 | relocalization | `/localization/relocalization/result`，验收后转发 `/localization/manager/accepted_relocalization` | 自动启动、定位丢失恢复 | 推荐真实系统自动初始化主路径 |
-| 3 | 可靠 GNSS | `/gnss_chc_data` 转 map pose | 露天、GNSS 与地图坐标已标定 | 不适合当前 bag 地图测试，除非已知 GNSS ENU 与 PCD map 的外参 |
+| 1 | RViz 人工 2D 粗初值 | `/initialpose` | bag 调试、人工指定地图内起点 | 只信任 `x/y/yaw`；`z` 需由地图高度或初始匹配补齐 |
+| 2 | relocalization | `/localization/relocalization/result`，验收后转发 `/localization/manager/accepted_relocalization` | 自动启动、定位丢失恢复 | 推荐真实系统自动初始化主路径；输出应为完整 `map -> base_link` |
+| 3 | 可靠 GNSS | `/gnss_chc_data` 转 map pose | 露天、GNSS 与地图坐标已标定 | 必须已知 `T_map_enu`；不适合当前 bag 地图测试 |
 
 禁止把未验收的 relocalization 或跳变 GNSS 直接作为 fusion reset。所有初值必须经过 manager 的质量门控并记录事件。
 
@@ -169,6 +205,48 @@ T_map_base = T_map_odom * T_odom_base_current
 
 第一版可只维护一个 `odom` 参考，优先使用 pose_fusion 已接入的 DR 作为 propagation 主轴；后续若需要同时严格统一 `dr_odom` 和 `slam_odom`，可在 pose_fusion 内分别维护 `T_map_dr_odom`、`T_map_slam_odom` 或将 SLAM 转成相对观测。
 
+### 4.2.1 RViz 2D 初值补全流程
+
+参考 ysw_loc 的全局定位节点，RViz `/initialpose` 不能直接作为完整 3D 初值。ysw_loc 的做法是：取 RViz 的 `x/y/yaw`，给一个临时 z，在该姿态附近裁剪全局地图 FOV，再用裁剪子图的 z 范围估计初始高度。DeepLumin 推荐把这个能力放在 `localization_manager` 的初始化流程中，由 manager 编排、由地图接口或 global_matcher 执行具体计算。
+
+推荐流程：
+
+```text
+/initialpose
+  -> ManualInitialPoseCandidate(x, y, yaw, z_unknown)
+  -> frame/map_id/time/covariance gate
+  -> MapHeightProvider or global_matcher init alignment
+  -> InitialPoseCandidate3D(T_map_base_init, z_source, quality)
+  -> manager acceptance gate
+  -> /localization/manager/initial_pose
+  -> pose_fusion reanchor T_map_odom
+```
+
+`z` 补全优先级：
+
+| 优先级 | 来源 | 说明 | 风险 |
+|---:|---|---|---|
+| 1 | 初始点云-地图配准结果 | 使用当前 scan 和人工 2D 初值裁剪出的子图做一次粗/精匹配，输出完整 6DoF | 依赖当前 LiDAR 和 global_matcher 可用 |
+| 2 | 地图局部高度查询 | 在 `x/y` 周围半径或 FOV 内查询地图点云高度，估计 base_link z | 垂直结构多时需要鲁棒统计 |
+| 3 | 最近一次可信 fused pose z | 已经定位过，人工只是修正 x/y/yaw | 启动冷启动不可用 |
+| 4 | 配置默认 z | 纯平面场景或临时 debug | 高程地图中不可靠 |
+
+地图高度估计不要简单取全部点云平均。ysw_loc 使用 `(min_z + max_z) / 2` 能在部分场景跑通，但工程上更建议可配置：
+
+```text
+height_method = mid_range | median | percentile | ground_band | scan_match
+search_radius = 10-30 m
+fov_crop = true
+base_height_offset = lidar_to_base_z 或 map_ground_to_base_z
+```
+
+默认建议：
+
+1. 若当前 LiDAR scan 可用，优先触发 global_matcher 初始匹配，直接得到完整 `T_map_base_init`。
+2. 若 scan 不可用但地图可用，使用局部地图高度鲁棒估计 z，并增大 z 协方差。
+3. 若地图也不可用，允许 debug 模式使用 RViz z 或默认 z，但 `manager/status` 必须标记 `WARNING`。
+4. 发布给 `pose_fusion` 的 `/localization/manager/initial_pose` 必须已经是 3D accepted pose，不再是原始 2D RViz pose。
+
 ### 4.3 bag 测试推荐策略
 
 当前 bag 测试的目标是验证地图定位链路，而不是验证 GNSS 绝对坐标。因此推荐：
@@ -176,7 +254,7 @@ T_map_base = T_map_odom * T_odom_base_current
 ```text
 GNSS position: 不用于初始化，不用于 fusion position hard constraint
 GNSS heading : 可用于 DR 航向稳定，但需确认 heading 与 base_link 前向一致
-initial pose : 优先 RViz /initialpose 或 relocalization 输出
+initial pose : 优先 RViz /initialpose 生成 2D 粗初值，经地图高度/初始匹配补全后由 manager 发布；或使用 relocalization 输出
 map alignment: 由 pose_fusion 的 T_map_odom 完成
 ```
 
@@ -191,34 +269,95 @@ INIT
   -> 进入 WAIT_INITIAL_POSE
 
 WAIT_INITIAL_POSE
-  -> 收到 /initialpose: 生成 manual init candidate
-  -> relocalization 成功: 生成 reloc init candidate
-  -> GNSS reliable 且允许 GNSS init: 生成 gnss init candidate
-  -> candidate 通过验收: 发布 initialize/reset event 给 pose_fusion
-  -> 等待 /localization/fused_odom valid
+  -> 收到 /initialpose: 生成 manual 2D coarse candidate
+  -> manual candidate 通过基础门控: 补齐 z/roll/pitch，或触发 global_matcher 初始匹配
+  -> relocalization 成功: 生成 reloc 3D candidate
+  -> GNSS reliable 且允许 GNSS init 且 T_map_enu 已知: 生成 gnss 3D candidate
+  -> 3D candidate 通过验收: 发布 /localization/manager/initial_pose 或 accepted_relocalization
+  -> 等待 /localization/fused_odom valid 且 fusion_status.initialized=true
   -> LOCALIZATION
 ```
 
 初始化事件必须包含：
 
 ```text
-source: MANUAL_INITIALPOSE / RELOCALIZATION / GNSS
+source: MANUAL_2D / MANUAL_2D_MAP_HEIGHT / MANUAL_2D_SCAN_MATCH / RELOCALIZATION / GNSS
 map_id
 stamp
 T_map_base_init
-position covariance
+position covariance，特别是 z covariance
 yaw covariance
+z_source: rviz / map_height / scan_match / gnss / previous_fusion / default
 quality score
 reason
+raw_initialpose: 原始 RViz 2D 输入，便于复盘
 ```
 
 ### 4.5 初始化验收门控
 
 | 来源 | 必要条件 | 拒绝条件 |
 |---|---|---|
-| `/initialpose` | map frame 正确，姿态四元数有效 | frame 不是 map、时间异常、协方差过大且未强制允许 |
+| `/initialpose` 2D 粗初值 | frame 为 map，四元数有效，`x/y/yaw` 在地图范围内 | frame 不是 map、时间异常、`x/y` 超出地图、yaw 无效 |
+| 地图高度补全 | 局部地图点数足够，高度统计稳定，z 协方差可接受 | 子图为空、高度跨度异常、z 与最近可信位姿差异过大 |
+| 初始 scan-match | 匹配 success，inlier/RMSE/fitness 达标，结果与 2D 初值残差可接受 | 匹配失败、残差过大、map_id 不一致 |
 | relocalization | descriptor/fine matcher 质量达标，map_id 一致 | fitness/RMSE/inlier 不达标，候选不稳定，地图段不一致 |
 | GNSS | 场景允许、fix/heading/卫星数/时间戳可靠，已知 `T_map_enu` | 室内/矿区、质量差、跳变、未标定 GNSS ENU 到 map |
+
+### 4.6 manager 初始化候选状态机
+
+为避免把 2D 粗初值直接发给 fusion，manager 内部建议引入初始化候选状态：
+
+```cpp
+enum class InitCandidateState {
+  EMPTY,
+  RAW_2D_RECEIVED,
+  MAP_HEIGHT_READY,
+  SCAN_MATCH_PENDING,
+  SCAN_MATCH_ACCEPTED,
+  ACCEPTED_3D,
+  REJECTED
+};
+```
+
+候选数据结构建议包含：
+
+```cpp
+struct InitialPoseCandidate {
+  std::string source;
+  std::string map_id;
+  ros::Time stamp;
+  Pose3d raw_2d_pose;
+  Pose3d completed_3d_pose;
+  std::string z_source;
+  double z_std;
+  double yaw_std;
+  double quality_score;
+  bool requires_scan_match;
+  std::string reject_reason;
+};
+```
+
+状态流：
+
+```text
+RAW_2D_RECEIVED
+  -> MAP_HEIGHT_READY: 地图高度查询成功
+  -> SCAN_MATCH_PENDING: 配置要求初始匹配或 z 不确定
+  -> REJECTED: 地图范围外 / 高度不可估计 / frame 错误
+
+MAP_HEIGHT_READY
+  -> ACCEPTED_3D: 不要求 scan-match，且协方差可接受
+  -> SCAN_MATCH_PENDING: 需要用当前 scan 进一步确认
+
+SCAN_MATCH_PENDING
+  -> SCAN_MATCH_ACCEPTED: global_matcher 初始匹配成功
+  -> REJECTED or MAP_HEIGHT_READY: 匹配失败时按配置 fallback
+
+ACCEPTED_3D
+  -> publish /localization/manager/initial_pose
+```
+
+这套状态机后续可以先在 manager ROS 层实现，长期应拆成 `InitialPoseManager` / `MapHeightProvider` / `InitMatchValidator` 三个类，保持 core 可单元测试。
 
 ---
 
@@ -244,7 +383,7 @@ enum class ManagerState {
 | 状态 | 含义 | 输出策略 | 典型进入条件 |
 |---|---|---|---|
 | `INIT` | 参数、地图、topic、模块状态初始化 | 不给规划有效定位 | 节点启动 |
-| `WAIT_INITIAL_POSE` | 等待人工初值、GNSS 初值或重定位结果 | `output_valid=false` | 无可靠初值 |
+| `WAIT_INITIAL_POSE` | 等待人工 2D 粗初值补全、可靠 GNSS 3D 初值或重定位结果 | `output_valid=false` | 无可靠初值 |
 | `LOCALIZATION` | 正常融合定位 | `output_valid=true` | DR + 至少一个约束源正常 |
 | `GLOBAL_MATCHING` | 子图匹配校正进行中 | fusion 继续发布 | 周期触发或质量下降触发 |
 | `RELOCALIZING` | 全局重定位进行中 | 可保持 degraded 输出 | 严重退化、丢失、人工触发 |
@@ -259,7 +398,7 @@ enum class ManagerState {
 ```text
 INIT
   -> WAIT_INITIAL_POSE: 参数和必要模块 ready，但无初值
-  -> LOCALIZATION: 有人工初值/GNSS初值/已验收relocalization
+  -> LOCALIZATION: 有已验收 3D 人工初值/GNSS初值/已验收relocalization
   -> FAILURE: 必要传感器长时间不可用
 
 WAIT_INITIAL_POSE
@@ -500,7 +639,7 @@ dr_use_gnss_position
 
 | 场景/质量 | DR heading | DR velocity | DR position | 说明 |
 |---|---|---|---|---|
-| bag 地图测试 | 可选 | 默认关 | 关 | 初始位姿由 `/initialpose` 或 relocalization 给出，避免 GNSS ENU 锁死地图 |
+| bag 地图测试 | 可选 | 默认关 | 关 | 初始位姿由 `/initialpose` 2D 粗初值补全后给出，或由 relocalization 给出，避免 GNSS ENU 锁死地图 |
 | 露天 GNSS 可靠 | 开 | 可开 | 谨慎开 | 如果 GNSS ENU 与 map 已标定，可用于约束 DR |
 | 半开放 | 可低权重开 | 关或低权重 | 关 | 防止 GNSS 跳变污染 DR |
 | 室内/矿区/隧道 | 关 | 关 | 关 | DR 使用 IMU + wheel，地图约束由 SLAM/global_matcher/relocalization 提供 |
@@ -627,12 +766,12 @@ manager 与 pose_fusion 的关系：
 
 manager 动作：
 
-1. 在 `WAIT_INITIAL_POSE` 阶段给出 `T_map_base_init`，通过 `/initialpose`、已验收 relocalization 或可靠 GNSS 初始化 pose_fusion。
+1. 在 `WAIT_INITIAL_POSE` 阶段给出已验收的 `T_map_base_init`：`/initialpose` 先作为 2D 粗候选补全为 3D，relocalization 必须由 manager 验收，GNSS 必须已知 `T_map_enu`。
 2. 监控 fused odom 频率、协方差、跳变。
 3. 根据场景和模块健康下发 observer policy。
 4. 只有 manager 验收后的 relocalization 结果允许 hard reset。
 5. fusion 协方差超限时触发 global_matcher 或 relocalization。
-6. 若 pose_fusion 第一版只支持 `accepted_relocalization` reset，则 manager 可将人工 `/initialpose` 和 GNSS 初始化统一封装成同一类 accepted initialization/reset 事件。
+6. 若 pose_fusion 第一版只支持 `accepted_relocalization` reset，则 manager 可将已验收的 3D manual/GNSS 初始化统一封装成同一类 accepted initialization/reset 事件；禁止封装原始 2D `/initialpose`。
 
 ### 8.5 relocalization
 
@@ -1011,7 +1150,7 @@ global_matcher 是达到 ysw_loc 定位效果的关键。manager 要把它作为
 | `/localization/slam_odom` | `nav_msgs/Odometry` / `deeplumin_msgs/SlamPose` | SLAM 输出 |
 | `/localization/slam_health` | `deeplumin_msgs/SlamHealth` | SLAM 健康 |
 | `/localization/fused_odom` | `nav_msgs/Odometry` | 最终定位 |
-| `/localization/fusion_status` | 建议新增 `FusionStatus` | fusion 状态 |
+| `/localization/fusion_status` | `deeplumin_msgs/FusionStatus` | fusion 状态 |
 | `/localization/global_matcher/status` | `deeplumin_msgs/LocalizationStatus` | 匹配状态 |
 | `/localization/global_matcher/result` | `deeplumin_msgs/GlobalMatchResult` | 匹配结果 |
 | `/localization/relocalization/result` | `deeplumin_msgs/RelocalizationResult` | 重定位候选 |
@@ -1029,60 +1168,55 @@ global_matcher 是达到 ysw_loc 定位效果的关键。manager 要把它作为
 | `/localization/manager/status` | `deeplumin_msgs/LocalizationStatus` | 聚合定位状态 |
 | `/localization/manager/observer_policy` | `deeplumin_msgs/ObserverPolicy` | 观测策略 |
 | `/localization/manager/accepted_relocalization` | `deeplumin_msgs/RelocalizationResult` | 已验收重定位 |
-| `/localization/manager/initial_pose` | `geometry_msgs/PoseWithCovarianceStamped` 或统一 reset 消息 | manager 验收后的初始化事件 |
-| `/localization/manager/events` | `diagnostic_msgs/KeyValue[]` 或自定义 | reset/触发/拒绝事件 |
+| `/localization/manager/initial_pose` | `geometry_msgs/PoseWithCovarianceStamped` | manager 验收后的初始化事件，当前主要用于后续接入 pose_fusion |
+| `/localization/manager/events` | `diagnostic_msgs/KeyValue[]` 或自定义 | 预留，当前未实现 |
 
 ### 13.3 服务和命令接口
 
 | 接口 | 说明 |
 |---|---|
-| `/localization/manager/set_mode` | 切换 `LOCALIZATION/PURE_DR/PURE_SLAM/MAPPING` |
-| `/localization/manager/set_scene` | 手动设置 `OUTDOOR/INDOOR/TUNNEL/MINE` |
+| `/localization/manager/set_mode` | 切换 `LOCALIZATION/PURE_DR/PURE_SLAM/MAPPING` | 预留，当前未实现 |
+| `/localization/manager/set_scene` | 手动设置 `OUTDOOR/INDOOR/TUNNEL/MINE` | 预留，当前可通过 `scene_state` 话题替代 |
 | `/localization/global_matcher/load_map_command` | 当前已实现的 topic 命令，`std_msgs/String`，格式 `map_id|pcd_path[|activate]` |
 | `/localization/global_matcher/set_map_segment_command` | 当前已实现的 topic 命令，`std_msgs/String`，格式 `map_id` |
-| `/localization/manager/trigger_global_match` | 后续手动触发 global_matcher，一期可仅记录事件 |
-| `/localization/manager/trigger_relocalization` | 手动触发 relocalization |
-| `/localization/manager/reset_localization` | reset pose_fusion，并清理状态 |
-| `/localization/manager/save_state` | 保存当前可靠定位，用于下次启动 |
+| `/localization/manager/trigger_global_match` | 后续手动触发 global_matcher，一期可仅记录事件 | 预留，当前未实现 |
+| `/localization/manager/trigger_relocalization` | 手动触发 relocalization | 预留，当前未实现 |
+| `/localization/manager/reset_localization` | reset pose_fusion，并清理状态 | 预留，当前未实现 |
+| `/localization/manager/save_state` | 保存当前可靠定位，用于下次启动 | 预留，当前未实现 |
 
 ---
 
 ## 14. 包结构
 
-推荐结构：
+当前仓库里 `localization_manager` 的实际结构如下：
 
 ```text
 localization_manager/
 ├── CMakeLists.txt
 ├── package.xml
+├── config/
+│   └── localization_manager.yaml
+├── launch/
+│   └── localization_manager.launch
 ├── include/localization_manager/
 │   ├── common/
-│   │   ├── types.hpp
-│   │   └── config.hpp
+│   │   ├── config.hpp
+│   │   └── types.hpp
 │   ├── core/
-│   │   ├── manager_core.hpp
-│   │   ├── health_monitor.hpp
-│   │   ├── state_machine.hpp
-│   │   ├── scene_policy.hpp
-│   │   ├── trigger_scheduler.hpp
-│   │   └── reloc_validator.hpp
+│   │   └── manager_core.hpp
 │   └── ros/
-│       ├── ros_adapter.hpp
-│       └── param_loader.hpp
-├── src/
-│   ├── core/
-│   ├── ros/
-│   └── localization_manager_node.cpp
-├── config/localization_manager.yaml
-├── launch/localization_manager.launch
-└── test/
+│       └── ros_adapter.hpp
+└── src/
+    ├── core/
+    │   └── manager_core.cpp
+    ├── ros/
+    │   └── ros_adapter.cpp
+    └── localization_manager_node.cpp
 ```
-
----
 
 ## 15. 核心类设计
 
-### 15.1 `ManagerCore`
+当前第一版已经落地为一个简化但可用的 `ManagerCore`：
 
 ```cpp
 class ManagerCore {
@@ -1090,90 +1224,43 @@ public:
   bool initialize(const ManagerConfig& config);
   void update(const ros::Time& now);
 
-  void onHealthUpdate(const ModuleHealth& health);
-  void onFusionStatus(const FusionStatusView& status);
-  void onRelocalizationResult(const RelocCandidate& candidate);
-  void onGlobalMatchResult(const GlobalMatchView& result);
-  void onManualCommand(const ManagerCommand& command);
+  void onDrStatus(const ModuleHealth& health);
+  void onDrOdom(const ModuleHealth& health);
+  void onSlamStatus(const ModuleHealth& health);
+  void onSlamOdom(const ModuleHealth& health);
+  void onFusionStatus(const ModuleHealth& health,
+                      const deeplumin_msgs::FusionStatus& msg);
+  void onGlobalMatchStatus(const ModuleHealth& health);
+  void onGlobalMatchResult(const ModuleHealth& health,
+                           const deeplumin_msgs::GlobalMatchResult& msg);
+  void onRelocalizationResult(const ModuleHealth& health,
+                                const deeplumin_msgs::RelocalizationResult& msg);
+  void onGnss(const GnssView& gnss);
+  void onInitialPose(const ros::Time& stamp, const std::string& frame_id);
+  void onSceneState(const std::string& scene);
 
-  ManagerStatus status() const;
-  ObserverPolicy observerPolicy() const;
-
-private:
-  HealthMonitor health_monitor_;
-  StateMachine state_machine_;
-  ScenePolicy scene_policy_;
-  TriggerScheduler trigger_scheduler_;
-  RelocValidator reloc_validator_;
+  const ManagerSnapshot& status() const;
+  const ObserverPolicyData& observerPolicy() const;
+  bool hasAcceptedRelocalization() const;
+  deeplumin_msgs::RelocalizationResult takeAcceptedRelocalization();
 };
 ```
 
-### 15.2 `HealthMonitor`
+说明：
 
-职责：
-
-1. 维护每个模块最后消息时间。
-2. 根据 timeout 和质量字段更新健康等级。
-3. 维护连续成功/失败计数。
-4. 生成聚合健康摘要。
-
-### 15.3 `ScenePolicy`
-
-职责：
-
-1. 根据场景决定 GNSS 使用方式。
-2. 决定 SLAM/global_matcher 权重。
-3. 生成 `ObserverPolicy`。
-4. 处理 GNSS 到室内的过渡策略。
-
-### 15.4 `TriggerScheduler`
-
-职责：
-
-1. 周期触发 global_matcher。
-2. 按退化状态提高或降低触发频率。
-3. 防止 global_matcher 和 relocalization 抢占。
-4. 执行冷却时间控制。
-
-### 15.5 `RelocValidator`
-
-职责：
-
-1. 验收 relocalization 候选。
-2. 二次确认。
-3. 生成 accepted/rejected 事件。
-4. 给 pose_fusion 发送 reset 所需结果。
-
----
+1. 第一版把 `HealthMonitor`、`ScenePolicy`、`RelocValidator` 的职责先折叠进 `ManagerCore`，方便快速联调。
+2. 后续如果要继续扩展服务、触发器和更严格的门控，再把这些职责拆回独立类。
+3. ROS 层只做 topic 适配和消息转发，不承载业务判断。
 
 ## 16. 配置模板
 
-`config/localization_manager.yaml`：
+当前第一版实际使用的 `config/localization_manager.yaml` 是下面这套键值：
 
 ```yaml
-manager:
-  rate_hz: 10.0
-  startup_grace_sec: 3.0
-  default_mode: LOCALIZATION
-  default_scene: INDOOR
-  publish_events: true
-
-initialization:
-  require_initial_pose: true
-  allow_manual_initialpose: true
-  allow_relocalization_init: true
-  allow_gnss_init: false        # bag 地图测试默认 false
-  prefer_source_order: [MANUAL_INITIALPOSE, RELOCALIZATION, GNSS]
-  initialpose_timeout_sec: 10.0
-  map_frame: map
-  base_frame: base_link
-  require_map_enu_calibration_for_gnss: true
-  initial_position_cov_manual: 1.0
-  initial_yaw_cov_manual_deg: 5.0
-  initial_position_cov_reloc: 0.5
-  initial_yaw_cov_reloc_deg: 2.0
-  initial_position_cov_gnss: 2.0
-  initial_yaw_cov_gnss_deg: 5.0
+frames:
+  map: map
+  odom: odom
+  base_link: base_link
 
 topics:
   dr_odom: /localization/dr_odom
@@ -1182,115 +1269,98 @@ topics:
   slam_health: /localization/slam_health
   fused_odom: /localization/fused_odom
   fusion_status: /localization/fusion_status
-  global_matcher_status: /localization/global_matcher/status
   global_matcher_result: /localization/global_matcher/result
+  global_matcher_status: /localization/global_matcher/status
   relocalization_result: /localization/relocalization/result
   gnss: /gnss_chc_data
-  can: /can_receive_info
-  imu: /ouster/imu
-  lidar: /ouster/points
   scene_state: /system/scene_state
   initialpose: /initialpose
   manager_status: /localization/manager/status
   observer_policy: /localization/manager/observer_policy
   accepted_relocalization: /localization/manager/accepted_relocalization
   manager_initial_pose: /localization/manager/initial_pose
-  dr_sensor_policy: /localization/dr_odometry/set_sensor_policy
 
-timeouts:
-  imu: 0.1
-  can: 0.5
-  gnss: 1.0
-  lidar: 0.3
-  dr_odom: 0.2
+runtime:
+  rate_hz: 10.0
+  startup_grace_sec: 3.0
+  publish_events: true
+
+initialization:
+  require_initial_pose: true
+  allow_manual_initialpose: true
+  allow_relocalization_init: true
+  allow_gnss_init: false
+  initialpose_timeout_sec: 10.0
+  complete_manual_initialpose_z: true
+  publish_raw_initialpose_directly: false
+
+initial_pose_completion:
+  enabled: true
+  pcd_path: /home/hhy/2004ros/ysw_loc/src/map/0730map/yuhsuwan2_loc_rot_72.pcd
+  height_method: median     # median | mid_range | mean
+  forward: 70.0
+  backward: 7.0
+  left: 35.0
+  right: 35.0
+  base_height_offset: 0.0
+  height_search_radius: 5.0
+  min_map_points: 200
+  max_height_span: 8.0
+  allow_default_z_fallback: false
+  default_z: 0.0
+  default_z_std: 5.0
+  map_height_z_std: 1.0
+
+timeout:
+  dr_odom: 0.5
+  dr_status: 1.0
   slam_odom: 0.5
   slam_health: 0.5
-  fused_odom: 0.2
+  fused_odom: 0.5
+  fusion_status: 0.5
+  global_matcher_result: 3.0
   global_matcher_status: 3.0
   relocalization_result: 5.0
+  gnss: 1.0
 
 degrade:
   enter_degraded_fail_count: 3
   exit_degraded_ok_count: 5
   trigger_reloc_fail_count: 5
+  fusion_failure_timeout_sec: 5.0
   lidar_short_dropout_sec: 1.0
   lidar_long_dropout_sec: 5.0
-  pure_dr_max_sec: 3.0
-  failure_timeout_sec: 5.0
   max_fusion_position_std: 5.0
   max_fusion_yaw_std_deg: 15.0
 
 scene:
-  source: manual                 # manual / auto_gnss / auto_with_manual_override
+  source: manual
   manual_override_timeout_sec: 30.0
   auto_gnss_confirm_count: 5
   auto_gnss_lost_count: 5
-
-scene_policy:
-  outdoor_open:
-    use_gnss: true
-    gnss_position_weight: 1.0
-    gnss_heading_weight: 1.0
-    use_global_matcher: true
-  semi_outdoor:
-    use_gnss: true
-    gnss_position_weight: 0.3
-    gnss_heading_weight: 0.5
-    use_global_matcher: true
-  indoor:
-    use_gnss: false
-    use_global_matcher: true
-  tunnel:
-    use_gnss: false
-    use_global_matcher: true
-  no_map:
-    use_gnss: true
-    use_global_matcher: false
-
-global_matcher:
-  enabled: true
-  current_mode: auto_match_topic_monitor
-  result_topic: /localization/global_matcher/result
-  status_topic: /localization/global_matcher/status
-  load_map_command_topic: /localization/global_matcher/load_map_command
-  set_map_segment_command_topic: /localization/global_matcher/set_map_segment_command
-  normal_period_sec: 1.0
-  degraded_period_sec: 0.5
-  min_trigger_interval_sec: 0.3
-  cooldown_after_failure_sec: 1.0
-  max_consecutive_fail_before_reloc: 5
-
-relocalization:
-  enabled: true
-  require_second_confirmation: true
-  max_attempts: 3
-  cooldown_sec: 5.0
-  accept_fitness: 0.8
-  min_inlier_ratio: 0.5
-  max_inlier_rmse: 0.8
-  max_pose_diff_when_trusted: 5.0
-  max_yaw_diff_deg_when_trusted: 20.0
-
-dr_policy:
-  runtime_control_enabled: false # P2 开启，P1 只通过 launch/config 控制
-  bag_test_use_gnss_heading: true
-  bag_test_use_gnss_velocity: false
-  bag_test_use_gnss_position: false
-  outdoor_use_gnss_heading: true
-  outdoor_use_gnss_velocity: true
-  outdoor_use_gnss_position: false
-
-gnss:
   min_satellites: 10
   allow_heading_only: true
   jump_threshold_m: 3.0
   jump_quarantine_sec: 2.0
   min_speed_for_heading: 0.2
+
+relocalization:
+  require_second_confirmation: false
+  accept_fitness: 1.0
+  min_inlier_ratio: 0.5
+  max_inlier_rmse: 0.8
+  max_pose_diff_when_trusted: 5.0
+  max_yaw_diff_deg_when_trusted: 20.0
+
+default_scene: INDOOR
+default_map_id: default
 ```
 
----
+> 注：当前第一版没有把 `/localization/dr_odometry/set_sensor_policy` 接口接进来，这个 key 先不要在配置里当作必需项。
 
 ## 17. 开发阶段
+
+> 当前进度：P0-P3 的第一版已经落地；P4 具备订阅和验收骨架，P5/P6 仍待补 trigger/service 与退化闭环。
 
 ### P0：manager 空框架
 
@@ -1312,11 +1382,12 @@ gnss:
 
 ### P2：初始化编排和 pose_fusion 第一版联调
 
-1. 订阅 `/initialpose`，生成 manual initialization candidate。
-2. 订阅 relocalization result，验收后生成 relocalization initialization candidate。
-3. 按配置决定是否允许可靠 GNSS 初始化；bag 测试默认关闭。
-4. 向 pose_fusion 发布初始化/reset 事件，使其计算 `T_map_odom = T_map_base_init * inverse(T_odom_base_current)`。
-5. 等待 `/localization/fused_odom` valid 后进入 `LOCALIZATION`。
+1. 订阅 `/initialpose`，生成 manual 2D coarse initialization candidate。
+2. 对 manual candidate 做地图范围检查、z 补全和可选 global_matcher 初始匹配。
+3. 订阅 relocalization result，验收后生成 relocalization 3D initialization candidate。
+4. 按配置决定是否允许可靠 GNSS 初始化；bag 测试默认关闭。
+5. 只向 pose_fusion 发布已验收 3D 初始化/reset 事件，使其计算 `T_map_odom = T_map_base_init * inverse(T_odom_base_current)`。
+6. 等待 `/localization/fused_odom` valid 后进入 `LOCALIZATION`。
 
 验收：RViz 人工给定初始位姿后，`fused_path` 在 `map` 下与全局地图方向一致；DR/SLAM 原始 odom 方向不同不再影响最终 fused 输出。
 
@@ -1328,7 +1399,7 @@ gnss:
 4. 根据 GNSS 是否有且可靠，给出 DR 的 GNSS heading/velocity/position 使用策略。
 5. 与 pose_fusion 联调 DR + SLAM。
 
-验收：切换室内/露天策略后，pose_fusion 能按策略使用或拒绝 GNSS；bag 测试时 GNSS position 不会把系统钉死到 ENU，初值由 `/initialpose` 或 relocalization 提供。
+验收：切换室内/露天策略后，pose_fusion 能按策略使用或拒绝 GNSS；bag 测试时 GNSS position 不会把系统钉死到 ENU，初值由 `/initialpose` 2D 粗候选补全后的 manager initial pose 或 relocalization 提供。
 
 ### P4：global_matcher 编排
 
@@ -1422,12 +1493,14 @@ SLAM/DR 连续里程计
 
 ## 20. 最小可落地版本
 
+> 当前状态：manager 第一版已经能够跑通监控、策略发布和 relocalization 验收；如果要让初值完全由 manager 接管，还需要把 pose_fusion 的初值接到 `manager/initial_pose`。
+
 为了尽快联调当前所有模块，推荐最小实现：
 
 ```text
 1. localization_manager 订阅 dr_status、slam_health、fused_odom、fusion_status、/initialpose、GNSS
-2. 完成 WAIT_INITIAL_POSE：优先 RViz /initialpose，其次 relocalization，最后可选可靠 GNSS
-3. 给 pose_fusion 下发初始化/reset 事件，建立 `T_map_odom`，使 fused_path 与地图坐标一致
+2. 完成 WAIT_INITIAL_POSE：优先 RViz /initialpose 2D 粗候选 + z 补全/初始匹配，其次 relocalization，最后可选可靠且已标定 GNSS
+3. 只给 pose_fusion 下发已验收 3D 初始化/reset 事件，建立 `T_map_odom`，使 fused_path 与地图坐标一致
 4. 周期发布 manager/status 和 observer_policy
 5. 支持 scene 手动切换和 GNSS 自动检测，控制 GNSS 是否进入 fusion，并给出 DR GNSS 使用策略
 6. 监控 LiDAR/SLAM 超时，LiDAR 短时失效时进入 DEGRADED
@@ -1437,3 +1510,23 @@ SLAM/DR 连续里程计
 ```
 
 该版本即可形成 DeepLumin 完整定位编排闭环，并为后续实现更复杂的自动场景识别、地图段切换和故障恢复打基础。
+
+---
+
+## 21. 后续开发顺序建议
+
+为了避免后续联调时重复改坐标系和初始化逻辑，推荐按下面顺序推进：
+
+1. 先让 `pose_fusion` 消费 `manager/initial_pose`，并把 reset / hard init 的入口统一到 manager。
+2. 再把 `accepted_relocalization` 接入 pose_fusion，形成“验收后重置”的闭环。
+3. 接着补 `global_matcher` 的 trigger service，并让 manager 接管触发时机、冷却时间和 pending 锁。
+4. 然后补 `relocalization` 的 trigger service，manager 负责候选结果验收与拒绝原因上报。
+5. 最后再把 `HealthMonitor`、`ScenePolicy`、`RelocValidator` 从 `ManagerCore` 中拆出去，做成更细的独立类。
+
+### 21.1 后续开发的验收点
+
+1. Bag 测试时，`/initialpose` 只作为 2D 粗候选，relocalization、GNSS 三种初始化来源最终只会有一个 3D accepted pose 真正生效。
+2. `fused_path`、`dr_path`、`slam_path` 在 `map` 下能被统一对齐，且不再依赖各自默认原点。
+3. `global_matcher` 的结果只有在 map_id 和质量门控都通过时才进入融合。
+4. LiDAR 短时失效时，系统允许降级运行，但不会把错误初始化持续放大成整条轨迹跳变。
+5. GNSS 只在场景允许时参与，不会把室内 bag 误判成露天定位。

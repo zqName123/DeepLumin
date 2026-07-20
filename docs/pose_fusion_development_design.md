@@ -19,6 +19,28 @@
 
 因此，`pose_fusion` 的 P3 开发应优先完成 `GlobalMatchResult -> PoseObservation -> map->odom smooth update`，这是达到 ysw_loc 定位效果的关键闭环。
 
+
+### 0.1 当前 pose_fusion 实现状态与差距
+
+当前仓库里的 `pose_fusion` 已经完成第一版节点和 core 分层，但还没有满足本轮“由 `localization_manager` 接管初始化并支持多次初值更新”的完整要求。真实状态如下：
+
+1. ROS 节点已订阅 DR、SLAM、global_matcher、manager accepted relocalization、manager observer_policy 和一个 `initial_pose` 话题；但配置默认仍是 `/initialpose`，还没有默认接入 `/localization/manager/initial_pose`。
+2. 当前 `PoseFusionCore::reset()` 的语义是 `odom_base = I`、`map_odom = reset.map_base`，并清空 `last_dr_`、`last_slam_`。这适合最早期调试，但不适合完整系统初始化，因为它没有用当前 `dr_odom` / `slam_odom` 反解 `T_map_odom`。
+3. 当前 DR 处理是基于 `T_dr_delta = inv(T_dr_last) * T_dr_now` 的增量递推，SLAM 处理是首次建立 `fusion_odom_from_slam_odom = T_fusion_odom_base * inv(T_slam_odom_base)` 后做局部平滑。
+4. 当前 global_matcher 处理是正确方向：把 `T_map_base_match` 转成 `T_map_odom_obs = T_map_base_match * inv(T_odom_base_current)`，再平滑更新 `map_odom`。
+5. 当前融合不是完整 ESKF，只是局部 SE(3) 增量递推 + 平滑观测更新 + 6 维协方差近似；后续若要满足完整鲁棒融合，需要补 `FusionEskf` 或等价的误差状态滤波实现。
+6. 当前已支持多次调用 `reset()`，但由于 reset 会把局部 `odom_base` 清零，连续收到多次初值时会破坏 DR/SLAM 局部对齐。后续必须改为“保留或重建当前局部里程计参考，再更新 `T_map_odom`”。
+
+因此下一步开发的核心不是简单多订阅一个 topic，而是把初始化语义改成：
+
+```text
+收到 manager/initial_pose 给出的 T_map_base_init
+  -> 获取当前局部 T_odom_base_current
+  -> 计算 T_map_odom = T_map_base_init * inverse(T_odom_base_current)
+  -> 让 DR、SLAM、global_matcher 都在同一个 map 输出下工作
+```
+
+
 ## 1. 模块定位
 
 `pose_fusion` 是 localization 中唯一负责输出最终定位结果的模块。它不直接做点云匹配、不直接做全局重定位、不直接处理原始 IMU 预积分，而是接收各定位子模块的结果，将它们统一成观测并进行时序融合、质量判断、状态切换和 TF 发布。
@@ -288,6 +310,81 @@ map -> odom
 
 `dr_odometry` 和 `slam_odometry` 可在单模块调试时发布 `odom -> base_link`，但在完整系统联调时应避免多个节点同时发布同名 `odom -> base_link`。最终给下游使用的 `/localization/fused_odom` 表达 `map -> base_link` 的融合位姿；TF 树中 `map -> odom` 由 fusion 发布，局部 `odom -> base_link` 可由 selected local odom 或 fusion 自身发布，具体由 `tf/output_mode` 配置决定。
 
+
+### 4.3 manager/initial_pose 初始化与 DR/SLAM 坐标统一
+
+`/localization/manager/initial_pose` 的语义必须固定为：
+
+```text
+T_map_base_init: 初始化时刻 base_link 在当前 map 下的位姿
+```
+
+`pose_fusion` 收到该消息后，不能简单把 `odom_base` 清零并把 `map_odom` 设置为初值。正确做法是用当前局部里程计反解外层锚点：
+
+```text
+T_map_odom_new = T_map_base_init * inverse(T_odom_base_ref)
+T_map_base_fused = T_map_odom_new * T_odom_base_ref
+```
+
+其中 `T_odom_base_ref` 的选择优先级：
+
+| 优先级 | 来源 | 使用条件 | 处理 |
+|---:|---|---|---|
+| 1 | 当前 fusion `state.odom_base` | fusion 已初始化且 DR/SLAM 未超时 | 保留局部连续轨迹，只更新 `map_odom` |
+| 2 | 最新 DR `T_dr_odom_base` | DR 新鲜、无跳变 | 令 fusion 局部 odom 采用 DR odom，`map_odom = init * inv(dr)` |
+| 3 | 最新 SLAM `T_slam_odom_base` | DR 不可用但 SLAM 新鲜 | 令 fusion 局部 odom 采用 SLAM odom，`map_odom = init * inv(slam)` |
+| 4 | 无局部 odom | DR/SLAM 都不可用 | 缓存 pending init，等待第一帧局部 odom 后再初始化 |
+
+DR 与 SLAM 的统一方式：
+
+```text
+若选择 DR 作为 fusion 局部参考:
+  T_fusion_odom_base = T_dr_odom_base_current
+  T_map_odom = T_map_base_init * inverse(T_dr_odom_base_current)
+  T_fusion_odom_slam_odom = T_fusion_odom_base * inverse(T_slam_odom_base_current)
+
+若选择 SLAM 作为 fusion 局部参考:
+  T_fusion_odom_base = T_slam_odom_base_current
+  T_map_odom = T_map_base_init * inverse(T_slam_odom_base_current)
+  T_fusion_odom_slam_odom = I
+```
+
+后续每一帧 SLAM 观测都先转换到 fusion 局部 odom：
+
+```text
+T_fusion_odom_base_from_slam = T_fusion_odom_slam_odom * T_slam_odom_base
+```
+
+再与当前 `state.odom_base` 做残差更新。这样即使 DR 和 SLAM 各自的 `odom` 原点不同，也能在 `pose_fusion` 内统一到同一个局部参考。
+
+### 4.4 多次初始位姿更新语义
+
+初始位姿不是一次性事件。RViz `/initialpose`、relocalization、GNSS 初始化或人工复位都可能在运行中多次发生。完整系统中应遵循：
+
+1. `pose_fusion` 默认只订阅 `/localization/manager/initial_pose`，直接 `/initialpose` 只作为 debug 可选入口；RViz 初值先进入 manager，再由 manager 验收并转发。
+2. 每次收到新的 manager initial pose，只要时间戳、frame、map_id 和 policy 允许，都应触发一次 re-anchor。
+3. re-anchor 的默认行为是更新 `T_map_odom`，保留局部 `odom_base` 的连续性，不清空 DR/SLAM 轨迹原点。
+4. 若初值来源是 manager accepted relocalization，且残差很大，可执行 hard re-anchor：清空旧 global_matcher 观测、重建 SLAM 对齐关系、重设协方差，但仍不应无条件把 `odom_base` 置零。
+5. 若初值来源是人工 RViz，建议清空 `fused_path` 或在 path 中切分轨迹段，避免可视化上把 reset 前后的路径连成一条误导性折线。
+6. 重复消息需要去重：同一 stamp、同一 pose、同一 source 的初始化事件不应反复触发。
+
+因此 core 接口应从单一 `reset(reset_obs)` 细化为：
+
+```cpp
+void feedInitialPose(const ResetObservation& obs);      // manager initial pose
+void feedRelocalizationReset(const ResetObservation& obs);
+void reanchorMapToLocal(const ResetObservation& obs, ResetMode mode);
+```
+
+推荐 `ResetMode`：
+
+| 模式 | 触发来源 | 行为 |
+|---|---|---|
+| `REANCHOR_MAP_ODOM` | manager initial_pose、普通人工初值 | 保留局部 odom，只更新 `T_map_odom` |
+| `HARD_RELOCALIZATION` | manager accepted relocalization | 重建 `T_map_odom` 和观测缓存，重置协方差 |
+| `DEBUG_ZERO_LOCAL` | 单模块调试 | 允许旧逻辑 `odom_base=I, map_odom=init` |
+
+
 ---
 
 ## 5. 状态定义
@@ -495,6 +592,40 @@ GNSS 的使用必须区分场景：
 |---|---|---|
 | `/gnss_chc_data` | `deeplumin_msgs/Gpchc` | GNSS 原始数据 |
 | `/localization/gnss_pose` | `geometry_msgs/PoseWithCovarianceStamped` | 可选的标准化 GNSS 位姿 |
+
+
+### 6.5.1 DR 使用 GNSS heading 时的坐标语义
+
+`dr_odometry` 可以使用 GNSS heading 稳定自身航向，但 `pose_fusion` 不能因此假设 `/localization/dr_odom` 已经天然对齐 `map`。需要区分三层坐标：
+
+1. GNSS heading 原始语义通常是“相对真北的顺时针航向角”。
+2. ROS ENU yaw 语义是“从 East/x 轴开始，逆时针为正”。常用转换为：
+
+```text
+yaw_enu = pi/2 - heading_north_clockwise
+```
+
+3. 地图 `map` 的 yaw 不一定等于 ENU yaw。PCD 地图可能有自己的建图原点和方向。
+
+因此，DR 内部使用 GNSS heading 时必须先转换成 `base_link` 的 ENU yaw，并补偿 GNSS 天线到车体的外参 yaw：
+
+```text
+yaw_base_in_dr_odom = yaw_enu + yaw_extrinsic_gnss_to_base
+```
+
+`pose_fusion` 再通过初始化时的 `T_map_odom` 吸收 `dr_odom` 与 `map` 之间的固定 yaw/translation 偏差：
+
+```text
+R_map_odom = R_map_base_init * inverse(R_dr_odom_base_current)
+```
+
+这样即使 GNSS heading 与地图方向存在常量偏差，只要 DR 的局部航向连续、车体前向语义正确，最终 `fused_path` 仍可通过 `T_map_odom` 对齐地图。
+
+需要注意：
+
+1. 如果 DR 只使用 GNSS heading，不使用 GNSS position，则 DR 仍应被视为局部 odom。
+2. 如果 DR 使用 GNSS position 把自身放进 ENU 坐标，`pose_fusion` 仍可把它当局部连续源使用，但必须依赖跳变门控；bag 测试默认不建议启用 GNSS position。
+3. 如果 heading 转换符号错误或外参 yaw 错误，DR 轨迹会与 SLAM 轨迹方向相反或呈固定夹角，这不是 `pose_fusion` 通过加权能完全修好的问题，必须在 `dr_odometry` 的 heading 转换和外参配置中修正。
 
 GNSS 不应绕过 `localization_manager` 场景策略。推荐由 manager 发布 `ObserverPolicy`：
 
@@ -729,6 +860,77 @@ alpha = clamp(alpha, min_gain, max_gain)
 
 这样好的匹配更快拉回地图，质量一般的匹配只慢速修正，不会把错误瞬间写入最终定位。
 
+
+### 8.6 完整 ESKF 融合与初始化更新
+
+当前第一版 `pose_fusion` 还不是完整 ESKF。后续要补全鲁棒融合，应把 `T_map_base` 作为名义状态的一部分，并用误差状态做观测更新。推荐状态：
+
+```text
+x = [p_map_base, v_map_base, q_map_base, bg, ba]
+dx = [dp, dv, dtheta, dbg, dba]
+P  = 15x15
+```
+
+如果不直接接入原始 IMU，也可以先使用 DR delta 作为 propagation input，把 bias 项保留为预留或关闭：
+
+```text
+u_dr = relative pose / velocity from dr_odometry
+predict(x, P, u_dr, Q_dr)
+update_slam_pose(x, P, z_slam, R_slam)
+update_global_pose(x, P, z_global_matcher, R_global)
+update_initial_pose_or_reloc(x, P, z_init, R_init)
+```
+
+收到 manager initial pose 时，理论上有两种实现：
+
+| 实现 | 行为 | 适用阶段 |
+|---|---|---|
+| map-odom reanchor | 保留局部 odom 状态，更新 `T_map_odom` | 当前 P0/P1，工程稳定 |
+| ESKF hard pose reset | 直接把名义 `p/q` 设为初值，并重置/膨胀协方差 | 完整 ESKF，重定位或人工复位 |
+
+完整 ESKF 下，多次初值更新不应简单丢弃。推荐策略：
+
+```text
+if source == manager_initial_pose and residual is reasonable:
+  执行 pose update 或 map_odom reanchor
+elif source == accepted_relocalization:
+  hard reset nominal p/q, reset pose covariance, inflate velocity/bias covariance
+elif source == debug_initialpose:
+  按配置选择 hard reset 或 reanchor
+```
+
+hard reset 细节：
+
+```text
+p_map_base <- z_init.position
+q_map_base <- z_init.orientation
+v_map_base <- 当前局部速度旋转到 map，若不可用则置零并增大速度协方差
+P_pose     <- z_init.covariance
+P_velocity <- configured reset velocity covariance
+P_bias     <- 保留旧 bias，但协方差膨胀，避免 reset 后 bias 过度自信
+清空旧 global_matcher/relocalization 观测
+重建 DR last pose 和 SLAM alignment
+```
+
+reanchor 细节：
+
+```text
+T_odom_base_ref <- 当前 fusion/DR/SLAM 局部参考
+T_map_odom      <- T_map_base_init * inverse(T_odom_base_ref)
+P_pose          <- min(P_pose, init covariance) 或按 reset 模式重设
+last_dr         <- 最新 DR，避免下一帧 delta 跨 reset
+slam_alignment  <- T_fusion_odom_base * inverse(T_slam_odom_base_current)
+```
+
+协方差更新必须使用 Joseph form：
+
+```text
+P = (I - K H) P (I - K H)^T + K R K^T
+```
+
+不要在 Release 编译下依赖 Eigen assert 兜底；所有矩阵输入都要显式检查有限性、对称性和正定性。
+
+
 ---
 
 ## 9. 质量门控和协方差
@@ -871,7 +1073,8 @@ GNSS 不允许在室内场景直接 reset。室内误用 GNSS 是定位跳变的
 | `/localization/manager/accepted_relocalization` | `deeplumin_msgs/RelocalizationResult` | event | manager 验收后的重定位 |
 | `/localization/manager/observer_policy` | `deeplumin_msgs/ObserverPolicy` | 1-5 Hz | 场景策略和观测开关 |
 | `/gnss_chc_data` | `deeplumin_msgs/Gpchc` | 1-20 Hz | GNSS 原始输入，可选 |
-| `/initialpose` | `geometry_msgs/PoseWithCovarianceStamped` | event | RViz 人工初值 |
+| `/localization/manager/initial_pose` | `geometry_msgs/PoseWithCovarianceStamped` | event | manager 验收后的统一初值，默认初始化入口 |
+| `/initialpose` | `geometry_msgs/PoseWithCovarianceStamped` | event | RViz 人工初值，推荐先进入 manager；pose_fusion 仅 debug 模式直连 |
 
 ### 11.2 发布
 
@@ -1020,7 +1223,7 @@ topics:
   accepted_relocalization: /localization/manager/accepted_relocalization
   observer_policy: /localization/manager/observer_policy
   gnss: /gnss_chc_data
-  initial_pose: /initialpose
+  initial_pose: /localization/manager/initial_pose
   fused_odom: /localization/fused_odom
   fused_pose: /localization/fused_pose
   fusion_status: /localization/fusion_status
@@ -1125,10 +1328,11 @@ state_machine:
    - no_map: global_matcher disabled, SLAM/DR only
 
 4. pose_fusion 等待初始化：
-   - manager initial pose
-   - GNSS 初值
+   - /localization/manager/initial_pose
    - accepted relocalization
-   - RViz initialpose
+   - debug 模式下允许 RViz /initialpose 直连
+
+   GNSS 初值不直接进入 pose_fusion，必须先由 manager 判断场景、可靠性和 map/ENU 外参后再转成 manager initial_pose。
 ```
 
 ### 14.2 正常运行流程
@@ -1309,7 +1513,7 @@ DeepLumin 中对应必须做到：
 1. 订阅 `/localization/dr_odom`。
 2. 实现 DR delta 传播。
 3. 发布 `/localization/fused_odom`、`/localization/fused_pose`、TF、path。
-4. 支持 `/initialpose` 初始化。
+4. 支持 `/localization/manager/initial_pose` 初始化；`/initialpose` 仅作为 debug 或经 manager 转发。
 
 验收：仅启动 DR 时，`pose_fusion` 可输出连续轨迹。
 
@@ -1354,7 +1558,7 @@ DeepLumin 中对应必须做到：
 
 ## 18. 测试和验收
 
-### 17.1 单元测试
+### 18.1 单元测试
 
 | 测试 | 内容 |
 |---|---|
@@ -1364,7 +1568,7 @@ DeepLumin 中对应必须做到：
 | `test_fusion_state_machine` | 状态转移 |
 | `test_global_matcher_update` | `T_map_odom_observed` 计算 |
 
-### 17.2 rosbag 回放测试
+### 18.2 rosbag 回放测试
 
 | Case | 输入 | 预期 |
 |---|---|---|
@@ -1376,7 +1580,7 @@ DeepLumin 中对应必须做到：
 | outdoor GNSS | GNSS 高质量 | 绝对位置更稳 |
 | indoor no GNSS | GNSS 禁用 | 无 GNSS 污染 |
 
-### 17.3 对齐 ysw_loc 的验收标准
+### 18.3 对齐 ysw_loc 的验收标准
 
 1. 使用同一段 rosbag 和同一张地图。
 2. ysw_loc 输出轨迹作为 baseline。
@@ -1416,7 +1620,7 @@ DeepLumin 中对应必须做到：
 为了尽快达到 ysw_loc 效果，推荐最小实现如下：
 
 ```text
-1. /initialpose 或 manager 初值初始化 fused pose
+1. `/localization/manager/initial_pose` 初始化 fused pose，debug 模式才允许直连 `/initialpose`
 2. DR odom delta 高频传播 fused pose
 3. SLAM odom 作为局部 pose observation 更新
 4. global_matcher result 作为 map pose observation 更新
@@ -1429,9 +1633,9 @@ DeepLumin 中对应必须做到：
 
 ---
 
-## 21. 首轮代码实现清单
+## 21. 已落地首轮代码实现清单
 
-开发 `pose_fusion` 时按以下顺序落地，避免一开始就把完整 ESKF、GNSS、manager 全部耦在一起：
+当前第一版 `pose_fusion` 大体按以下结构落地，已经能跑通 DR/SLAM/global_matcher/accepted_relocalization 的基础链路。但初始化语义仍需按第 22 节继续优化，不能把这份首轮清单理解为最终完整实现。
 
 ### 21.1 必须先建的 core 文件
 
@@ -1466,7 +1670,7 @@ launch/pose_fusion.launch
 ### 21.3 第一版必须完成的功能
 
 1. 参数加载和节点启动。
-2. `/initialpose` 初始化。
+2. `/localization/manager/initial_pose` 初始化；`/initialpose` 只保留为 debug 入口。
 3. 订阅 `/localization/dr_odom`，用 DR delta 推进 `T_odom_base_local`。
 4. 发布 `/localization/fused_odom`、`/localization/fused_pose`、`/localization/fused_path`、`FusionStatus`。
 5. 订阅 `/localization/global_matcher/result`，通过质量门控后平滑更新 `T_map_odom`。
@@ -1482,3 +1686,22 @@ launch/pose_fusion.launch
 
 首轮实现只要把 DR 连续预测和 global_matcher 地图校正闭环跑通，就已经具备 ysw_loc 的核心定位形态。
 
+
+---
+
+## 22. 本轮新增开发要求与下一步实现清单
+
+本轮开发目标是把 `pose_fusion` 接入 `localization_manager` 的初始化编排，并补齐完整融合语义。后续代码应按以下顺序实现：
+
+1. 配置默认改为 `topics.initial_pose: /localization/manager/initial_pose`，保留 `/initialpose` 作为 manager 输入或 debug 直连接口。
+2. 新增 `PoseFusionCore::feedInitialPose()`，不要复用当前会清零局部 odom 的旧 `reset()` 语义。
+3. 实现 `reanchorMapToLocal()`：收到 `T_map_base_init` 后，用当前 fusion/DR/SLAM 局部位姿反解 `T_map_odom`。
+4. 初始化时建立 DR 与 SLAM 的统一局部参考：优先 DR，SLAM 通过 `T_fusion_odom_slam_odom` 转到 fusion odom。
+5. 多次收到初值时必须重复 re-anchor，不允许只处理第一次；同一 stamp/pose/source 的重复消息需要去重。
+6. accepted relocalization 使用 hard reanchor：清旧全局观测、重建 SLAM 对齐、重设协方差，但不要无条件把 `odom_base` 置零。
+7. 补完整 ESKF 或等价误差状态融合：DR propagation、SLAM pose update、global_matcher pose update、relocalization/initial pose reset/update。
+8. DR 使用 GNSS heading 时，`pose_fusion` 只要求 DR 输出满足 `odom -> base_link` 连续语义；GNSS heading 到 ENU yaw、base_link 外参补偿必须在 `dr_odometry` 内完成。
+9. 如果 DR 使用 GNSS position，manager 必须按场景控制其启停；bag 测试默认禁用 GNSS position，避免 ENU 坐标把轨迹钉到非地图坐标。
+10. 每次初始化、re-anchor、hard reset 都要写入 `FusionStatus.used_sources/reject_reasons`，并在日志中输出 source、stamp、map_id、位姿差、yaw 差和选择的 local reference。
+
+完成以上内容后，`pose_fusion` 才能真正满足 localization_manager 统一初始化、DR/SLAM 坐标统一、多次人工/重定位更新和鲁棒融合的要求。

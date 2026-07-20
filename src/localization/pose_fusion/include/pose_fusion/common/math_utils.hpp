@@ -1,5 +1,12 @@
 #pragma once
 
+/**
+ * @file math_utils.hpp
+ * @brief SE(3) 位姿基础运算：复合、逆、相对位姿、插值与残差
+ *
+ * 约定：Pose3d 表示刚体变换 T；compose(a,b) = a ∘ b（先 b 后 a）
+ */
+
 #include <Eigen/Dense>
 #include <Eigen/Geometry>
 
@@ -24,6 +31,7 @@ inline double clamp(double value, double low, double high) {
   return std::max(low, std::min(high, value));
 }
 
+/** 将角度折到 (-π, π] */
 inline double normalizeAngle(double angle) {
   while (angle > M_PI) angle -= 2.0 * M_PI;
   while (angle < -M_PI) angle += 2.0 * M_PI;
@@ -50,6 +58,7 @@ inline Pose3d fromMatrix(const Mat4d& t) {
   return pose;
 }
 
+/** T^{-1} */
 inline Pose3d inverse(const Pose3d& pose) {
   const Quatd q_inv = pose.orientation.normalized().conjugate();
   Pose3d out;
@@ -58,6 +67,7 @@ inline Pose3d inverse(const Pose3d& pose) {
   return out;
 }
 
+/** a ∘ b */
 inline Pose3d compose(const Pose3d& a, const Pose3d& b) {
   Pose3d out;
   out.orientation = (a.orientation.normalized() * b.orientation.normalized()).normalized();
@@ -65,10 +75,12 @@ inline Pose3d compose(const Pose3d& a, const Pose3d& b) {
   return out;
 }
 
+/** inv(from) ∘ to：从 from 到 to 的相对位姿（用于 DR 帧间增量） */
 inline Pose3d between(const Pose3d& from, const Pose3d& to) {
   return compose(inverse(from), to);
 }
 
+/** 位置线性插值 + 姿态 slerp；alpha∈[0,1] */
 inline Pose3d interpolate(const Pose3d& a, const Pose3d& b, double alpha) {
   alpha = clamp(alpha, 0.0, 1.0);
   Pose3d out;
@@ -86,6 +98,7 @@ inline Vec3d rotationLog(const Quatd& q) {
   return aa.axis() * normalizeAngle(aa.angle());
 }
 
+/** 6 维位姿残差：[Δp; Log(q_pred^{-1} q_obs)] */
 inline Vec6d poseResidual(const Pose3d& predicted, const Pose3d& observed) {
   Vec6d r;
   r.segment<3>(0) = observed.position - predicted.position;

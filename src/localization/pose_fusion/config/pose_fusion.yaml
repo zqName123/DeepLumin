@@ -1,11 +1,25 @@
+# =============================================================================
+# pose_fusion.yaml — 位姿融合模块运行参数
+#
+# 由 pose_fusion.launch 通过 <rosparam command="load"> 注入节点私有命名空间。
+# 读取入口：pose_fusion_ros::loadFusionConfig(pnh) → FusionConfig
+# =============================================================================
+
+# --- TF / 坐标系命名 -----------------------------------------------------------
+# 融合输出与 TF 发布使用的标准三层：map → odom → base_link
 frames:
   map: map
   odom: odom
   base_link: base_link
 
+# --- 地图标识 ------------------------------------------------------------------
+# Global Matcher / Relocalization 结果中的 map_id 需与此一致（质量门会校验）
 map:
   default_map_id: default
 
+# --- Topic 映射 ----------------------------------------------------------------
+# 输入：DR / SLAM / 全局匹配 / 重定位 / 观测策略 / 手动初值
+# 输出：融合里程计、位姿、路径、融合状态
 topics:
   dr_odom: /localization/dr_odom
   dr_status: /localization/dr_status
@@ -21,39 +35,52 @@ topics:
   fused_path: /localization/fused_path
   fusion_status: /localization/fusion_status
 
+# --- 运行时行为 ----------------------------------------------------------------
 runtime:
+  # 定时器频率：PoseFusionNode::onTimer → core.tick() / 发布
   output_rate_hz: 100.0
   publish_tf: true
+  # 发布 map→odom（融合外参，通常由本节点负责）
   publish_map_to_odom_tf: true
   # Full system default: avoid competing with dr/slam odom->base_link debug TF.
+  # 默认不发 odom→base，避免与 DR/SLAM 调试 TF 抢广播
   publish_odom_to_base_tf: false
   publish_path: true
   max_path_size: 5000
   allow_debug_relocalization_direct: false
 
+# --- 初始化策略 ----------------------------------------------------------------
 initialization:
   allow_initialpose: true
   # If no /initialpose or accepted relocalization is available, start from map==odom
   # on the first valid DR message so bag/debug tests can run.
+  # 无初值时：首帧有效 DR 将 map_odom 置单位元（map≈odom）进入 DR_ONLY
   allow_dr_initialization: true
   # Allows slam_odometry-only debugging and short DR outage operation.
+  # 允许仅用 SLAM 初值进入 LOCAL_FUSION（调试 / 短时无 DR）
   allow_slam_initialization: true
   initial_cov_position: 1.0
   initial_cov_yaw_deg: 5.0
 
+# --- DR 预测（里程计递推）门限与过程噪声 --------------------------------------
 prediction:
+  # 相邻 DR 时间间隔 / 位移 / 航向变化超限则拒绝本步递推
   max_dr_gap: 0.2
   max_dr_delta_translation: 5.0
   max_dr_delta_yaw_deg: 45.0
+  # 接受 DR 后按 dt 累加到协方差对角元
   process_noise_position: 0.05
   process_noise_yaw_deg: 0.5
 
+# --- 观测器（平滑更新增益与残差门限）------------------------------------------
 observers:
+  # SLAM：在 odom 系对 odom_base 做指数平滑纠偏
   slam:
     enabled: true
     smooth_gain: 0.08
     max_position_residual: 3.0
     max_yaw_residual_deg: 25.0
+  # Global Matcher：在 map 系对 map_odom 做质量加权平滑
   global_matcher:
     enabled: true
     allow_converged_false: true
@@ -68,6 +95,8 @@ observers:
     max_position_residual: 5.0
     max_yaw_residual_deg: 20.0
 
+# --- 观测“新鲜度”判定（用于状态机与 FusionStatus）----------------------------
+# age = now - last_*_time；超过则认为该源不可用
 buffer:
   max_dr_age: 0.5
   max_slam_age: 1.0

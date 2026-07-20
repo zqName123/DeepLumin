@@ -1,3 +1,13 @@
+/**
+ * @file pose_fusion_core.cpp
+ * @brief 位姿融合算法实现：DR 递推 + SLAM 局部平滑 + Global Matcher 全局平滑 + 硬重置
+ *
+ * 坐标合成：
+ *   map_base = map_odom ∘ odom_base
+ *   - odom_base：随 DR 增量前进；SLAM 以小增益拉回
+ *   - map_odom：随 GM / 重定位在 map 系校准；平时保持缓变
+ */
+
 #include "pose_fusion/core/pose_fusion_core.hpp"
 
 #include <algorithm>
@@ -10,7 +20,7 @@ bool PoseFusionCore::initialize(const FusionConfig& config) {
   current_map_id_ = config.default_map_id;
   gate_.setConfig(config_);
   initialized_config_ = true;
-  policy_ = ObserverPolicyData();
+  policy_ = ObserverPolicyData();  // 默认全开、权重 1
   state_ = FusionState();
   state_.pose_covariance = initialCovariance(config_.initialization);
   state_machine_.setState(FusionStateName::UNINITIALIZED);
@@ -22,6 +32,7 @@ void PoseFusionCore::setObserverPolicy(const ObserverPolicyData& policy) {
 }
 
 void PoseFusionCore::feedDrOdom(const PoseObservation& obs) {
+  // 无论是否采用，都先写入缓冲，供 tick() 惰性初始化读取
   buffer_.setDr(obs);
   if (!initialized_config_) {
     return;
@@ -35,6 +46,7 @@ void PoseFusionCore::feedDrOdom(const PoseObservation& obs) {
     recordRejected(ObservationSource::DR, "policy_disabled");
     return;
   }
+  // 未初始化：可选以 DR 冷启动（map_odom = I）
   if (!state_.initialized) {
     if (config_.initialization.allow_dr_initialization) {
       initializeAtCurrentDrOrOrigin(obs.timestamp);
@@ -61,6 +73,7 @@ void PoseFusionCore::feedSlamOdom(const PoseObservation& obs) {
     recordRejected(ObservationSource::SLAM, reason);
     return;
   }
+  // 未初始化：可选以 SLAM 位姿作为 odom_base 启动
   if (!state_.initialized) {
     if (config_.initialization.allow_slam_initialization) {
       initializeFromSlam(obs);
@@ -73,6 +86,7 @@ void PoseFusionCore::feedSlamOdom(const PoseObservation& obs) {
 
 void PoseFusionCore::feedGlobalMatch(const PoseObservation& obs) {
   buffer_.setGlobalMatcher(obs);
+  // GM 只在已初始化后更新 map_odom；未初始化时仅缓存
   if (!state_.initialized) {
     return;
   }
@@ -98,6 +112,7 @@ void PoseFusionCore::reset(const ResetObservation& reset_obs) {
     recordRejected(reset_obs.source, reason);
     return;
   }
+  // 硬重置语义：车辆瞬时位于 reset.map_base；局部里程计从单位元重新累计
   state_ = FusionState();
   state_.initialized = true;
   state_.timestamp = reset_obs.timestamp;
@@ -107,13 +122,14 @@ void PoseFusionCore::reset(const ResetObservation& reset_obs) {
   current_map_id_ = reset_obs.map_id.empty() ? config_.default_map_id : reset_obs.map_id;
   last_dr_.reset();
   last_slam_.reset();
-  fusion_odom_from_slam_odom_.reset();
+  fusion_odom_from_slam_odom_.reset();  // 下次 SLAM 需重新对齐原点
   last_relocalization_time_ = reset_obs.timestamp;
   state_machine_.setState(FusionStateName::MAP_CONSTRAINED);
   recordUsed(reset_obs.source, "reset:" + reset_obs.reason);
 }
 
 FusionOutput PoseFusionCore::tick(double now) {
+  // 惰性初始化：若回调里尚未 init，但缓冲里已有 DR/SLAM，则在输出节拍补做
   if (!state_.initialized && config_.initialization.allow_dr_initialization && buffer_.latestDr()) {
     const auto& dr = *buffer_.latestDr();
     initializeAtCurrentDrOrOrigin(dr.timestamp > 0.0 ? dr.timestamp : now);
@@ -142,6 +158,7 @@ FusionStatusData PoseFusionCore::status(double now) const {
   data.last_slam_age = last_slam_time_ > 0.0 ? now - last_slam_time_ : 1e9;
   data.last_global_matcher_age = last_global_matcher_time_ > 0.0 ? now - last_global_matcher_time_ : 1e9;
   data.last_relocalization_age = last_relocalization_time_ > 0.0 ? now - last_relocalization_time_ : 1e9;
+  // 新鲜度：超过 buffer.max_*_age 则状态机降级判定时视为不可用
   data.is_dr_available = data.last_dr_age <= config_.buffer.max_dr_age;
   data.is_slam_available = data.last_slam_age <= config_.buffer.max_slam_age;
   data.is_global_matcher_available = data.last_global_matcher_age <= config_.buffer.max_global_matcher_age;
@@ -163,7 +180,7 @@ void PoseFusionCore::initializeAtCurrentDrOrOrigin(double timestamp) {
   state_.initialized = true;
   state_.timestamp = timestamp;
   state_.odom_base = Pose3d();
-  state_.map_odom = Pose3d();
+  state_.map_odom = Pose3d();  // map == odom，适合 bag 回放 / 无全局初值调试
   state_.pose_covariance = initialCovariance(config_.initialization);
   current_map_id_ = config_.default_map_id;
   state_machine_.setState(FusionStateName::DR_ONLY);
@@ -180,20 +197,23 @@ void PoseFusionCore::initializeFromSlam(const PoseObservation& obs) {
   current_map_id_ = config_.default_map_id;
   last_slam_ = obs;
   last_slam_time_ = obs.timestamp;
-  fusion_odom_from_slam_odom_ = Pose3d();
+  fusion_odom_from_slam_odom_ = Pose3d();  // 融合系与 SLAM 系此刻重合
   state_machine_.setState(FusionStateName::LOCAL_FUSION);
 }
 
 void PoseFusionCore::propagateWithDr(const PoseObservation& obs) {
+  // 首帧仅锁定参考，不递推
   if (!last_dr_) {
     last_dr_ = obs;
     last_dr_time_ = obs.timestamp;
     return;
   }
   const double dt = obs.timestamp - last_dr_->timestamp;
+  // delta = inv(last) ∘ current：相邻两帧 DR 的相对运动
   const Pose3d delta = between(last_dr_->pose, obs.pose);
   std::string reason;
   if (!gate_.validateDrDelta(delta, dt, &reason)) {
+    // 跳过本步递推，但仍推进 last_dr_，避免卡死在坏帧上
     last_dr_ = obs;
     last_dr_time_ = obs.timestamp;
     recordRejected(ObservationSource::DR, reason);
@@ -205,6 +225,7 @@ void PoseFusionCore::propagateWithDr(const PoseObservation& obs) {
   last_dr_ = obs;
   last_dr_time_ = obs.timestamp;
 
+  // 过程噪声随时间累加（对角近似，非完整 EKF）
   const double pos_q = config_.prediction.process_noise_position * config_.prediction.process_noise_position * dt;
   const double yaw_q = std::pow(config_.prediction.process_noise_yaw_deg * M_PI / 180.0, 2.0) * dt;
   state_.pose_covariance(0, 0) += pos_q;
@@ -215,6 +236,7 @@ void PoseFusionCore::propagateWithDr(const PoseObservation& obs) {
 }
 
 void PoseFusionCore::updateWithSlam(const PoseObservation& obs) {
+  // 首次：锁定 fusion←slam 外参，使当前融合局部位姿与当前 SLAM 位姿对齐
   if (!fusion_odom_from_slam_odom_) {
     fusion_odom_from_slam_odom_ = compose(state_.odom_base, inverse(obs.pose));
     last_slam_ = obs;
@@ -222,12 +244,14 @@ void PoseFusionCore::updateWithSlam(const PoseObservation& obs) {
     recordUsed(ObservationSource::SLAM, "align_slam_origin");
     return;
   }
+  // 把 SLAM 位姿变换到融合 odom 系，再与当前 odom_base 比残差
   const Pose3d observed_local = compose(*fusion_odom_from_slam_odom_, obs.pose);
   std::string reason;
   if (!gate_.validateSlamResidual(state_.odom_base, observed_local, &reason)) {
     recordRejected(ObservationSource::SLAM, reason);
     return;
   }
+  // alpha = smooth_gain * slam_weight，上限 0.5，避免单帧大幅跳变
   const double alpha = clamp(config_.slam.smooth_gain * policy_.slam_weight, 0.0, 0.5);
   state_.odom_base = interpolate(state_.odom_base, observed_local, alpha);
   last_slam_ = obs;
@@ -241,25 +265,28 @@ void PoseFusionCore::updateWithGlobalMatcher(const PoseObservation& obs) {
     recordRejected(ObservationSource::GLOBAL_MATCHER, reason);
     return;
   }
+  // GM 给出 map_base；反解 map_odom = map_base ∘ inv(odom_base)
   const Pose3d observed_map_odom = compose(obs.pose, inverse(state_.odom_base));
   if (!gate_.validateGlobalResidual(state_.map_odom, observed_map_odom, &reason)) {
     recordRejected(ObservationSource::GLOBAL_MATCHER, reason);
     return;
   }
 
+  // 增益随匹配质量自适应，再乘策略权重，并限幅到 [min_gain, max_gain]
   const auto& cfg = config_.global_matcher;
   double alpha = cfg.base_gain;
   alpha *= clamp(obs.inlier_ratio / std::max(1e-3, cfg.target_inlier_ratio), 0.3, 1.5);
   alpha *= clamp(cfg.target_rmse / std::max(obs.inlier_rmse, 1e-3), 0.3, 1.5);
   alpha *= clamp(policy_.global_matcher_weight, 0.0, 2.0);
   if (!obs.converged) {
-    alpha *= 0.5;
+    alpha *= 0.5;  // 未收敛时更保守
   }
   alpha = clamp(alpha, cfg.min_gain, cfg.max_gain);
 
   state_.map_odom = interpolate(state_.map_odom, observed_map_odom, alpha);
   current_map_id_ = obs.map_id.empty() ? current_map_id_ : obs.map_id;
   last_global_matcher_time_ = obs.timestamp;
+  // 接受全局约束后略微收缩位置/航向协方差
   state_.pose_covariance.block<3, 3>(0, 0) *= 0.8;
   state_.pose_covariance(5, 5) *= 0.8;
   recordUsed(ObservationSource::GLOBAL_MATCHER, "map_odom_smooth_update");
@@ -290,6 +317,7 @@ FusionOutput PoseFusionCore::buildOutput(double now) const {
   out.map_odom = state_.map_odom;
   out.odom_base = state_.odom_base;
   out.map_base = compose(state_.map_odom, state_.odom_base);
+  // 速度从 odom 系旋到 map 系（仅旋转，忽略平移）
   out.velocity_map = state_.map_odom.orientation.normalized() * state_.velocity_odom;
   out.covariance = state_.pose_covariance;
   return out;

@@ -1,5 +1,14 @@
 #pragma once
 
+/**
+ * @file types.hpp
+ * @brief pose_fusion 公共数据类型：配置、观测、融合状态、输出与诊断
+ *
+ * 坐标系约定：
+ *   map_base = map_odom ∘ odom_base
+ *   DR/SLAM 更新 odom_base；Global Matcher / Relocalization / initialpose 更新 map_odom
+ */
+
 #include "pose_fusion/common/math_utils.hpp"
 
 #include <deque>
@@ -8,6 +17,7 @@
 
 namespace pose_fusion {
 
+/** 观测来源标签，用于诊断 used/rejected 字符串 */
 enum class ObservationSource {
   DR,
   SLAM,
@@ -18,13 +28,14 @@ enum class ObservationSource {
   UNKNOWN
 };
 
+/** 运行模式名（状态机输出，见 FusionStateMachine） */
 enum class FusionStateName {
-  UNINITIALIZED,
-  DR_ONLY,
-  LOCAL_FUSION,
-  MAP_CONSTRAINED,
-  DEGRADED,
-  FAILURE
+  UNINITIALIZED,   ///< 尚未完成任何初始化
+  DR_ONLY,         ///< 仅 DR 递推可用
+  LOCAL_FUSION,    ///< DR + SLAM 局部融合
+  MAP_CONSTRAINED, ///< 存在新鲜的全局匹配约束
+  DEGRADED,        ///< 已初始化但近期无任何观测
+  FAILURE          ///< 输出无效
 };
 
 struct FrameConfig {
@@ -97,6 +108,7 @@ struct GlobalMatcherConfig {
   double max_yaw_residual_deg = 20.0;
 };
 
+/** 各源“可用”判定的最大年龄（秒） */
 struct BufferConfig {
   double max_dr_age = 0.5;
   double max_slam_age = 1.0;
@@ -104,6 +116,7 @@ struct BufferConfig {
   double max_relocalization_age = 3.0;
 };
 
+/** 完整运行配置，由 loadFusionConfig 从 YAML 填充 */
 struct FusionConfig {
   FrameConfig frames;
   TopicConfig topics;
@@ -116,6 +129,7 @@ struct FusionConfig {
   std::string default_map_id = "default";
 };
 
+/** localization_manager 下发的场景策略 */
 struct ObserverPolicyData {
   std::string scene_type = "unknown";
   std::string reason;
@@ -131,6 +145,7 @@ struct ObserverPolicyData {
   double relocalization_weight = 1.0;
 };
 
+/** 通用位姿观测（DR / SLAM / Global Matcher） */
 struct PoseObservation {
   ObservationSource source = ObservationSource::UNKNOWN;
   double timestamp = 0.0;
@@ -152,10 +167,11 @@ struct PoseObservation {
   std::string reject_reason;
 };
 
+/** 硬重置观测（initialpose / accepted_relocalization） */
 struct ResetObservation {
   ObservationSource source = ObservationSource::UNKNOWN;
   double timestamp = 0.0;
-  Pose3d map_base;
+  Pose3d map_base;  ///< 重置后车辆在 map 系下的位姿；内部置为 map_odom，odom_base=I
   Mat6d covariance = Mat6d::Identity();
   std::string frame_id;
   std::string child_frame_id;
@@ -165,15 +181,17 @@ struct ResetObservation {
   bool valid = false;
 };
 
+/** 融合滤波器内部状态 */
 struct FusionState {
   double timestamp = 0.0;
-  Pose3d odom_base;
-  Pose3d map_odom;
+  Pose3d odom_base;   ///< odom → base_link
+  Pose3d map_odom;    ///< map → odom
   Vec3d velocity_odom = Vec3d::Zero();
   Mat6d pose_covariance = Mat6d::Identity();
   bool initialized = false;
 };
 
+/** 对外输出：含合成后的 map_base 与两段 TF 位姿 */
 struct FusionOutput {
   double timestamp = 0.0;
   bool valid = false;
@@ -184,6 +202,7 @@ struct FusionOutput {
   Mat6d covariance = Mat6d::Identity();
 };
 
+/** 诊断快照，映射到 deeplumin_msgs/FusionStatus */
 struct FusionStatusData {
   double timestamp = 0.0;
   FusionStateName state = FusionStateName::UNINITIALIZED;

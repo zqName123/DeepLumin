@@ -1,9 +1,46 @@
+<?xml version="1.0"?>
+<!--
+  pose_fusion.launch — 位姿融合节点启动入口
+
+  职责：
+    启动 pose_fusion_node，并把 YAML 配置加载到该节点的私有命名空间 (~)。
+
+  典型调用：
+    roslaunch pose_fusion pose_fusion.launch
+    roslaunch pose_fusion pose_fusion.launch config:=/path/to/custom.yaml
+
+  启动后执行链路概览：
+    1) roslaunch 解析本文件，解析 $(find pose_fusion) 与各 arg
+    2) 启动可执行文件 pose_fusion_node（见 CMakeLists.txt 中 add_executable）
+    3) <rosparam command="load"> 将 YAML 写入 ~ 私有参数服务器
+    4) main() → PoseFusionNode 构造：loadFusionConfig → core.initialize → 订阅/发布/定时器
+    5) ros::spin() 进入回调循环：传感器回调喂数据，定时器 tick 输出融合位姿
+
+  坐标系约定（由 config 中 frames 决定，默认）：
+    map → odom → base_link
+    - DR / SLAM 观测在 odom 系下提供 odom→base 增量/位姿
+    - Global Matcher / Relocalization / initialpose 在 map 系下提供全局位姿
+    - 融合状态拆成 map_odom 与 odom_base，合成 map_base = map_odom ∘ odom_base
+-->
 <launch>
+  <!-- 融合参数文件路径；默认使用包内 config/pose_fusion.yaml -->
   <arg name="config" default="$(find pose_fusion)/config/pose_fusion.yaml" />
+  <!-- ROS 节点名；可通过 node_name:=xxx 覆盖，便于多机/调试并列运行 -->
   <arg name="node_name" default="pose_fusion" />
+  <!-- 节点 stdout/stderr 输出目标：screen | log -->
   <arg name="output" default="screen" />
 
+  <!--
+    启动融合节点：
+      pkg/type 对应 package.xml + CMakeLists 中的可执行目标 pose_fusion_node
+      name 成为节点图中的节点名，同时决定私有参数前缀 /<node_name>/...
+  -->
   <node pkg="pose_fusion" type="pose_fusion_node" name="$(arg node_name)" output="$(arg output)">
+    <!--
+      将 YAML 整文件 load 到本节点私有命名空间 (~)。
+      之后 param_loader.cpp 通过 pnh.param("frames/map", ...) 等键读取。
+      注意：command="load" 会按 YAML 层级展开，例如 frames.map → ~frames/map。
+    -->
     <rosparam file="$(arg config)" command="load" />
   </node>
 </launch>
