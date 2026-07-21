@@ -523,3 +523,41 @@ tick(now):
 
 *文档版本：2026-07-20*  
 *基于当时 `pose_fusion` / `localization_manager` 代码与设计讨论整理。*
+
+## 16. 当前实现更新（2026-07-20）
+
+本轮已经完成 Phase 1 的关键工程闭环：
+
+1. `pose_fusion.yaml` 默认进入 `production` 初始化语义，`topics.initial_pose` 改为 `/localization/manager/initial_pose`。
+2. 默认关闭 DR/SLAM 冷启动，避免“谁先到谁初始化”的竞态；调试时通过 launch 参数显式打开。
+3. `reset()` 不再默认令 `odom_base=I`，而是缓存 `T_map_base_init`，等待或使用当前 DR，按 `T_map_odom = T_map_base_init * inverse(T_dr)` 对齐。
+4. 收到二次 manager 初值或 accepted relocalization 时，会清空 SLAM 外参并重新等待/执行 DR 对齐，避免沿用旧 `T_odom_from_slam`。
+5. 新增 `WAIT_INITIAL_POSE`、`WAIT_PREDICTOR_READY`、`RUNNING` 诊断状态。
+6. 状态新鲜度使用观测接收时间，DR 增量仍使用消息 stamp，降低 bag 时间与系统时间不一致导致的误降级。
+7. `pose_fusion_online_test.launch` 已接入 `localization_manager`，manager 和 global_matcher 使用同一个 `pcd_path`。
+
+当前仍保留过渡融合算法：DR 相对增量递推、SLAM 对齐后平滑更新、global_matcher 平滑更新 `map_odom`。Phase 2 的完整时间有序队列和 Phase 3 的 ESKF 还没有在本轮落地，后续应在这个初始化语义稳定后继续替换。
+
+推荐测试命令：
+
+```bash
+source /opt/ros/noetic/setup.bash
+source /home/hhy/2004ros/DeepLumin/devel/setup.bash
+roslaunch pose_fusion pose_fusion_online_test.launch
+```
+
+RViz 测试流程：
+
+1. Fixed Frame 设为 `map`。
+2. 用 `2D Pose Estimate` 在地图上给初值。
+3. 观察 localization_manager 终端出现 `accepted initialpose ... z_source=map_height...`。
+4. 观察 pose_fusion 状态从 `WAIT_INITIAL_POSE` / `WAIT_PREDICTOR_READY` 进入 `DR_ONLY`、`LOCAL_FUSION` 或 `MAP_CONSTRAINED`。
+5. 对比 `/localization/fused_path`、`/localization/compare/fused_path_map`、`/localization/global_matcher/aligned_scan` 与全局地图。
+
+只测试 pose_fusion 冷启动调试时可打开：
+
+```bash
+roslaunch pose_fusion pose_fusion_online_test.launch start_manager:=false debug_cold_start:=true
+```
+
+该模式不会验证 manager 统一初值，只用于确认 DR/SLAM/GM 输入和输出链路。

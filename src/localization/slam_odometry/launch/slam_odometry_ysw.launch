@@ -1,10 +1,23 @@
 <launch>
   <arg name="config" default="$(find slam_odometry)/config/slam_odometry_ysw.yaml" />
-  <arg name="publish_global_map" default="false" />
+  <arg name="publish_global_map" default="true" />
   <arg name="pcd_path" default="/home/hhy/2004ros/relocalization_ws/global_map_manual_imu.pcd" />
   <arg name="global_map_topic" default="/localization/slam_odometry/global_map" />
   <arg name="global_map_voxel_leaf" default="2.0" />
   <arg name="global_map_frame" default="odom" />
+
+
+  <arg name="bag" default="/home/hhy/2004ros/data/2026-07-14-11-17-21.bag" />
+  <arg name="play_bag" default="true" />
+  <arg name="bag_rate" default="1.0" />
+  <arg name="bag_delay" default="2.0" />
+  <arg name="clock" default="true" />
+  <arg name="rviz" default="true" />
+  <arg name="adapter_config" default="$(find sensor_frame_adapter)/config/sensor_frame_adapter.yaml" />
+
+  <node pkg="sensor_frame_adapter" type="sensor_frame_adapter_node" name="sensor_frame_adapter" output="screen">
+    <rosparam file="$(arg adapter_config)" command="load" />
+  </node>
 
   <node pkg="slam_odometry" type="slam_odometry_node" name="slam_odometry" output="screen">
     <rosparam command="load" file="$(arg config)" />
@@ -14,4 +27,11 @@
     <param name="map/frame_id" value="$(arg global_map_frame)" />
     <param name="map/publish_voxel_leaf" value="$(arg global_map_voxel_leaf)" />
   </node>
+
+
+  <node if="$(arg rviz)" pkg="rviz" type="rviz" name="pose_fusion_online_test_rviz"
+        args="-d $(find pose_fusion)/rviz/pose_fusion_online_test.rviz" />
+
+  <node if="$(arg play_bag)" pkg="rosbag" type="play" name="pose_fusion_test_bag"
+        args="--clock --delay=$(arg bag_delay) -r $(arg bag_rate) $(arg bag)" output="screen" />
 </launch>

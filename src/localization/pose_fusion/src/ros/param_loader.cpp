@@ -8,6 +8,8 @@
 
 #include "pose_fusion/ros/param_loader.hpp"
 
+#include <algorithm>
+
 namespace pose_fusion_ros {
 
 pose_fusion::FusionConfig loadFusionConfig(ros::NodeHandle& pnh) {
@@ -51,12 +53,23 @@ pose_fusion::FusionConfig loadFusionConfig(ros::NodeHandle& pnh) {
                   cfg.runtime.allow_debug_relocalization_direct);
 
   // --- initialization ---
+  pnh.param<std::string>("initialization/operation_mode", cfg.initialization.operation_mode,
+                         cfg.initialization.operation_mode);
   pnh.param<bool>("initialization/allow_initialpose", cfg.initialization.allow_initialpose,
                   cfg.initialization.allow_initialpose);
   pnh.param<bool>("initialization/allow_dr_initialization", cfg.initialization.allow_dr_initialization,
                   cfg.initialization.allow_dr_initialization);
   pnh.param<bool>("initialization/allow_slam_initialization", cfg.initialization.allow_slam_initialization,
                   cfg.initialization.allow_slam_initialization);
+  pnh.param<bool>("initialization/allow_global_matcher_initialization",
+                  cfg.initialization.allow_global_matcher_initialization,
+                  cfg.initialization.allow_global_matcher_initialization);
+  pnh.param<double>("initialization/global_matcher_init_max_predictor_time_offset",
+                    cfg.initialization.global_matcher_init_max_predictor_time_offset,
+                    cfg.initialization.global_matcher_init_max_predictor_time_offset);
+  pnh.param<bool>("initialization/require_predictor_for_reset",
+                  cfg.initialization.require_predictor_for_reset,
+                  cfg.initialization.require_predictor_for_reset);
   pnh.param<double>("initialization/initial_cov_position", cfg.initialization.initial_cov_position,
                     cfg.initialization.initial_cov_position);
   pnh.param<double>("initialization/initial_cov_yaw_deg", cfg.initialization.initial_cov_yaw_deg,
@@ -112,6 +125,24 @@ pose_fusion::FusionConfig loadFusionConfig(ros::NodeHandle& pnh) {
   pnh.param<double>("observers/global_matcher/max_yaw_residual_deg",
                     cfg.global_matcher.max_yaw_residual_deg,
                     cfg.global_matcher.max_yaw_residual_deg);
+  pnh.param<bool>("observers/global_matcher/enable_hard_reanchor",
+                  cfg.global_matcher.enable_hard_reanchor,
+                  cfg.global_matcher.enable_hard_reanchor);
+  pnh.param<double>("observers/global_matcher/hard_reanchor_min_inlier_ratio",
+                    cfg.global_matcher.hard_reanchor_min_inlier_ratio,
+                    cfg.global_matcher.hard_reanchor_min_inlier_ratio);
+  pnh.param<double>("observers/global_matcher/hard_reanchor_max_inlier_rmse",
+                    cfg.global_matcher.hard_reanchor_max_inlier_rmse,
+                    cfg.global_matcher.hard_reanchor_max_inlier_rmse);
+  pnh.param<double>("observers/global_matcher/hard_reanchor_max_fitness",
+                    cfg.global_matcher.hard_reanchor_max_fitness,
+                    cfg.global_matcher.hard_reanchor_max_fitness);
+  pnh.param<double>("observers/global_matcher/hard_reanchor_max_position_residual",
+                    cfg.global_matcher.hard_reanchor_max_position_residual,
+                    cfg.global_matcher.hard_reanchor_max_position_residual);
+  pnh.param<double>("observers/global_matcher/hard_reanchor_max_yaw_residual_deg",
+                    cfg.global_matcher.hard_reanchor_max_yaw_residual_deg,
+                    cfg.global_matcher.hard_reanchor_max_yaw_residual_deg);
 
   // --- buffer (freshness) ---
   pnh.param<double>("buffer/max_dr_age", cfg.buffer.max_dr_age, cfg.buffer.max_dr_age);
@@ -120,6 +151,13 @@ pose_fusion::FusionConfig loadFusionConfig(ros::NodeHandle& pnh) {
                     cfg.buffer.max_global_matcher_age);
   pnh.param<double>("buffer/max_relocalization_age", cfg.buffer.max_relocalization_age,
                     cfg.buffer.max_relocalization_age);
+  int max_queue_size = static_cast<int>(cfg.buffer.max_queue_size);
+  pnh.param<int>("buffer/max_queue_size", max_queue_size, max_queue_size);
+  cfg.buffer.max_queue_size = static_cast<std::size_t>(std::max(1, max_queue_size));
+  pnh.param<double>("buffer/odom_history_duration", cfg.buffer.odom_history_duration,
+                    cfg.buffer.odom_history_duration);
+  pnh.param<double>("buffer/max_global_matcher_time_offset", cfg.buffer.max_global_matcher_time_offset,
+                    cfg.buffer.max_global_matcher_time_offset);
   return cfg;
 }
 

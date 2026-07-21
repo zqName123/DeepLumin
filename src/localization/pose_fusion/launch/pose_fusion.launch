@@ -29,6 +29,9 @@
   <arg name="node_name" default="pose_fusion" />
   <!-- 节点 stdout/stderr 输出目标：screen | log -->
   <arg name="output" default="screen" />
+  <arg name="initial_pose_topic" default="/localization/manager/initial_pose" />
+  <arg name="allow_dr_initialization" default="false" />
+  <arg name="allow_slam_initialization" default="false" />
 
   <!--
     启动融合节点：
@@ -42,5 +45,8 @@
       注意：command="load" 会按 YAML 层级展开，例如 frames.map → ~frames/map。
     -->
     <rosparam file="$(arg config)" command="load" />
+    <param name="topics/initial_pose" value="$(arg initial_pose_topic)" />
+    <param name="initialization/allow_dr_initialization" value="$(arg allow_dr_initialization)" />
+    <param name="initialization/allow_slam_initialization" value="$(arg allow_slam_initialization)" />
   </node>
 </launch>

@@ -13,6 +13,8 @@
   <arg name="slam_config" default="$(find slam_odometry)/config/slam_odometry_ysw.yaml" />
   <arg name="global_matcher_config" default="$(find global_matcher)/config/global_matcher.yaml" />
   <arg name="pose_fusion_config" default="$(find pose_fusion)/config/pose_fusion.yaml" />
+  <arg name="manager_config" default="$(find localization_manager)/config/localization_manager.yaml" />
+  <arg name="adapter_config" default="$(find sensor_frame_adapter)/config/sensor_frame_adapter.yaml" />
   <!-- <arg name="pcd_path" default="/home/hhy/2004ros/ysw_loc/src/map/0730map/yuhsuwan2_loc_rot_72.pcd" />  -->
   <arg name="pcd_path" default="/home/hhy/2004ros/relocalization_ws/global_map_manual_imu.pcd" />
 
@@ -20,14 +22,20 @@
   <arg name="play_bag" default="true" />
   <arg name="bag_rate" default="1.0" />
   <arg name="bag_delay" default="2.0" />
-  <arg name="clock" default="false" />
+  <arg name="clock" default="true" />
   <arg name="rviz" default="true" />
   <arg name="path_compare" default="true" />
+  <arg name="start_manager" default="true" />
+  <arg name="debug_cold_start" default="false" />
   <arg name="compare_dr" default="true" />
   <arg name="compare_slam" default="true" />
   <arg name="compare_fused" default="true" />
 
   <param name="/use_sim_time" value="$(arg clock)" />
+
+  <node pkg="sensor_frame_adapter" type="sensor_frame_adapter_node" name="sensor_frame_adapter" output="screen">
+    <rosparam file="$(arg adapter_config)" command="load" />
+  </node>
 
   <node pkg="dr_odometry" type="dr_odometry_node" name="dr_odometry" output="screen">
     <rosparam file="$(arg dr_config)" command="load" />
@@ -41,17 +49,30 @@
     <param name="slam/publish_tf" value="false" />
   </node>
 
+
+  <node if="$(arg start_manager)" pkg="localization_manager" type="localization_manager_node"
+        name="localization_manager" output="screen">
+    <rosparam file="$(arg manager_config)" command="load" />
+    <param name="initial_pose_completion/pcd_path" value="$(arg pcd_path)" />
+  </node>
+
   <node pkg="pose_fusion" type="pose_fusion_node" name="pose_fusion" output="screen">
     <rosparam file="$(arg pose_fusion_config)" command="load" />
     <param name="runtime/publish_tf" value="true" />
     <param name="runtime/publish_map_to_odom_tf" value="true" />
     <param name="runtime/publish_odom_to_base_tf" value="true" />
+    <param name="initialization/operation_mode" value="production" />
+    <param name="initialization/allow_dr_initialization" value="$(arg debug_cold_start)" />
+    <param name="initialization/allow_slam_initialization" value="$(arg debug_cold_start)" />
+    <param name="topics/initial_pose" value="/localization/manager/initial_pose" />
   </node>
 
   <node pkg="global_matcher" type="global_matcher_node" name="global_matcher" output="screen">
     <rosparam file="$(arg global_matcher_config)" command="load" />
     <param name="map/pcd_path" value="$(arg pcd_path)" />
-    <param name="topics/source_cloud" value="/localization/cloud_registered" />
+    <param name="topics/source_cloud" value="/localization/points" />
+    <param name="runtime/source_cloud_is_odom_frame" value="false" />
+    <param name="runtime/source_cloud_frame" value="lidar" />
     <param name="topics/initial_pose" value="/localization/fused_odom" />
     <param name="topics/source_odom" value="/localization/slam_odom" />
     <param name="topics/result" value="/localization/global_matcher/result" />

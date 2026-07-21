@@ -55,6 +55,10 @@ pose_fusion::PoseObservation fromOdom(const nav_msgs::Odometry& msg,
   pose_fusion::PoseObservation obs;
   obs.source = source;  // DR 或 SLAM，由调用方指定
   obs.timestamp = msg.header.stamp.toSec();
+  if (obs.timestamp <= 0.0) {
+    obs.timestamp = ros::Time::now().toSec();
+  }
+  obs.received_timestamp = ros::Time::now().toSec();
   obs.pose = poseFromRos(msg.pose.pose);
   obs.velocity = pose_fusion::Vec3d(msg.twist.twist.linear.x,
                                     msg.twist.twist.linear.y,
@@ -70,6 +74,10 @@ pose_fusion::PoseObservation fromGlobalMatch(const deeplumin_msgs::GlobalMatchRe
   pose_fusion::PoseObservation obs;
   obs.source = pose_fusion::ObservationSource::GLOBAL_MATCHER;
   obs.timestamp = msg.header.stamp.toSec();
+  if (obs.timestamp <= 0.0) {
+    obs.timestamp = ros::Time::now().toSec();
+  }
+  obs.received_timestamp = ros::Time::now().toSec();
   obs.pose = poseFromRos(msg.pose.pose);  // 期望为 map 系 map_base
   obs.covariance = covarianceFromRos(msg.pose.covariance);
   obs.frame_id = msg.header.frame_id;
@@ -96,6 +104,7 @@ pose_fusion::ResetObservation fromInitialPose(const geometry_msgs::PoseWithCovar
   if (obs.timestamp <= 0.0) {
     obs.timestamp = ros::Time::now().toSec();  // RViz 有时 stamp=0
   }
+  obs.received_timestamp = ros::Time::now().toSec();
   obs.map_base = poseFromRos(msg.pose.pose);
   obs.covariance = covarianceFromRos(msg.pose.covariance);
   obs.frame_id = msg.header.frame_id;
@@ -111,6 +120,10 @@ pose_fusion::ResetObservation fromRelocalization(const deeplumin_msgs::Relocaliz
   pose_fusion::ResetObservation obs;
   obs.source = pose_fusion::ObservationSource::RELOCALIZATION;
   obs.timestamp = msg.header.stamp.toSec();
+  if (obs.timestamp <= 0.0) {
+    obs.timestamp = ros::Time::now().toSec();
+  }
+  obs.received_timestamp = ros::Time::now().toSec();
   obs.map_base = poseFromRos(msg.pose.pose);
   obs.covariance = covarianceFromRos(msg.pose.covariance);
   obs.frame_id = msg.header.frame_id;

@@ -5,7 +5,7 @@
  * @brief 融合运行状态机：根据各观测源新鲜度推导当前模式名
  *
  * 优先级（已初始化且输出有效时）：
- *   MAP_CONSTRAINED > LOCAL_FUSION > DR_ONLY > DEGRADED
+ *   MAP_CONSTRAINED > LOCAL_FUSION > DR_ONLY > RUNNING/DEGRADED
  */
 
 #include "pose_fusion/common/types.hpp"

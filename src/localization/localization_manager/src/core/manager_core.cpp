@@ -280,9 +280,13 @@ void ManagerCore::updateStatusLocked(const ros::Time& now) {
 void ManagerCore::updatePolicyLocked(const ros::Time&) {
   policy_.scene_type = current_scene_;
   policy_.reason = failure_reason_;
-  policy_.use_dr = dr_odom_.available;
-  policy_.use_slam = slam_odom_.available && state_ != ManagerState::PURE_DR;
-  policy_.use_global_matcher = global_matcher_status_.available && current_scene_ != "NO_MAP";
+  const bool initializing = state_ == ManagerState::WAIT_INITIAL_POSE || state_ == ManagerState::RELOCALIZING;
+  // During initialization, availability is exactly what the system is trying to establish.
+  // Keep candidate observers enabled so pose_fusion can accept the first valid predictor / map constraint.
+  policy_.use_dr = initializing ? true : dr_odom_.available;
+  policy_.use_slam = initializing ? true : (slam_odom_.available && state_ != ManagerState::PURE_DR);
+  policy_.use_global_matcher = (initializing || global_matcher_status_.available || global_matcher_result_.available) &&
+                               current_scene_ != "NO_MAP";
   // 等待初值、重定位中、降级、故障时允许触发重定位/融合重置
   policy_.use_relocalization = state_ == ManagerState::WAIT_INITIAL_POSE ||
                                state_ == ManagerState::RELOCALIZING ||
@@ -297,7 +301,7 @@ void ManagerCore::updatePolicyLocked(const ros::Time&) {
   policy_.relocalization_weight = policy_.use_relocalization ? 1.0 : 0.0;
   policy_.gnss_position_weight = policy_.use_gnss_position ? 1.0 : 0.0;
   policy_.gnss_heading_weight = policy_.use_gnss_heading ? 1.0 : 0.0;
-  policy_.allow_fusion_reset = has_initial_pose_ || accepted_relocalization_.has_value();
+  policy_.allow_fusion_reset = initializing || has_initial_pose_ || accepted_relocalization_.has_value();
   policy_.allow_dr_reset = false;
   policy_.allow_global_matcher_trigger = policy_.use_global_matcher;
   policy_.allow_relocalization_trigger = policy_.use_relocalization;

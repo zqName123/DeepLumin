@@ -1,0 +1,23 @@
+# Normalize raw LiDAR point clouds into the localization standard lidar frame.
+# DeepLumin localization standard: map -> odom -> base_link -> lidar_link.
+
+topics:
+  input_cloud: /ouster/points
+  output_cloud: /localization/points
+
+frames:
+  output_frame: lidar_link
+
+transform:
+  enabled: true
+  # Current ysw/relocalization-compatible data needs raw xy -> y,-x, equal to yaw=-90deg.
+  # For vehicles whose raw point cloud already matches lidar_link, set yaw_deg to 0.0 or enabled=false.
+  rotate_xy_y_negx: true
+  yaw_deg: 0.0
+  translation: [0.0, 0.0, 0.0]
+  rotation_rpy_deg: [0.0, 0.0, 0.0]
+
+runtime:
+  queue_size: 5
+  remove_nan: true
+  keep_input_stamp: true

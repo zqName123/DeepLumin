@@ -9,6 +9,10 @@ namespace pose_fusion {
 
 void FusionStateMachine::update(const FusionStatusData& status) {
   if (!status.initialized) {
+    if (state_ == FusionStateName::WAIT_PREDICTOR_READY ||
+        state_ == FusionStateName::WAIT_INITIAL_POSE) {
+      return;
+    }
     state_ = FusionStateName::UNINITIALIZED;
     return;
   }

@@ -1,0 +1,13 @@
+<launch>
+  <arg name="config" default="$(find sensor_frame_adapter)/config/sensor_frame_adapter.yaml" />
+  <arg name="input_cloud" default="/ouster/points" />
+  <arg name="output_cloud" default="/localization/points" />
+  <arg name="output_frame" default="lidar_link" />
+
+  <node pkg="sensor_frame_adapter" type="sensor_frame_adapter_node" name="sensor_frame_adapter" output="screen">
+    <rosparam file="$(arg config)" command="load" />
+    <param name="topics/input_cloud" value="$(arg input_cloud)" />
+    <param name="topics/output_cloud" value="$(arg output_cloud)" />
+    <param name="frames/output_frame" value="$(arg output_frame)" />
+  </node>
+</launch>

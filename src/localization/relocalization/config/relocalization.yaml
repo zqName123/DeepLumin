@@ -36,7 +36,7 @@ bag_report_csv:  "/home/hhy/2004ros/relocalization_ws/bag_eval_report.csv"
 
 # ---------- bag 评估（bag_eval_viz.launch）----------
 bag_file: ""
-bag_lidar_topic: "/ouster/points"
+bag_lidar_topic: "/localization/points"
 bag_cloud_stride: 1
 bag_use_truth_pose: false   # false=地图贴合评估（推荐）；true=与 TUM 真值对比
 max_pose_time_diff: 0.15    # 仅 bag_use_truth_pose=true 时使用
@@ -45,7 +45,7 @@ bag_duration: 0.0           # 只评估时长 (s)，0=到 bag 结束
 log_topk_candidates: true     # 打印每个 query 的 SC Top-K 候选
 
 # ---------- 在线重定位 / 评估通用 ----------
-lidar_topic: "/ouster/points"
+lidar_topic: "/localization/points"
 frame_id: "map"
 child_frame_id: "base_link"
 lidar_frame_id: "lidar_link"
@@ -73,7 +73,7 @@ extrinsics:
 # key_point_frame 必须与 bag/在线 raw query 使用同一局部坐标约定。
 # yaw_deg 可用于快速测试 0 / 90 / -90 / 180；rotate_xy_y_negx=true 等价于额外 -90deg。
 query_frame:
-  rotate_xy_y_negx: true
+  rotate_xy_y_negx: false
   yaw_deg: 0.0
 
 # ---------- 点云预处理 ----------

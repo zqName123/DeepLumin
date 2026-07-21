@@ -88,7 +88,7 @@ timeout:
 # --- 降级与故障判定 ---
 degrade:
   # 连续 N 次 tick 检测到模块降级 → 进入 DEGRADED
-  enter_degraded_fail_count: 3
+  enter_degraded_fail_count: 10
   exit_degraded_ok_count: 5
   trigger_reloc_fail_count: 5
   # 融合输出超时超过此值 → FAILURE

@@ -29,7 +29,8 @@ topics:
   global_matcher_status: /localization/global_matcher/status
   accepted_relocalization: /localization/manager/accepted_relocalization
   observer_policy: /localization/manager/observer_policy
-  initial_pose: /initialpose
+  # Full system input from localization_manager. Use launch override for direct /initialpose debug.
+  initial_pose: /localization/manager/initial_pose
   fused_odom: /localization/fused_odom
   fused_pose: /localization/fused_pose
   fused_path: /localization/fused_path
@@ -51,14 +52,17 @@ runtime:
 
 # --- 初始化策略 ----------------------------------------------------------------
 initialization:
+  # production: wait for localization_manager/initial_pose or accepted relocalization.
+  # debug: launch files may override DR/SLAM cold start for standalone tests.
+  operation_mode: production
   allow_initialpose: true
-  # If no /initialpose or accepted relocalization is available, start from map==odom
-  # on the first valid DR message so bag/debug tests can run.
-  # 无初值时：首帧有效 DR 将 map_odom 置单位元（map≈odom）进入 DR_ONLY
-  allow_dr_initialization: true
-  # Allows slam_odometry-only debugging and short DR outage operation.
-  # 允许仅用 SLAM 初值进入 LOCAL_FUSION（调试 / 短时无 DR）
-  allow_slam_initialization: true
+  allow_dr_initialization: false
+  allow_slam_initialization: false
+  # Allow a high-quality global_matcher result to initialize map_odom with latest DR/SLAM odom_base.
+  allow_global_matcher_initialization: true
+  # GM registration may arrive later than the source cloud stamp. Use a looser gate only for initialization.
+  global_matcher_init_max_predictor_time_offset: 1.0
+  require_predictor_for_reset: true
   initial_cov_position: 1.0
   initial_cov_yaw_deg: 5.0
 
@@ -94,6 +98,14 @@ observers:
     max_fitness: 20.0
     max_position_residual: 5.0
     max_yaw_residual_deg: 20.0
+    # If a GM result is strong but disagrees with current map_odom by more than the smooth residual gate,
+    # directly re-anchor map_odom instead of rejecting it.
+    enable_hard_reanchor: true
+    hard_reanchor_min_inlier_ratio: 0.70
+    hard_reanchor_max_inlier_rmse: 0.35
+    hard_reanchor_max_fitness: 5.0
+    hard_reanchor_max_position_residual: 50.0
+    hard_reanchor_max_yaw_residual_deg: 90.0
 
 # --- 观测“新鲜度”判定（用于状态机与 FusionStatus）----------------------------
 # age = now - last_*_time；超过则认为该源不可用
@@ -102,3 +114,7 @@ buffer:
   max_slam_age: 1.0
   max_global_matcher_age: 3.0
   max_relocalization_age: 3.0
+  max_queue_size: 500
+  # Store odom_base history so global_matcher map_base(t_cloud) can be converted to map_odom with odom_base(t_cloud).
+  odom_history_duration: 10.0
+  max_global_matcher_time_offset: 0.5

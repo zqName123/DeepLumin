@@ -22,6 +22,9 @@ std::string toString(ObservationSource source) {
 std::string toString(FusionStateName state) {
   switch (state) {
     case FusionStateName::UNINITIALIZED: return "UNINITIALIZED";
+    case FusionStateName::WAIT_INITIAL_POSE: return "WAIT_INITIAL_POSE";
+    case FusionStateName::WAIT_PREDICTOR_READY: return "WAIT_PREDICTOR_READY";
+    case FusionStateName::RUNNING: return "RUNNING";
     case FusionStateName::DR_ONLY: return "DR_ONLY";
     case FusionStateName::LOCAL_FUSION: return "LOCAL_FUSION";
     case FusionStateName::MAP_CONSTRAINED: return "MAP_CONSTRAINED";

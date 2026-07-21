@@ -58,6 +58,28 @@ struct MapSegment {
   CloudPtr viz_map;
 };
 
+enum class MatcherRunMode {
+  BOOTSTRAP,
+  TRACKING
+};
+
+struct InitialGuess {
+  Eigen::Matrix4f map_source = Eigen::Matrix4f::Identity();
+  Eigen::Matrix4f source_base = Eigen::Matrix4f::Identity();
+  Eigen::Matrix4f map_base = Eigen::Matrix4f::Identity();
+  MatcherRunMode mode = MatcherRunMode::BOOTSTRAP;
+  std::string reason;
+  bool valid = true;
+};
+
+std::string modeToString(MatcherRunMode mode) {
+  switch (mode) {
+    case MatcherRunMode::BOOTSTRAP: return "bootstrap";
+    case MatcherRunMode::TRACKING: return "tracking";
+  }
+  return "unknown";
+}
+
 Eigen::Matrix4f poseToMatrix(const geometry_msgs::Pose& pose) {
   Eigen::Quaternionf q(static_cast<float>(pose.orientation.w),
                        static_cast<float>(pose.orientation.x),
@@ -150,6 +172,14 @@ bool loadMatrix3(ros::NodeHandle& nh, const std::string& key, Eigen::Matrix3f* v
   return true;
 }
 
+Eigen::Matrix3f rpyDegToMatrix(const Eigen::Vector3f& rpy_deg) {
+  const float deg_to_rad = static_cast<float>(kPi / 180.0);
+  const Eigen::AngleAxisf roll(rpy_deg.x() * deg_to_rad, Eigen::Vector3f::UnitX());
+  const Eigen::AngleAxisf pitch(rpy_deg.y() * deg_to_rad, Eigen::Vector3f::UnitY());
+  const Eigen::AngleAxisf yaw(rpy_deg.z() * deg_to_rad, Eigen::Vector3f::UnitZ());
+  return (yaw * pitch * roll).toRotationMatrix();
+}
+
 Eigen::Matrix4f loadExtrinsic(ros::NodeHandle& nh, const std::string& key) {
   Eigen::Vector3f translation = Eigen::Vector3f::Zero();
   Eigen::Matrix3f rotation = Eigen::Matrix3f::Identity();
@@ -189,9 +219,10 @@ class GlobalMatcherNode {
     global_map_pub_ = nh_.advertise<sensor_msgs::PointCloud2>(global_map_topic_, 1, true);
 
     source_sub_ = nh_.subscribe(source_cloud_topic_, 2, &GlobalMatcherNode::onSourceCloud, this);
-    initial_odom_sub_ = nh_.subscribe(initial_pose_topic_, 5, &GlobalMatcherNode::onInitialOdom, this);
+    tracking_initial_sub_ = nh_.subscribe(initial_pose_topic_, 5, &GlobalMatcherNode::onTrackingInitialOdom, this);
     source_odom_sub_ = nh_.subscribe(source_odom_topic_, 20, &GlobalMatcherNode::onSourceOdom, this);
-    initial_pose_sub_ = nh_.subscribe(manual_initial_pose_topic_, 2, &GlobalMatcherNode::onManualInitialPose, this);
+    bootstrap_initial_pose_sub_ = nh_.subscribe(bootstrap_initial_pose_topic_, 2, &GlobalMatcherNode::onBootstrapInitialPose, this);
+    manual_initial_pose_sub_ = nh_.subscribe(manual_initial_pose_topic_, 2, &GlobalMatcherNode::onManualInitialPose, this);
     load_map_command_sub_ = nh_.subscribe(load_map_command_topic_, 2, &GlobalMatcherNode::onLoadMapCommand, this);
     set_map_segment_command_sub_ = nh_.subscribe(set_map_segment_command_topic_, 2, &GlobalMatcherNode::onSetMapSegmentCommand, this);
 
@@ -218,6 +249,7 @@ class GlobalMatcherNode {
     pnh_.param<std::string>("topics/source_cloud", source_cloud_topic_, "/localization/cloud_registered");
     pnh_.param<std::string>("topics/initial_pose", initial_pose_topic_, "/localization/fused_odom");
     pnh_.param<std::string>("topics/source_odom", source_odom_topic_, "/localization/slam_odom");
+    pnh_.param<std::string>("topics/bootstrap_initial_pose", bootstrap_initial_pose_topic_, "/localization/manager/initial_pose");
     pnh_.param<std::string>("topics/manual_initial_pose", manual_initial_pose_topic_, "/initialpose");
     pnh_.param<std::string>("topics/result", result_topic_, "/localization/global_matcher/result");
     pnh_.param<std::string>("topics/status", status_topic_, "/localization/global_matcher/status");
@@ -232,6 +264,8 @@ class GlobalMatcherNode {
 
     pnh_.param<std::string>("map/default_map_id", default_map_id_, "default");
     pnh_.param<std::string>("map/pcd_path", pcd_path_, "/home/hhy/2004ros/ysw_loc/src/map/0730map/yuhsuwan2_loc_rot_72.pcd");
+    // Applied once at PCD load (ysw-style). 0 disables load-time downsampling and keeps full resolution.
+    pnh_.param<double>("map/load_voxel_leaf", map_load_voxel_leaf_, 0.4);
     pnh_.param<double>("map/publish_voxel_leaf", global_map_publish_voxel_leaf_, 5.0);
     pnh_.param<double>("map/global_publish_period", global_map_publish_period_, 5.0);
 
@@ -241,7 +275,21 @@ class GlobalMatcherNode {
     pnh_.param<std::string>("runtime/source_cloud_frame", source_cloud_frame_, "auto");
     pnh_.param<double>("runtime/match_rate", match_rate_, 1.0);
     pnh_.param<double>("runtime/max_cloud_age", max_cloud_age_, 1.0);
+    pnh_.param<bool>("runtime/use_receive_time_for_cloud_age", use_receive_time_for_cloud_age_, true);
     pnh_.param<int>("runtime/max_path_size", max_path_size_, 3000);
+    pnh_.param<bool>("runtime/use_tracking_initial_pose", use_tracking_initial_pose_, true);
+    pnh_.param<bool>("runtime/use_bootstrap_initial_pose", use_bootstrap_initial_pose_, true);
+    pnh_.param<bool>("runtime/use_manual_initial_pose", use_manual_initial_pose_, true);
+    pnh_.param<bool>("runtime/use_default_initial_pose", use_default_initial_pose_, true);
+    pnh_.param<bool>("runtime/allow_identity_bootstrap", allow_identity_bootstrap_, true);
+
+    Eigen::Vector3f default_translation = Eigen::Vector3f::Zero();
+    Eigen::Vector3f default_rpy_deg = Eigen::Vector3f::Zero();
+    loadVector3(pnh_, "runtime/default_initial_pose/translation", &default_translation);
+    loadVector3(pnh_, "runtime/default_initial_pose/rpy_deg", &default_rpy_deg);
+    default_initial_map_base_ = Eigen::Matrix4f::Identity();
+    default_initial_map_base_.block<3, 3>(0, 0) = rpyDegToMatrix(default_rpy_deg);
+    default_initial_map_base_.block<3, 1>(0, 3) = default_translation;
 
     pnh_.param<double>("crop/forward", crop_forward_, 70.0);
     pnh_.param<double>("crop/backward", crop_backward_, 7.0);
@@ -305,10 +353,21 @@ class GlobalMatcherNode {
       return false;
     }
 
+    const std::size_t raw_points = raw->size();
+    CloudPtr loaded = raw;
+    if (map_load_voxel_leaf_ > 1e-4) {
+      loaded = downsample(raw, map_load_voxel_leaf_);
+      if (!loaded || loaded->empty()) {
+        ROS_ERROR("[global_matcher] pcd map is empty after load voxel leaf=%.3f, map_id=%s path=%s",
+                  map_load_voxel_leaf_, map_id.c_str(), pcd_path.c_str());
+        return false;
+      }
+    }
+
     MapSegment segment;
     segment.id = map_id;
     segment.path = pcd_path;
-    segment.full_map = raw;
+    segment.full_map = loaded;
     segment.viz_map = downsample(segment.full_map, global_map_publish_voxel_leaf_);
     if (!segment.viz_map || segment.viz_map->empty()) {
       segment.viz_map = segment.full_map;
@@ -322,8 +381,9 @@ class GlobalMatcherNode {
       }
     }
 
-    ROS_INFO("[global_matcher] loaded map segment id=%s path=%s points=%zu viz_points=%zu activate=%d",
-             map_id.c_str(), pcd_path.c_str(), segment.full_map->size(), segment.viz_map->size(), activate);
+    ROS_INFO("[global_matcher] loaded map segment id=%s path=%s raw_points=%zu load_leaf=%.3f points=%zu viz_points=%zu activate=%d",
+             map_id.c_str(), pcd_path.c_str(), raw_points, map_load_voxel_leaf_,
+             segment.full_map->size(), segment.viz_map->size(), activate);
     if (activate) {
       publishGlobalMap();
     }
@@ -371,17 +431,19 @@ class GlobalMatcherNode {
     CloudPtr cloud(new CloudT());
     pcl::fromROSMsg(*msg, *cloud);
     cloud = removeInvalid(cloud);
+    const ros::Time receive_stamp = ros::Time::now();
     std::lock_guard<std::mutex> lock(mutex_);
     latest_source_ = cloud;
-    latest_source_stamp_ = msg->header.stamp.isZero() ? ros::Time::now() : msg->header.stamp;
+    latest_source_stamp_ = msg->header.stamp.isZero() ? receive_stamp : msg->header.stamp;
+    latest_source_receive_stamp_ = receive_stamp;
     latest_source_frame_ = msg->header.frame_id;
   }
 
-  void onInitialOdom(const nav_msgs::Odometry::ConstPtr& msg) {
+  void onTrackingInitialOdom(const nav_msgs::Odometry::ConstPtr& msg) {
     std::lock_guard<std::mutex> lock(mutex_);
-    latest_initial_map_base_ = poseToMatrix(msg->pose.pose);
-    latest_initial_stamp_ = msg->header.stamp.isZero() ? ros::Time::now() : msg->header.stamp;
-    have_initial_map_base_ = true;
+    latest_tracking_map_base_ = poseToMatrix(msg->pose.pose);
+    latest_tracking_stamp_ = msg->header.stamp.isZero() ? ros::Time::now() : msg->header.stamp;
+    have_tracking_map_base_ = true;
   }
 
   void onSourceOdom(const nav_msgs::Odometry::ConstPtr& msg) {
@@ -391,11 +453,22 @@ class GlobalMatcherNode {
     have_source_odom_ = true;
   }
 
-  void onManualInitialPose(const geometry_msgs::PoseWithCovarianceStamped::ConstPtr& msg) {
+  void onBootstrapInitialPose(const geometry_msgs::PoseWithCovarianceStamped::ConstPtr& msg) {
     std::lock_guard<std::mutex> lock(mutex_);
-    latest_initial_map_base_ = poseToMatrix(msg->pose.pose);
-    latest_initial_stamp_ = msg->header.stamp.isZero() ? ros::Time::now() : msg->header.stamp;
-    have_initial_map_base_ = true;
+    latest_bootstrap_map_base_ = poseToMatrix(msg->pose.pose);
+    latest_bootstrap_stamp_ = msg->header.stamp.isZero() ? ros::Time::now() : msg->header.stamp;
+    have_bootstrap_map_base_ = true;
+    ROS_INFO("[global_matcher] received bootstrap initial pose from %s", bootstrap_initial_pose_topic_.c_str());
+  }
+
+  void onManualInitialPose(const geometry_msgs::PoseWithCovarianceStamped::ConstPtr& msg) {
+    if (!use_manual_initial_pose_) {
+      return;
+    }
+    std::lock_guard<std::mutex> lock(mutex_);
+    latest_bootstrap_map_base_ = poseToMatrix(msg->pose.pose);
+    latest_bootstrap_stamp_ = msg->header.stamp.isZero() ? ros::Time::now() : msg->header.stamp;
+    have_bootstrap_map_base_ = true;
     ROS_INFO("[global_matcher] received manual initial pose from %s", manual_initial_pose_topic_.c_str());
   }
 
@@ -465,9 +538,12 @@ class GlobalMatcherNode {
   void runMatch() {
     CloudPtr source;
     ros::Time source_stamp;
-    Eigen::Matrix4f initial_map_base = Eigen::Matrix4f::Identity();
-    Eigen::Matrix4f source_base = Eigen::Matrix4f::Identity();
-    bool have_initial = false;
+    ros::Time source_receive_stamp;
+    Eigen::Matrix4f tracking_map_base = Eigen::Matrix4f::Identity();
+    Eigen::Matrix4f bootstrap_map_base = Eigen::Matrix4f::Identity();
+    Eigen::Matrix4f source_odom_base = Eigen::Matrix4f::Identity();
+    bool have_tracking = false;
+    bool have_bootstrap = false;
     bool have_source_odom = false;
     std::string source_frame;
 
@@ -475,9 +551,12 @@ class GlobalMatcherNode {
       std::lock_guard<std::mutex> lock(mutex_);
       source = latest_source_;
       source_stamp = latest_source_stamp_;
-      initial_map_base = latest_initial_map_base_;
-      source_base = latest_source_base_;
-      have_initial = have_initial_map_base_;
+      source_receive_stamp = latest_source_receive_stamp_;
+      tracking_map_base = latest_tracking_map_base_;
+      bootstrap_map_base = latest_bootstrap_map_base_;
+      source_odom_base = latest_source_base_;
+      have_tracking = have_tracking_map_base_;
+      have_bootstrap = have_bootstrap_map_base_;
       have_source_odom = have_source_odom_;
       source_frame = latest_source_frame_;
     }
@@ -490,8 +569,20 @@ class GlobalMatcherNode {
       publishRejected(ros::Time::now(), "waiting source cloud");
       return;
     }
-    const double cloud_age = (ros::Time::now() - source_stamp).toSec();
+    const ros::Time now = ros::Time::now();
+    const ros::Time cloud_age_stamp = use_receive_time_for_cloud_age_ ? source_receive_stamp : source_stamp;
+    const double cloud_age = cloud_age_stamp.isZero() ? std::numeric_limits<double>::infinity()
+                                                       : (now - cloud_age_stamp).toSec();
     if (cloud_age > max_cloud_age_) {
+      const double message_age = source_stamp.isZero() ? std::numeric_limits<double>::infinity()
+                                                       : (now - source_stamp).toSec();
+      const double receive_age = source_receive_stamp.isZero() ? std::numeric_limits<double>::infinity()
+                                                               : (now - source_receive_stamp).toSec();
+      ROS_WARN_THROTTLE(1.0,
+                        "[global_matcher] source cloud timeout: age=%.3fs limit=%.3fs mode=%s msg_age=%.3fs receive_age=%.3fs msg_stamp=%.9f receive_stamp=%.9f now=%.9f",
+                        cloud_age, max_cloud_age_,
+                        use_receive_time_for_cloud_age_ ? "receive_time" : "measurement_time",
+                        message_age, receive_age, source_stamp.toSec(), source_receive_stamp.toSec(), now.toSec());
       publishRejected(source_stamp, "source cloud timeout");
       return;
     }
@@ -500,28 +591,17 @@ class GlobalMatcherNode {
       return;
     }
 
-    Eigen::Matrix4f initial_map_source = Eigen::Matrix4f::Identity();
-    const std::string source_mode = (source_cloud_frame_ == "auto") ? source_frame : source_cloud_frame_;
-    const bool source_is_odom = source_cloud_is_odom_frame_ || source_mode == "odom" || source_mode == odom_frame_;
-    const bool source_is_lidar = source_mode == "lidar" || source_mode == lidar_frame_;
-    if (source_is_odom) {
-      if (have_initial && have_source_odom) {
-        initial_map_source = initial_map_base * source_base.inverse();
-      } else if (have_initial) {
-        initial_map_source = initial_map_base;
-        ROS_WARN_THROTTLE(2.0, "[global_matcher] source_odom missing, using initial pose as map->source guess");
-      } else {
-        initial_map_source = Eigen::Matrix4f::Identity();
-        ROS_WARN_THROTTLE(2.0, "[global_matcher] no initial pose, using identity map->odom guess");
-      }
-    } else if (source_is_lidar) {
-      source_base = base_to_lidar_.inverse();
-      initial_map_source = (have_initial ? initial_map_base : Eigen::Matrix4f::Identity()) * base_to_lidar_;
-    } else {
-      source_base = Eigen::Matrix4f::Identity();
-      initial_map_source = have_initial ? initial_map_base : Eigen::Matrix4f::Identity();
+    const InitialGuess guess = selectInitialGuess(source_frame, have_tracking, tracking_map_base,
+                                                  have_bootstrap, bootstrap_map_base,
+                                                  have_source_odom, source_odom_base);
+    current_mode_ = modeToString(guess.mode);
+    if (!guess.valid) {
+      publishRejected(source_stamp, guess.reason);
+      return;
     }
-    const Eigen::Matrix4f initial_map_base_for_crop = initial_map_source * source_base;
+    const Eigen::Matrix4f initial_map_source = guess.map_source;
+    const Eigen::Matrix4f source_base = guess.source_base;
+    const Eigen::Matrix4f initial_map_base_for_crop = guess.map_base;
 
     publishInitialGuess(source_stamp, initial_map_base_for_crop);
     publishSourceInitial(source_stamp, source, initial_map_source);
@@ -578,6 +658,7 @@ class GlobalMatcherNode {
                         fine_fitness, metrics.inlier_ratio, metrics.inlier_rmse);
     }
 
+    updateModeAfterMatch(success);
     publishAligned(source_stamp, source, final_map_source);
     publishResult(source_stamp, success, fine_converged, final_map_base, fine_fitness, metrics,
                   elapsed_ms, static_cast<uint32_t>(target_submap->size()),
@@ -587,10 +668,84 @@ class GlobalMatcherNode {
                   success ? 1.0 : 0.2,
                   success ? "" : reject_reason);
 
-    ROS_INFO("[global_matcher] success=%d converged=%d source=%zu target=%zu fitness=%.4f inlier=%.3f rmse=%.3f delta=%.3fm yaw=%.2fdeg cost=%.1fms reason=%s",
-             success, fine_converged, source->size(), target_submap->size(), fine_fitness,
+    ROS_INFO("[global_matcher] mode=%s success=%d converged=%d source=%zu target=%zu fitness=%.4f inlier=%.3f rmse=%.3f delta=%.3fm yaw=%.2fdeg cost=%.1fms reason=%s",
+             current_mode_.c_str(), success, fine_converged, source->size(), target_submap->size(), fine_fitness,
              metrics.inlier_ratio, metrics.inlier_rmse, delta_translation,
              delta_yaw * 180.0 / kPi, elapsed_ms, reject_reason.c_str());
+  }
+
+  InitialGuess selectInitialGuess(const std::string& source_frame,
+                                  bool have_tracking,
+                                  const Eigen::Matrix4f& tracking_map_base,
+                                  bool have_bootstrap,
+                                  const Eigen::Matrix4f& bootstrap_map_base,
+                                  bool have_source_odom,
+                                  const Eigen::Matrix4f& source_odom_base) const {
+    const std::string source_mode = (source_cloud_frame_ == "auto") ? source_frame : source_cloud_frame_;
+    const bool source_is_odom = source_cloud_is_odom_frame_ || source_mode == "odom" || source_mode == odom_frame_;
+    const bool source_is_lidar = source_mode == "lidar" || source_mode == lidar_frame_;
+
+    InitialGuess guess;
+    bool have_map_base = false;
+    Eigen::Matrix4f map_base = Eigen::Matrix4f::Identity();
+
+    if (use_tracking_initial_pose_ && have_tracking) {
+      // Online tracking must keep using fused_odom even after failed matches. A failed GM frame is
+      // a rejected observation, not a reason to jump the search window back to map origin/default.
+      guess.mode = MatcherRunMode::TRACKING;
+      guess.reason = "tracking:fused_odom";
+      map_base = tracking_map_base;
+      have_map_base = true;
+    } else {
+      guess.mode = MatcherRunMode::BOOTSTRAP;
+      if (use_bootstrap_initial_pose_ && have_bootstrap) {
+        guess.reason = "bootstrap:initial_pose";
+        map_base = bootstrap_map_base;
+        have_map_base = true;
+      } else if (use_default_initial_pose_) {
+        guess.reason = "bootstrap:default_initial_pose";
+        map_base = default_initial_map_base_;
+        have_map_base = true;
+      } else if (allow_identity_bootstrap_) {
+        guess.reason = "bootstrap:identity";
+        map_base = Eigen::Matrix4f::Identity();
+        have_map_base = true;
+      }
+    }
+
+    if (!have_map_base) {
+      guess.mode = MatcherRunMode::BOOTSTRAP;
+      guess.reason = "bootstrap:no_initial_available";
+      guess.valid = false;
+      return guess;
+    }
+
+    if (source_is_odom) {
+      guess.source_base = have_source_odom ? source_odom_base : Eigen::Matrix4f::Identity();
+      guess.map_source = have_source_odom ? map_base * source_odom_base.inverse() : map_base;
+      if (!have_source_odom) {
+        ROS_WARN_THROTTLE(2.0, "[global_matcher] source_odom missing, using map->base as map->source guess in %s",
+                          guess.reason.c_str());
+      }
+    } else if (source_is_lidar) {
+      guess.source_base = base_to_lidar_.inverse();
+      guess.map_source = map_base * base_to_lidar_;
+    } else {
+      guess.source_base = Eigen::Matrix4f::Identity();
+      guess.map_source = map_base;
+    }
+    guess.map_base = guess.map_source * guess.source_base;
+    ROS_INFO_THROTTLE(2.0, "[global_matcher] mode=%s initial=%s source_frame=%s failures=%d",
+                      modeToString(guess.mode).c_str(), guess.reason.c_str(), source_mode.c_str(), consecutive_failures_);
+    return guess;
+  }
+
+  void updateModeAfterMatch(bool success) {
+    if (success) {
+      consecutive_failures_ = 0;
+      return;
+    }
+    ++consecutive_failures_;
   }
 
   CloudPtr cropMap(const Eigen::Matrix4f& map_base) const {
@@ -842,16 +997,18 @@ class GlobalMatcherNode {
     msg.is_gnss_available = false;
     msg.is_slam_available = true;
     msg.is_dr_available = false;
-    msg.current_mode = (viz_test_mode_ ? "GLOBAL_MATCHER_VIZ_TEST" : "GLOBAL_MATCHER") + std::string(":") + active_map_id_;
+    msg.current_mode = (viz_test_mode_ ? "GLOBAL_MATCHER_VIZ_TEST" : "GLOBAL_MATCHER") +
+                       std::string(":") + active_map_id_ + ":" + current_mode_;
     status_pub_.publish(msg);
   }
 
   ros::NodeHandle nh_;
   ros::NodeHandle pnh_;
   ros::Subscriber source_sub_;
-  ros::Subscriber initial_odom_sub_;
+  ros::Subscriber tracking_initial_sub_;
   ros::Subscriber source_odom_sub_;
-  ros::Subscriber initial_pose_sub_;
+  ros::Subscriber bootstrap_initial_pose_sub_;
+  ros::Subscriber manual_initial_pose_sub_;
   ros::Subscriber load_map_command_sub_;
   ros::Subscriber set_map_segment_command_sub_;
   ros::Publisher result_pub_;
@@ -871,12 +1028,17 @@ class GlobalMatcherNode {
   CloudPtr global_map_viz_;
   CloudPtr latest_source_;
   ros::Time latest_source_stamp_;
+  ros::Time latest_source_receive_stamp_;
   std::string latest_source_frame_;
-  Eigen::Matrix4f latest_initial_map_base_ = Eigen::Matrix4f::Identity();
+  Eigen::Matrix4f latest_tracking_map_base_ = Eigen::Matrix4f::Identity();
+  Eigen::Matrix4f latest_bootstrap_map_base_ = Eigen::Matrix4f::Identity();
   Eigen::Matrix4f latest_source_base_ = Eigen::Matrix4f::Identity();
-  ros::Time latest_initial_stamp_;
+  Eigen::Matrix4f default_initial_map_base_ = Eigen::Matrix4f::Identity();
+  ros::Time latest_tracking_stamp_;
+  ros::Time latest_bootstrap_stamp_;
   ros::Time latest_source_odom_stamp_;
-  bool have_initial_map_base_ = false;
+  bool have_tracking_map_base_ = false;
+  bool have_bootstrap_map_base_ = false;
   bool have_source_odom_ = false;
   nav_msgs::Path path_;
 
@@ -887,6 +1049,7 @@ class GlobalMatcherNode {
   std::string source_cloud_topic_;
   std::string initial_pose_topic_;
   std::string source_odom_topic_;
+  std::string bootstrap_initial_pose_topic_;
   std::string manual_initial_pose_topic_;
   std::string result_topic_;
   std::string status_topic_;
@@ -907,10 +1070,19 @@ class GlobalMatcherNode {
   bool auto_match_ = true;
   bool viz_test_mode_ = false;
   bool source_cloud_is_odom_frame_ = true;
+  bool use_receive_time_for_cloud_age_ = true;
+  bool use_tracking_initial_pose_ = true;
+  bool use_bootstrap_initial_pose_ = true;
+  bool use_manual_initial_pose_ = true;
+  bool use_default_initial_pose_ = true;
+  bool allow_identity_bootstrap_ = true;
   Eigen::Matrix4f base_to_lidar_ = Eigen::Matrix4f::Identity();
   double match_rate_ = 1.0;
   double max_cloud_age_ = 1.0;
   int max_path_size_ = 3000;
+  int consecutive_failures_ = 0;
+  std::string current_mode_ = "bootstrap";
+  double map_load_voxel_leaf_ = 0.4;
   double global_map_publish_voxel_leaf_ = 5.0;
   double global_map_publish_period_ = 5.0;
   double crop_forward_ = 70.0;
