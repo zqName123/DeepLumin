@@ -9,6 +9,8 @@
 #include <sensor_msgs/Imu.h>
 #include <sensor_msgs/PointCloud2.h>
 #include <tf/transform_broadcaster.h>
+#include <deeplumin_msgs/CanReceiveInfo.h>
+#include <deeplumin_msgs/Gpchc.h>
 
 #include <algorithm>
 #include <cstdint>
@@ -90,16 +92,27 @@ public:
 
         imu_sub_ = nh_.subscribe(sensor_topics_.imu, 200000, &SlamOdometryNode::onImu, this);
         lidar_sub_ = nh_.subscribe(sensor_topics_.lidar, 200000, &SlamOdometryNode::onLidar, this);
+        if (slam_config_.use_vel) {
+            can_sub_ = nh_.subscribe(sensor_topics_.wheel, 1000, &SlamOdometryNode::onCan, this);
+            if (slam_config_.use_gnss_attitude) {
+                gnss_sub_ = nh_.subscribe(sensor_topics_.gnss, 100, &SlamOdometryNode::onGnss, this);
+            }
+        }
         odom_pub_ = nh_.advertise<nav_msgs::Odometry>(output_topics_.slam, 100);
         local_map_pub_ = nh_.advertise<sensor_msgs::PointCloud2>(output_topics_.local_map, 10);
         registered_scan_pub_ =
             nh_.advertise<sensor_msgs::PointCloud2>(output_topics_.registered_scan, 10);
         global_map_viz_.setup(nh_, pnh_, output_topics_.global_map, frames_.map, "slam_odometry");
 
-        ROS_INFO("[slam_odometry] imu=%s lidar=%s odom=%s local_map=%s registered_scan=%s",
+        ROS_INFO("[slam_odometry] imu=%s lidar=%s can=%s gnss=%s odom=%s local_map=%s registered_scan=%s",
                  sensor_topics_.imu.c_str(), sensor_topics_.lidar.c_str(),
+                 sensor_topics_.wheel.c_str(), sensor_topics_.gnss.c_str(),
                  output_topics_.slam.c_str(), output_topics_.local_map.c_str(),
                  output_topics_.registered_scan.c_str());
+        ROS_INFO("[slam_odometry] use_vel=%s use_gnss_attitude=%s can_diff_thresh=%.3fkm/h can_timeout=%.3fs",
+                 slam_config_.use_vel ? "true" : "false",
+                 slam_config_.use_gnss_attitude ? "true" : "false",
+                 slam_config_.can_vel_diff_thresh_kmh, slam_config_.can_timeout_sec);
         ROS_INFO("[slam_odometry] startup_imu_warmup=%s duration=%.3fs min_samples=%d publish_tf=%s",
                  enable_imu_warmup_ ? "true" : "false", imu_warmup_duration_, min_imu_samples_,
                  publish_tf_ ? "true" : "false");
@@ -276,6 +289,34 @@ private:
         slam_->feedLidar(localization_ros::fromRos(*msg, slam_config_));
     }
 
+    void onCan(const deeplumin_msgs::CanReceiveInfo::ConstPtr& msg) {
+        if (!slam_ || !slam_config_.use_vel) {
+            return;
+        }
+        localization::CanVelocityData can;
+        can.timestamp = (msg->header.stamp.sec != 0 || msg->header.stamp.nsec != 0)
+                            ? msg->header.stamp.toSec()
+                            : ros::Time::now().toSec();
+        can.speed_kmh = (msg->gear == 2.0) ? -msg->speed : msg->speed;
+        can.valid = msg->valid;
+        slam_->feedCanVelocity(can);
+    }
+
+    void onGnss(const deeplumin_msgs::Gpchc::ConstPtr& msg) {
+        if (!slam_ || !slam_config_.use_vel || !slam_config_.use_gnss_attitude) {
+            return;
+        }
+        localization::GnssAttitudeData gnss;
+        gnss.timestamp = (msg->header.stamp.sec != 0 || msg->header.stamp.nsec != 0)
+                             ? msg->header.stamp.toSec()
+                             : ros::Time::now().toSec();
+        gnss.heading_deg = msg->heading;
+        gnss.pitch_deg = msg->pitch;
+        gnss.roll_deg = msg->roll;
+        gnss.valid = true;
+        slam_->feedGnssAttitude(gnss);
+    }
+
     ros::NodeHandle nh_;
     ros::NodeHandle pnh_;
     localization::FrameConfig frames_;
@@ -305,6 +346,8 @@ private:
     localization_ros::GlobalMapVizPublisher global_map_viz_;
     ros::Subscriber imu_sub_;
     ros::Subscriber lidar_sub_;
+    ros::Subscriber can_sub_;
+    ros::Subscriber gnss_sub_;
     ros::Publisher odom_pub_;
     ros::Publisher local_map_pub_;
     ros::Publisher registered_scan_pub_;

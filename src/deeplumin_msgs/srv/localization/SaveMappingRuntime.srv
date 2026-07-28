@@ -1,0 +1,14 @@
+string task_id
+string output_dir
+string map_name
+float64 resolution
+bool save_keyframes
+bool save_keyframe_poses
+bool save_trajectory
+---
+bool success
+string message
+string map_path
+string keyframe_dir
+string keyframe_pose_path
+string trajectory_path

@@ -15,6 +15,8 @@ public:
     bool initialize(const SlamConfig& cfg) override;
     void feedImu(const ImuData& imu) override;
     void feedLidar(const TimestampedPointCloud& pc) override;
+    void feedCanVelocity(const CanVelocityData& can) override;
+    void feedGnssAttitude(const GnssAttitudeData& gnss) override;
     // 对齐 ysw StandardPCLCallBack 入队逻辑（预处理在 ROS 层完成） 
     void feedLidarCloud(double timestamp, PointCloudPtr cloud);
     void feedDynamicMask(const TimestampedPointCloud& mask) override;

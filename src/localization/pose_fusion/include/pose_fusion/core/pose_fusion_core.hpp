@@ -15,6 +15,7 @@
 
 #include "pose_fusion/core/fusion_state_machine.hpp"
 #include "pose_fusion/core/observation_buffer.hpp"
+#include "pose_fusion/core/pose_fusion_eskf.hpp"
 #include "pose_fusion/core/quality_gate.hpp"
 
 #include <deque>
@@ -58,7 +59,7 @@ class PoseFusionCore {
   void commitResetAtOrigin(const ResetObservation& reset_obs);
   /** 用相邻 DR 相对位姿 delta 递推 odom_base，并累加过程噪声 */
   void propagateWithDr(const PoseObservation& obs);
-  /** 将 SLAM 对齐到当前融合局部系后做指数平滑 */
+  /** 使用 SLAM 相邻帧相对增量作为 ESKF 局部 pose 观测 */
   void updateWithSlam(const PoseObservation& obs);
   /** 由 GM 的 map_base 反推 map_odom 观测，再质量加权平滑 */
   void updateWithGlobalMatcher(const PoseObservation& obs);
@@ -67,6 +68,11 @@ class PoseFusionCore {
   std::optional<PoseObservation> lookupLocalPredictorAt(double timestamp, double* time_offset, bool* is_slam) const;
   void trimLocalPredictorHistory(double newest_timestamp);
   void clearLocalPredictorHistory();
+  void syncStateFromEskf(double timestamp);
+  void resetEskfFromState();
+  Mat6d slamObservationCovariance(const PoseObservation& obs) const;
+  bool isSlamResidualReject(const std::string& reason) const;
+  void resetSlamAlignment(const std::string& detail);
   void pushOdomBaseHistory(double timestamp);
   std::optional<Pose3d> lookupOdomBaseAt(double timestamp, double* time_offset) const;
   void clearOdomBaseHistory();
@@ -80,6 +86,7 @@ class PoseFusionCore {
   FusionConfig config_;
   ObserverPolicyData policy_;
   QualityGate gate_;
+  PoseFusionEskf eskf_;
   ObservationBuffer buffer_;
   FusionStateMachine state_machine_;
   FusionState state_;
@@ -90,15 +97,16 @@ class PoseFusionCore {
   std::optional<PoseObservation> last_dr_;   ///< 上一帧 DR，用于算相对 delta
   std::optional<PoseObservation> last_slam_;
   /**
-   * 融合局部系相对 SLAM 局部系的固定外参：
-   *   fusion_odom_from_slam_odom_ = odom_base ∘ inv(slam_pose)
-   * 首次 SLAM 时锁定，之后用它把 SLAM 位姿映射到融合 odom 系再平滑。
+   * 兼容字段：旧的绝对 SLAM pose 模式使用 fusion←slam 外参。当前主路径使用
+   * 相邻 SLAM 相对增量，该字段只作为“SLAM 参考已建立”的标志。
    */
   std::optional<Pose3d> fusion_odom_from_slam_odom_;
+  std::optional<Pose3d> last_slam_fusion_pose_;  ///< 上一帧 SLAM 对应的融合 odom_base 参考。
   double last_dr_time_ = 0.0;
   double last_slam_time_ = 0.0;
   double last_global_matcher_time_ = 0.0;
   double last_relocalization_time_ = 0.0;
+  int consecutive_slam_residual_rejects_ = 0;
   struct OdomBaseSample {
     double timestamp = 0.0;
     Pose3d odom_base;

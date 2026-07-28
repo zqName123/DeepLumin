@@ -31,6 +31,10 @@ add_message_files(
   ObserverPolicy.msg
   FusionStatus.msg
   ObservationDebug.msg
+  MappingEnvironmentItem.msg
+  MappingEnvironmentStatus.msg
+  MappingStatus.msg
+  MappingRecordStatus.msg
 )
 
 add_message_files(
@@ -52,6 +56,21 @@ add_message_files(
   FILES
   SystemStatus.msg
   VehicleStatus.msg
+)
+
+add_service_files(
+  DIRECTORY srv/localization
+  FILES
+  CheckMappingEnvironment.srv
+  StartMapping.srv
+  StopMapping.srv
+  StartBagRecording.srv
+  StopBagRecording.srv
+  GetMappingStatus.srv
+  StartMappingRuntime.srv
+  StopMappingRuntime.srv
+  SaveMappingRuntime.srv
+  GetMappingRuntimeStatus.srv
 )
 
 generate_messages(

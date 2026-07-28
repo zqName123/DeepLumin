@@ -1,0 +1,91 @@
+Panels:
+  - Class: rviz/Displays
+    Name: Displays
+Visualization Manager:
+  Class: ""
+  Displays:
+    - Alpha: 0.5
+      Class: rviz/Grid
+      Color: 160; 160; 164
+      Enabled: true
+      Line Style:
+        Line Width: 0.03
+        Value: Lines
+      Name: Grid
+      Plane: XY
+      Plane Cell Count: 40
+      Reference Frame: odom
+      Value: true
+    - Class: rviz/PointCloud2
+      Color Transformer: Intensity
+      Enabled: true
+      Name: Global Map
+      Size (Pixels): 1
+      Size (m): 0.08
+      Style: Points
+      Topic: /localization/rl_fusion/global_map
+      Value: true
+    - Class: rviz/Odometry
+      Color: 255; 80; 80
+      Enabled: true
+      Keep: 500
+      Name: DR Odom
+      Position Tolerance: 0.01
+      Shape: Arrow
+      Topic: /localization/dr_odom
+      Value: true
+    - Class: rviz/Odometry
+      Color: 80; 160; 255
+      Enabled: true
+      Keep: 500
+      Name: SLAM Odom
+      Position Tolerance: 0.01
+      Shape: Arrow
+      Topic: /localization/slam_odom
+      Value: true
+    - Class: rviz/Odometry
+      Color: 40; 220; 120
+      Enabled: true
+      Keep: 1000
+      Name: RL Fused Odom
+      Position Tolerance: 0.01
+      Shape: Arrow
+      Topic: /localization/rl_fused_odom
+      Value: true
+    - Class: rviz/TF
+      Enabled: true
+      Frame Timeout: 15
+      Name: TF
+      Show Arrows: true
+      Show Axes: true
+      Show Names: true
+      Update Interval: 0
+      Value: true
+  Enabled: true
+  Global Options:
+    Background Color: 30; 30; 30
+    Fixed Frame: odom
+    Frame Rate: 30
+  Name: root
+  Tools:
+    - Class: rviz/Interact
+    - Class: rviz/MoveCamera
+    - Class: rviz/Select
+    - Class: rviz/SetInitialPose
+    - Class: rviz/Measure
+  Value: true
+  Views:
+    Current:
+      Class: rviz/Orbit
+      Distance: 80
+      Focal Point:
+        X: 0
+        Y: 0
+        Z: 0
+      Name: Current View
+      Pitch: 0.785
+      Target Frame: odom
+      Yaw: 0.785
+Window Geometry:
+  Height: 900
+  Width: 1400

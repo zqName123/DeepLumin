@@ -1,0 +1,58 @@
+<launch>
+  <arg name="ekf_config" default="$(find localization_rl_fusion)/config/ekf_slam_dr.yaml" />
+  <arg name="dr_config" default="$(find dr_odometry)/config/dr_odometry.yaml" />
+  <arg name="slam_config" default="$(find slam_odometry)/config/slam_odometry_ysw.yaml" />
+  <arg name="adapter_config" default="$(find sensor_frame_adapter)/config/sensor_frame_adapter.yaml" />
+
+  <arg name="pcd_path" default="/home/hhy/2004ros/relocalization_ws/global_map_manual_imu.pcd" />
+  <arg name="map_frame" default="odom" />
+  <arg name="map_topic" default="/localization/rl_fusion/global_map" />
+  <arg name="map_voxel_leaf" default="2.0" />
+
+  <arg name="bag" default="/home/hhy/2004ros/data/2026-07-14-11-17-21.bag" />
+  <arg name="play_bag" default="true" />
+  <arg name="bag_rate" default="1.0" />
+  <arg name="bag_delay" default="2.0" />
+  <arg name="clock" default="true" />
+  <arg name="rviz" default="true" />
+  <arg name="start_sources" default="true" />
+  <arg name="publish_tf" default="true" />
+
+  <param name="/use_sim_time" value="$(arg clock)" />
+
+  <group if="$(arg start_sources)">
+    <node pkg="sensor_frame_adapter" type="sensor_frame_adapter_node" name="sensor_frame_adapter" output="screen">
+      <rosparam file="$(arg adapter_config)" command="load" />
+    </node>
+
+    <node pkg="dr_odometry" type="dr_odometry_node" name="dr_odometry" output="screen">
+      <rosparam file="$(arg dr_config)" command="load" />
+      <param name="dr/publish_tf" value="false" />
+    </node>
+
+    <node pkg="slam_odometry" type="slam_odometry_node" name="slam_odometry" output="screen">
+      <rosparam file="$(arg slam_config)" command="load" />
+      <param name="slam/publish_tf" value="false" />
+      <param name="map/publish_global_map" value="false" />
+    </node>
+  </group>
+
+  <node pkg="localization_rl_fusion" type="pcd_map_publisher" name="rl_global_map_publisher" output="screen">
+    <param name="pcd_path" value="$(arg pcd_path)" />
+    <param name="frame_id" value="$(arg map_frame)" />
+    <param name="topic" value="$(arg map_topic)" />
+    <param name="voxel_leaf" value="$(arg map_voxel_leaf)" />
+  </node>
+
+  <node pkg="robot_localization" type="ekf_localization_node" name="rl_ekf_slam_dr" output="screen">
+    <rosparam file="$(arg ekf_config)" command="load" />
+    <param name="publish_tf" value="$(arg publish_tf)" />
+    <remap from="odometry/filtered" to="/localization/rl_fused_odom" />
+  </node>
+
+  <node if="$(arg rviz)" pkg="rviz" type="rviz" name="rl_fusion_rviz"
+        args="-d $(find localization_rl_fusion)/rviz/rl_fusion.rviz" />
+
+  <node if="$(arg play_bag)" pkg="rosbag" type="play" name="rl_fusion_test_bag"
+        args="--clock --delay=$(arg bag_delay) -r $(arg bag_rate) $(arg bag)" output="screen" />
+</launch>

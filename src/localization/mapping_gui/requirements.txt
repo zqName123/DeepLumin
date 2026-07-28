@@ -1,0 +1,10 @@
+# mapping_gui Python dependencies
+#
+# Notes:
+# - ROS Python packages such as `rospy` and generated `deeplumin_msgs`
+#   are expected to come from the ROS/catkin environment, not from pip.
+# - Create the virtual environment with `--system-site-packages` so it can
+#   see ROS-installed Python modules.
+# - `tkinter` is part of the Python standard library and is not installed by pip.
+#
+# Current mapping_gui has no third-party pip dependencies.

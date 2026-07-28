@@ -81,6 +81,12 @@ struct WheelData {
     double velocity_std = 0.05;  ///< 观测噪声 σ (m/s)
 };
 
+struct CanVelocityData {
+    double timestamp = 0.0;
+    double speed_kmh = 0.0;  ///< 纵向速度 (km/h)，倒车为负
+    bool valid = true;
+};
+
 enum class GnssFixType : uint8_t {
     NO_FIX = 0,
     FLOAT = 1,
@@ -95,6 +101,14 @@ struct GnssData {
     GnssFixType fix_type = GnssFixType::NO_FIX;
     double position_std = 1.0;
     Vec3d position_enu = Vec3d::Zero();
+};
+
+struct GnssAttitudeData {
+    double timestamp = 0.0;
+    double heading_deg = 0.0;
+    double pitch_deg = 0.0;
+    double roll_deg = 0.0;
+    bool valid = true;
 };
 
 struct TimestampedPointCloud {

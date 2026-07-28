@@ -1,0 +1,11 @@
+string task_id
+bool save_map
+bool save_keyframes
+bool save_keyframe_poses
+bool save_trajectory
+---
+bool accepted
+string state
+string reason
+string map_path
+string output_dir

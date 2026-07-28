@@ -24,6 +24,7 @@
   <arg name="rviz" default="true" />
   <arg name="path_compare" default="true" />
   <arg name="debug_cold_start" default="false" />
+  <arg name="gm_init_only" default="true" />
 
   <param name="/use_sim_time" value="$(arg clock)" />
 
@@ -53,6 +54,7 @@
     <!-- Single-local-odometry test: only DR and GM should affect fusion. -->
     <param name="observers/slam/enabled" value="false" />
     <param name="observers/global_matcher/enabled" value="true" />
+    <param name="observers/global_matcher/use_only_for_initialization" value="$(arg gm_init_only)" />
   </node>
 
   <node pkg="global_matcher" type="global_matcher_node" name="global_matcher" output="screen">

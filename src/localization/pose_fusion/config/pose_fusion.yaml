@@ -69,7 +69,7 @@ initialization:
 # --- DR 预测（里程计递推）门限与过程噪声 --------------------------------------
 prediction:
   # 相邻 DR 时间间隔 / 位移 / 航向变化超限则拒绝本步递推
-  max_dr_gap: 0.2
+  max_dr_gap: 1.0
   max_dr_delta_translation: 5.0
   max_dr_delta_yaw_deg: 45.0
   # 接受 DR 后按 dt 累加到协方差对角元
@@ -78,15 +78,23 @@ prediction:
 
 # --- 观测器（平滑更新增益与残差门限）------------------------------------------
 observers:
-  # SLAM：在 odom 系对 odom_base 做指数平滑纠偏
+  # SLAM：先通过 T_odom_from_slam 对齐到融合 odom，再作为 ESKF 位姿观测更新 odom_base。
   slam:
     enabled: true
+    # Kept for old configs; current core uses ESKF covariance update instead of fixed-gain smoothing.
     smooth_gain: 0.08
+    observation_std_position: 0.30
+    observation_std_yaw_deg: 5.0
+    # Consecutive residual rejects usually mean SLAM odom reset or fusion<-slam extrinsic mismatch.
+    # Reset the extrinsic and relock it at the next time-aligned SLAM observation.
+    relock_after_residual_rejects: 5
     max_position_residual: 3.0
     max_yaw_residual_deg: 25.0
   # Global Matcher：在 map 系对 map_odom 做质量加权平滑
   global_matcher:
     enabled: true
+    # Debug option: use GM only to initialize pose_fusion, then ignore later GM updates.
+    use_only_for_initialization: true
     allow_converged_false: true
     base_gain: 0.15
     min_gain: 0.02
@@ -115,6 +123,7 @@ buffer:
   max_global_matcher_age: 3.0
   max_relocalization_age: 3.0
   max_queue_size: 500
-  # Store odom_base history so global_matcher map_base(t_cloud) can be converted to map_odom with odom_base(t_cloud).
+  # Store odom_base history so delayed SLAM/GM observations can be checked at their measurement stamp.
   odom_history_duration: 10.0
+  max_slam_time_offset: 0.30
   max_global_matcher_time_offset: 0.5

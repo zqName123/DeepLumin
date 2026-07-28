@@ -1,0 +1,9 @@
+std_msgs/Header header
+string task_id
+string state
+bool active
+bool output_valid
+string bag_path
+string message
+float64 duration_sec
+uint64 bytes_written

@@ -1,0 +1,9 @@
+<launch>
+  <arg name="config" default="$(find slam_mapping)/config/slam_mapping.yaml" />
+  <arg name="auto_start" default="false" />
+
+  <node pkg="slam_mapping" type="slam_mapping_node" name="slam_mapping" output="screen">
+    <rosparam file="$(arg config)" command="load" />
+    <param name="mapping/auto_start" value="$(arg auto_start)" />
+  </node>
+</launch>

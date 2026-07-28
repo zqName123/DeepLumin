@@ -26,6 +26,7 @@ bool PoseFusionCore::initialize(const FusionConfig& config) {
   clearOdomBaseHistory();
   clearLocalPredictorHistory();
   state_.pose_covariance = initialCovariance(config_.initialization);
+  resetEskfFromState();
   state_machine_.setState(FusionStateName::UNINITIALIZED);
   return true;
 }
@@ -116,6 +117,10 @@ void PoseFusionCore::feedGlobalMatch(const PoseObservation& obs) {
     recordRejected(ObservationSource::GLOBAL_MATCHER, "policy_disabled");
     return;
   }
+  if (config_.global_matcher.use_only_for_initialization) {
+    recordRejected(ObservationSource::GLOBAL_MATCHER, "global_matcher_update_disabled_after_initialization");
+    return;
+  }
   updateWithGlobalMatcher(obs);
 }
 
@@ -138,6 +143,7 @@ void PoseFusionCore::reset(const ResetObservation& reset_obs) {
   pending_reset_ = reset_obs;
   fusion_odom_from_slam_odom_.reset();
   last_slam_.reset();
+  last_slam_fusion_pose_.reset();
   last_slam_time_ = 0.0;
   if (reset_obs.source == ObservationSource::RELOCALIZATION) {
     last_relocalization_time_ = reset_obs.received_timestamp > 0.0 ? reset_obs.received_timestamp : reset_obs.timestamp;
@@ -220,12 +226,15 @@ void PoseFusionCore::initializeAtCurrentDr(const PoseObservation& obs) {
   state_.map_odom = Pose3d();
   state_.velocity_odom = obs.velocity;
   state_.pose_covariance = initialCovariance(config_.initialization);
+  resetEskfFromState();
   current_map_id_ = config_.default_map_id;
   last_dr_ = obs;
   last_dr_time_ = obs.received_timestamp > 0.0 ? obs.received_timestamp : obs.timestamp;
   clearOdomBaseHistory();
   pushOdomBaseHistory(state_.timestamp);
   fusion_odom_from_slam_odom_.reset();
+  last_slam_fusion_pose_.reset();
+  consecutive_slam_residual_rejects_ = 0;
   state_machine_.setState(FusionStateName::DR_ONLY);
 }
 
@@ -237,6 +246,7 @@ void PoseFusionCore::commitResetWithDr(const ResetObservation& reset_obs, const 
   state_.map_odom = compose(reset_obs.map_base, inverse(dr_obs.pose));
   state_.velocity_odom = dr_obs.velocity;
   state_.pose_covariance = reset_obs.covariance;
+  resetEskfFromState();
   current_map_id_ = reset_obs.map_id.empty() ? config_.default_map_id : reset_obs.map_id;
   last_dr_ = dr_obs;
   last_dr_time_ = dr_obs.received_timestamp > 0.0 ? dr_obs.received_timestamp : dr_obs.timestamp;
@@ -244,6 +254,8 @@ void PoseFusionCore::commitResetWithDr(const ResetObservation& reset_obs, const 
   pushOdomBaseHistory(dr_obs.timestamp);
   last_slam_.reset();
   fusion_odom_from_slam_odom_.reset();
+  last_slam_fusion_pose_.reset();
+  consecutive_slam_residual_rejects_ = 0;
   state_machine_.setState(FusionStateName::RUNNING);
   recordUsed(reset_obs.source, "reset_aligned_with_dr:" + reset_obs.reason);
 }
@@ -255,12 +267,15 @@ void PoseFusionCore::commitResetAtOrigin(const ResetObservation& reset_obs) {
   state_.odom_base = Pose3d();
   state_.map_odom = reset_obs.map_base;
   state_.pose_covariance = reset_obs.covariance;
+  resetEskfFromState();
   current_map_id_ = reset_obs.map_id.empty() ? config_.default_map_id : reset_obs.map_id;
   last_dr_.reset();
   last_slam_.reset();
   clearOdomBaseHistory();
   pushOdomBaseHistory(state_.timestamp);
   fusion_odom_from_slam_odom_.reset();
+  last_slam_fusion_pose_.reset();
+  consecutive_slam_residual_rejects_ = 0;
   state_machine_.setState(FusionStateName::RUNNING);
   recordUsed(reset_obs.source, "debug_reset_at_origin:" + reset_obs.reason);
 }
@@ -273,12 +288,15 @@ void PoseFusionCore::initializeFromSlam(const PoseObservation& obs) {
   state_.map_odom = Pose3d();
   state_.velocity_odom = obs.velocity;
   state_.pose_covariance = initialCovariance(config_.initialization);
+  resetEskfFromState();
   current_map_id_ = config_.default_map_id;
   last_slam_ = obs;
   last_slam_time_ = obs.received_timestamp > 0.0 ? obs.received_timestamp : obs.timestamp;
   clearOdomBaseHistory();
   pushOdomBaseHistory(state_.timestamp);
-  fusion_odom_from_slam_odom_ = Pose3d();  // 融合系与 SLAM 系此刻重合
+  fusion_odom_from_slam_odom_ = Pose3d();  // compatibility flag: SLAM reference is ready.
+  last_slam_fusion_pose_ = state_.odom_base;
+  consecutive_slam_residual_rejects_ = 0;
   state_machine_.setState(FusionStateName::LOCAL_FUSION);
 }
 
@@ -306,13 +324,18 @@ bool PoseFusionCore::initializeFromGlobalMatcher(const PoseObservation& obs) {
     state_.timestamp = obs.timestamp;
     state_.odom_base = Pose3d();
     state_.map_odom = obs.pose;
+    resetEskfFromState();
     pushOdomBaseHistory(state_.timestamp);
     last_dr_.reset();
     last_slam_.reset();
+    last_slam_time_ = 0.0;
     fusion_odom_from_slam_odom_.reset();
+    last_slam_fusion_pose_.reset();
+    consecutive_slam_residual_rejects_ = 0;
     last_global_matcher_time_ = obs.received_timestamp > 0.0 ? obs.received_timestamp : obs.timestamp;
     state_machine_.setState(FusionStateName::MAP_CONSTRAINED);
-    recordUsed(ObservationSource::GLOBAL_MATCHER, "initialize_from_global_matcher_origin");
+    recordUsed(ObservationSource::GLOBAL_MATCHER,
+               "initialize_from_global_matcher_origin_reset_slam_extrinsic");
     return true;
   }
 
@@ -321,20 +344,26 @@ bool PoseFusionCore::initializeFromGlobalMatcher(const PoseObservation& obs) {
   state_.odom_base = predictor_obs.pose;
   state_.map_odom = compose(obs.pose, inverse(predictor_obs.pose));
   state_.velocity_odom = predictor_obs.velocity;
+  resetEskfFromState();
 
   if (predictor_is_slam) {
-    last_slam_ = predictor_obs;
-    last_slam_time_ = predictor_obs.received_timestamp > 0.0 ? predictor_obs.received_timestamp : predictor_obs.timestamp;
-    fusion_odom_from_slam_odom_ = Pose3d();
+    // GM establishes the global initialization. Do not keep the SLAM predictor as an already
+    // locked extrinsic; the next SLAM observation must relock against odom_base_history by stamp.
+    last_slam_.reset();
+    last_slam_time_ = 0.0;
   } else {
     last_dr_ = predictor_obs;
     last_dr_time_ = predictor_obs.received_timestamp > 0.0 ? predictor_obs.received_timestamp : predictor_obs.timestamp;
-    fusion_odom_from_slam_odom_.reset();
   }
+  fusion_odom_from_slam_odom_.reset();
+  last_slam_fusion_pose_.reset();
+  consecutive_slam_residual_rejects_ = 0;
   pushOdomBaseHistory(predictor_obs.timestamp);
   last_global_matcher_time_ = obs.received_timestamp > 0.0 ? obs.received_timestamp : obs.timestamp;
   state_machine_.setState(FusionStateName::MAP_CONSTRAINED);
-  recordUsed(ObservationSource::GLOBAL_MATCHER, "initialize_from_global_matcher_dt=" + std::to_string(time_offset));
+  recordUsed(ObservationSource::GLOBAL_MATCHER,
+             "initialize_from_global_matcher_dt=" + std::to_string(time_offset) +
+             "_reset_slam_extrinsic");
   return true;
 }
 
@@ -364,47 +393,94 @@ void PoseFusionCore::propagateWithDr(const PoseObservation& obs) {
     recordRejected(ObservationSource::DR, reason);
     return;
   }
-  state_.odom_base = compose(state_.odom_base, delta);
-  state_.velocity_odom = obs.velocity;
-  state_.timestamp = obs.timestamp;
+  eskf_.predict(delta, obs.velocity, dt, config_.prediction);
+  syncStateFromEskf(obs.timestamp);
   pushOdomBaseHistory(state_.timestamp);
   last_dr_ = obs;
   last_dr_time_ = obs.received_timestamp > 0.0 ? obs.received_timestamp : obs.timestamp;
-
-  // 过程噪声随时间累加（对角近似，非完整 EKF）
-  const double pos_q = config_.prediction.process_noise_position * config_.prediction.process_noise_position * dt;
-  const double yaw_q = std::pow(config_.prediction.process_noise_yaw_deg * M_PI / 180.0, 2.0) * dt;
-  state_.pose_covariance(0, 0) += pos_q;
-  state_.pose_covariance(1, 1) += pos_q;
-  state_.pose_covariance(2, 2) += pos_q;
-  state_.pose_covariance(5, 5) += yaw_q;
-  recordUsed(ObservationSource::DR, "delta_propagation");
+  recordUsed(ObservationSource::DR, "eskf_predict_delta");
 }
 
 void PoseFusionCore::updateWithSlam(const PoseObservation& obs) {
-  // 首次：锁定 fusion←slam 外参，使当前融合局部位姿与当前 SLAM 位姿对齐
-  if (!fusion_odom_from_slam_odom_) {
-    fusion_odom_from_slam_odom_ = compose(state_.odom_base, inverse(obs.pose));
-    last_slam_ = obs;
-    last_slam_time_ = obs.received_timestamp > 0.0 ? obs.received_timestamp : obs.timestamp;
-    recordUsed(ObservationSource::SLAM, "align_slam_origin");
+  double curr_time_offset = 0.0;
+  const auto curr_odom_base = lookupOdomBaseAt(obs.timestamp, &curr_time_offset);
+  if (!curr_odom_base) {
+    recordRejected(ObservationSource::SLAM, "slam_no_time_aligned_curr_odom");
     return;
   }
-  // 把 SLAM 位姿变换到融合 odom 系，再与当前 odom_base 比残差
-  const Pose3d observed_local = compose(*fusion_odom_from_slam_odom_, obs.pose);
+  if (std::abs(curr_time_offset) > config_.buffer.max_slam_time_offset) {
+    recordRejected(ObservationSource::SLAM, "slam_curr_odom_time_offset_too_large");
+    return;
+  }
+
+  // 首帧只建立相对增量参考。后续比较 [last_slam.t, curr_slam.t] 同一时间段的运动。
+  if (!last_slam_) {
+    fusion_odom_from_slam_odom_ = Pose3d();  // compatibility flag: SLAM reference is ready.
+    last_slam_ = obs;
+    last_slam_fusion_pose_ = *curr_odom_base;
+    last_slam_time_ = obs.received_timestamp > 0.0 ? obs.received_timestamp : obs.timestamp;
+    consecutive_slam_residual_rejects_ = 0;
+    recordUsed(ObservationSource::SLAM,
+               "align_slam_relative_origin_curr_dt=" + std::to_string(curr_time_offset));
+    return;
+  }
+
+  const double slam_dt = obs.timestamp - last_slam_->timestamp;
+  if (!std::isfinite(slam_dt) || slam_dt <= 1e-6) {
+    recordRejected(ObservationSource::SLAM, "slam_non_positive_dt");
+    return;
+  }
+
+  double prev_time_offset = 0.0;
+  const auto prev_odom_base = lookupOdomBaseAt(last_slam_->timestamp, &prev_time_offset);
+  if (!prev_odom_base) {
+    resetSlamAlignment("slam_prev_no_time_aligned_odom");
+    return;
+  }
+  if (std::abs(prev_time_offset) > config_.buffer.max_slam_time_offset) {
+    resetSlamAlignment("slam_prev_odom_time_offset_too_large");
+    return;
+  }
+
+  const Pose3d delta_slam = between(last_slam_->pose, obs.pose);
+  const Pose3d observed_at_curr_stamp = compose(*prev_odom_base, delta_slam);
+
   std::string reason;
-  if (!gate_.validateSlamResidual(state_.odom_base, observed_local, &reason)) {
+  if (!gate_.validateSlamResidual(*curr_odom_base, observed_at_curr_stamp, &reason)) {
+    if (isSlamResidualReject(reason)) {
+      ++consecutive_slam_residual_rejects_;
+      if (config_.slam.relock_after_residual_rejects > 0 &&
+          consecutive_slam_residual_rejects_ >= config_.slam.relock_after_residual_rejects) {
+        resetSlamAlignment("slam_relative_relock_after_" + std::to_string(consecutive_slam_residual_rejects_) +
+                           "_residual_rejects");
+        return;
+      }
+    }
     recordRejected(ObservationSource::SLAM, reason);
     return;
   }
-  // alpha = smooth_gain * slam_weight，上限 0.5，避免单帧大幅跳变
-  const double alpha = clamp(config_.slam.smooth_gain * policy_.slam_weight, 0.0, 0.5);
-  state_.odom_base = interpolate(state_.odom_base, observed_local, alpha);
-  state_.timestamp = std::max(state_.timestamp, obs.timestamp);
-  pushOdomBaseHistory(obs.timestamp);
+
+  // No replay yet: convert the correction at obs.timestamp into an equivalent correction on the
+  // current ESKF state, instead of directly updating the current state with a past-time pose.
+  const Pose3d curr_stamp_correction = between(*curr_odom_base, observed_at_curr_stamp);
+  const Pose3d observed_at_state_time = compose(state_.odom_base, curr_stamp_correction);
+
+  const double weight = clamp(policy_.slam_weight, 0.0, 5.0);
+  const Mat6d observation_covariance = slamObservationCovariance(obs);
+  if (!eskf_.updatePose(observed_at_state_time, observation_covariance, weight)) {
+    recordRejected(ObservationSource::SLAM, "slam_relative_eskf_update_failed");
+    return;
+  }
+
+  syncStateFromEskf(std::max(state_.timestamp, obs.timestamp));
+  pushOdomBaseHistory(state_.timestamp);
   last_slam_ = obs;
+  last_slam_fusion_pose_ = observed_at_curr_stamp;
   last_slam_time_ = obs.received_timestamp > 0.0 ? obs.received_timestamp : obs.timestamp;
-  recordUsed(ObservationSource::SLAM, "local_smooth_update");
+  consecutive_slam_residual_rejects_ = 0;
+  recordUsed(ObservationSource::SLAM,
+             "eskf_relative_update_prev_dt=" + std::to_string(prev_time_offset) +
+             "_curr_dt=" + std::to_string(curr_time_offset));
 }
 
 void PoseFusionCore::updateWithGlobalMatcher(const PoseObservation& obs) {
@@ -550,6 +626,49 @@ void PoseFusionCore::trimLocalPredictorHistory(double newest_timestamp) {
 void PoseFusionCore::clearLocalPredictorHistory() {
   dr_history_.clear();
   slam_history_.clear();
+}
+
+void PoseFusionCore::syncStateFromEskf(double timestamp) {
+  state_.odom_base = eskf_.pose();
+  state_.velocity_odom = eskf_.velocity();
+  state_.pose_covariance = eskf_.covariance();
+  if (std::isfinite(timestamp) && timestamp > 0.0) {
+    state_.timestamp = timestamp;
+  }
+}
+
+void PoseFusionCore::resetEskfFromState() {
+  eskf_.reset(state_.odom_base, state_.velocity_odom, state_.pose_covariance);
+}
+
+Mat6d PoseFusionCore::slamObservationCovariance(const PoseObservation& obs) const {
+  Mat6d cov = Mat6d::Zero();
+  const double pos_var = std::pow(std::max(1e-3, config_.slam.observation_std_position), 2.0);
+  const double yaw_var = std::pow(std::max(1e-3, config_.slam.observation_std_yaw_deg) * M_PI / 180.0, 2.0);
+  cov.block<3, 3>(0, 0) = Mat3d::Identity() * pos_var;
+  cov.block<3, 3>(3, 3) = Mat3d::Identity() * yaw_var;
+
+  bool usable_msg_cov = true;
+  for (int i = 0; i < 6; ++i) {
+    usable_msg_cov = usable_msg_cov && std::isfinite(obs.covariance(i, i)) && obs.covariance(i, i) > 1e-9;
+  }
+  if (usable_msg_cov) {
+    cov = obs.covariance;
+  }
+  return cov;
+}
+
+bool PoseFusionCore::isSlamResidualReject(const std::string& reason) const {
+  return reason == "slam_residual_translation_too_large" || reason == "slam_residual_yaw_too_large";
+}
+
+void PoseFusionCore::resetSlamAlignment(const std::string& detail) {
+  fusion_odom_from_slam_odom_.reset();
+  last_slam_.reset();
+  last_slam_fusion_pose_.reset();
+  last_slam_time_ = 0.0;
+  consecutive_slam_residual_rejects_ = 0;
+  recordRejected(ObservationSource::SLAM, detail);
 }
 
 void PoseFusionCore::pushOdomBaseHistory(double timestamp) {

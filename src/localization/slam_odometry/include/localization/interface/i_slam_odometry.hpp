@@ -17,6 +17,8 @@ public:
     // 数据输出
     virtual void feedImu(const ImuData& imu) = 0;
     virtual void feedLidar(const TimestampedPointCloud& pc) = 0;
+    virtual void feedCanVelocity(const CanVelocityData& can) = 0;
+    virtual void feedGnssAttitude(const GnssAttitudeData& gnss) = 0;
     virtual void feedDynamicMask(const TimestampedPointCloud& mask) = 0;
     // 计算主逻辑
     virtual bool processOnce() = 0;

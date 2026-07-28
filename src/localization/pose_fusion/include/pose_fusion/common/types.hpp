@@ -95,13 +95,17 @@ struct PredictionConfig {
 
 struct SlamObserverConfig {
   bool enabled = true;
-  double smooth_gain = 0.08;
+  double smooth_gain = 0.08;  ///< kept for config compatibility; ESKF uses covariance below.
+  double observation_std_position = 0.30;
+  double observation_std_yaw_deg = 5.0;
+  int relock_after_residual_rejects = 5;
   double max_position_residual = 3.0;
   double max_yaw_residual_deg = 25.0;
 };
 
 struct GlobalMatcherConfig {
   bool enabled = true;
+  bool use_only_for_initialization = false;
   bool allow_converged_false = true;
   double base_gain = 0.15;
   double min_gain = 0.02;
@@ -129,6 +133,7 @@ struct BufferConfig {
   double max_relocalization_age = 3.0;
   std::size_t max_queue_size = 500;
   double odom_history_duration = 10.0;
+  double max_slam_time_offset = 0.30;
   double max_global_matcher_time_offset = 0.15;
 };
 

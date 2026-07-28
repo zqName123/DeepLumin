@@ -561,3 +561,67 @@ roslaunch pose_fusion pose_fusion_online_test.launch start_manager:=false debug_
 ```
 
 该模式不会验证 manager 统一初值，只用于确认 DR/SLAM/GM 输入和输出链路。
+
+
+## 17. 当前实现更新（2026-07-21）
+
+本轮在 Phase 1 基础上继续完成了 Phase 2/3 的第一版工程落地：
+
+1. 新增 `PoseFusionEskf`，位于 `include/pose_fusion/core/pose_fusion_eskf.hpp` 与 `src/core/pose_fusion_eskf.cpp`，保持无 ROS 依赖。
+2. 局部滤波状态为 `T_odom_base + 6x6 pose covariance`，误差维度为 `[position, rotation]`。
+3. DR 不再手动对角累加协方差，而是作为相对位姿增量进入 ESKF predict：
+   `odom_base <- odom_base * delta_dr`，`P <- P + Q(dt)`。
+4. SLAM 不再使用固定 `smooth_gain` 插值作为主融合方法；当前主路径使用相邻 SLAM 帧相对增量作为 ESKF 局部运动观测。
+5. SLAM 相对观测增加双端时间对齐门控：分别使用 `last_slam.timestamp` 和 `obs.timestamp` 查询 `odom_base_history`，比较同一时间段 `[t_{k-1}, t_k]` 的 SLAM 增量与融合预测增量。超过 `buffer/max_slam_time_offset` 则拒绝或重锁。
+6. GM 路径保持原设计：GM 提供 `T_map_base(t_cloud)`，通过同一时刻 `T_odom_base(t_cloud)` 反解并更新 `T_map_odom`，不直接改 DR/SLAM 内部状态。
+7. 新增 SLAM ESKF 观测噪声配置：
+
+```yaml
+observers:
+  slam:
+    observation_std_position: 0.30
+    observation_std_yaw_deg: 5.0
+
+buffer:
+  max_slam_time_offset: 0.30
+```
+
+当前仍未完全替换为统一事件队列/replay 架构：DR/SLAM/GM 仍在回调触发路径中处理，但 SLAM/GM 观测已经使用 `odom_base_history` 做按 stamp 的关键时间对齐。后续若要支持明显延迟或乱序的 SLAM/GM，应继续把 `feed*` 改为只入队，并在 `tick()` 中按 stamp 统一消费和必要时 replay。
+
+推荐验证：
+
+```bash
+source /opt/ros/noetic/setup.bash
+source /home/hhy/2004ros/DeepLumin/devel/setup.bash
+roslaunch pose_fusion pose_fusion_online_test.launch
+```
+
+看 `/localization/fusion_status`：
+
+- DR 正常预测时：`DR:eskf_predict_delta`
+- SLAM 建立相对参考时：`SLAM:align_slam_relative_origin_curr_dt=...`
+- SLAM 正常参与时：`SLAM:eskf_relative_update_prev_dt=..._curr_dt=...`
+- SLAM 时间不对齐时：`slam_curr_odom_time_offset_too_large` 或 `slam_prev_odom_time_offset_too_large`
+- GM 正常参与时：`GLOBAL_MATCHER:map_odom_smooth_update_dt=...` 或 `hard_reanchor_...`
+
+
+## 18. 时间同步更新（2026-07-21）
+
+本轮针对 SLAM 相对增量观测补齐了双端时间对齐：
+
+```text
+prev_odom = lookupOdomBaseAt(last_slam.timestamp)
+curr_odom = lookupOdomBaseAt(curr_slam.timestamp)
+delta_slam = inverse(last_slam.pose) * curr_slam.pose
+observed_at_curr = prev_odom * delta_slam
+residual = between(curr_odom, observed_at_curr)
+```
+
+由于当前尚未实现延迟观测 replay，ESKF 更新前会把 `curr_slam.timestamp` 时刻的 correction 转成当前状态上的等效观测：
+
+```text
+correction_at_curr = inverse(curr_odom) * observed_at_curr
+observed_at_state_time = state.odom_base * correction_at_curr
+```
+
+这样至少避免了直接用过去时刻的 SLAM pose 去更新当前 ESKF 状态。严格工业版仍应继续实现 `feed*` 入队、`tick()` 按 stamp 统一消费，以及延迟观测 replay。

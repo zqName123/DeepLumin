@@ -35,6 +35,7 @@ add_library(pose_fusion_core
   src/core/types.cpp
   src/core/quality_gate.cpp
   src/core/fusion_state_machine.cpp
+  src/core/pose_fusion_eskf.cpp
   src/core/pose_fusion_core.cpp
 )
 add_dependencies(pose_fusion_core ${catkin_EXPORTED_TARGETS})

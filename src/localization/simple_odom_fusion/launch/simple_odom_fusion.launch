@@ -1,0 +1,75 @@
+<launch>
+  <arg name="config" default="$(find simple_odom_fusion)/config/simple_odom_fusion.yaml" />
+  <arg name="dr_config" default="$(find dr_odometry)/config/dr_odometry.yaml" />
+  <arg name="slam_config" default="$(find slam_odometry)/config/slam_odometry_ysw.yaml" />
+  <arg name="adapter_config" default="$(find sensor_frame_adapter)/config/sensor_frame_adapter.yaml" />
+  <arg name="global_matcher_config" default="$(find global_matcher)/config/global_matcher.yaml" />
+
+  <arg name="start_sources" default="true" />
+  <arg name="start_adapter" default="false" />
+  <arg name="start_dr" default="true" />
+  <arg name="start_slam" default="true" />
+  <arg name="start_global_matcher" default="true" />
+  <arg name="rviz" default="true" />
+
+  <arg name="play_bag" default="true" />
+  <arg name="bag" default="/home/hhy/2004ros/data/2026-07-14-11-17-21.bag" />
+  <arg name="bag_rate" default="1.0" />
+  <arg name="bag_delay" default="2.0" />
+  <arg name="clock" default="true" />
+
+  <arg name="pcd_path" default="/home/hhy/2004ros/relocalization_ws/global_map_manual_imu.pcd" />
+  <arg name="slam_publish_global_map" default="true" />
+  <arg name="slam_global_map_topic" default="/localization/slam_odometry/global_map" />
+  <arg name="slam_global_map_voxel_leaf" default="2.0" />
+  <arg name="slam_global_map_frame" default="odom" />
+
+  <param name="/use_sim_time" value="$(arg clock)" />
+
+  <group if="$(arg start_sources)">
+    <node if="$(arg start_adapter)" pkg="sensor_frame_adapter" type="sensor_frame_adapter_node"
+          name="sensor_frame_adapter" output="screen">
+      <rosparam file="$(arg adapter_config)" command="load" />
+    </node>
+
+    <node if="$(arg start_dr)" pkg="dr_odometry" type="dr_odometry_node"
+          name="dr_odometry" output="screen">
+      <rosparam file="$(arg dr_config)" command="load" />
+      <param name="dr/publish_tf" value="false" />
+      <param name="map/publish_global_map" value="false" />
+      <param name="map/pcd_path" value="$(arg pcd_path)" />
+    </node>
+
+    <node if="$(arg start_slam)" pkg="slam_odometry" type="slam_odometry_node"
+          name="slam_odometry" output="screen">
+      <rosparam file="$(arg slam_config)" command="load" />
+      <param name="slam/publish_tf" value="false" />
+      <param name="map/publish_global_map" value="$(arg slam_publish_global_map)" />
+      <param name="map/pcd_path" value="$(arg pcd_path)" />
+      <param name="map/global_map_topic" value="$(arg slam_global_map_topic)" />
+      <param name="map/frame_id" value="$(arg slam_global_map_frame)" />
+      <param name="map/publish_voxel_leaf" value="$(arg slam_global_map_voxel_leaf)" />
+    </node>
+  </group>
+
+  <node pkg="simple_odom_fusion" type="simple_odom_fusion_node" name="simple_odom_fusion" output="screen">
+    <rosparam file="$(arg config)" command="load" />
+  </node>
+
+  <node if="$(arg start_global_matcher)" pkg="global_matcher" type="global_matcher_node"
+        name="global_matcher" output="screen">
+    <rosparam file="$(arg global_matcher_config)" command="load" />
+    <param name="map/pcd_path" value="$(arg pcd_path)" />
+    <param name="topics/source_cloud" value="/localization/simple_fusion/gm_source_cloud_odom" />
+    <param name="topics/initial_pose" value="/localization/simple_fused_odom" />
+    <param name="topics/source_odom" value="/localization/simple_fused_odom" />
+    <param name="runtime/source_cloud_is_odom_frame" value="true" />
+    <param name="runtime/source_cloud_frame" value="odom" />
+  </node>
+
+  <node if="$(arg rviz)" pkg="rviz" type="rviz" name="simple_odom_fusion_rviz"
+        args="-d $(find simple_odom_fusion)/rviz/simple_odom_fusion.rviz" />
+
+  <node if="$(arg play_bag)" pkg="rosbag" type="play" name="simple_odom_fusion_bag"
+        args="--clock --delay=$(arg bag_delay) -r $(arg bag_rate) $(arg bag)" output="screen" />
+</launch>

@@ -122,6 +122,13 @@ localization::SlamConfig loadSlamConfig(ros::NodeHandle& nh) {
     nh.param<int>("slam/faster_lio/max_iteration", cfg.max_iteration, 3);
     nh.param<double>("slam/faster_lio/esti_plane_threshold", cfg.esti_plane_threshold, 0.1);
     nh.param<double>("slam/faster_lio/degeneracy_threshold", cfg.degeneracy_threshold, 100.0);
+    nh.param<bool>("slam/faster_lio/use_vel", cfg.use_vel, false);
+    nh.param<bool>("slam/faster_lio/use_gnss_attitude", cfg.use_gnss_attitude, true);
+    nh.param<double>("slam/faster_lio/can_vel_diff_thresh_kmh", cfg.can_vel_diff_thresh_kmh, 2.0);
+    nh.param<double>("slam/faster_lio/can_timeout_sec", cfg.can_timeout_sec, 0.2);
+    nh.param<double>("slam/faster_lio/gnss_attitude_timeout_sec", cfg.gnss_attitude_timeout_sec, 1.0);
+    nh.param<double>("slam/faster_lio/attitude_diff_thresh_deg", cfg.attitude_diff_thresh_deg, 2.0);
+    nh.param<double>("slam/faster_lio/attitude_correction_gain", cfg.attitude_correction_gain, 0.7);
     return cfg;
 }
 

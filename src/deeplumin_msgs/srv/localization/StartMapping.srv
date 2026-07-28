@@ -1,0 +1,11 @@
+string task_name
+string config_path
+string output_root
+bool enable_loop_closure
+bool enable_visualization
+bool auto_start_recording
+---
+bool accepted
+string task_id
+string state
+string reason

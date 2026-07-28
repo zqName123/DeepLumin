@@ -47,6 +47,22 @@ void FasterLIOImpl::feedLidar(const TimestampedPointCloud& pc) {
     core_->feedLidar(pc);
 }
 
+void FasterLIOImpl::feedCanVelocity(const CanVelocityData& can) {
+    if (!core_) {
+        LOG(WARNING) << "[SLAM][Impl][FeedCan] skip: core null";
+        return;
+    }
+    core_->feedCanVelocity(can);
+}
+
+void FasterLIOImpl::feedGnssAttitude(const GnssAttitudeData& gnss) {
+    if (!core_) {
+        LOG(WARNING) << "[SLAM][Impl][FeedGnssAttitude] skip: core null";
+        return;
+    }
+    core_->feedGnssAttitude(gnss);
+}
+
 void FasterLIOImpl::feedLidarCloud(double timestamp, PointCloudPtr cloud) {
     if (!core_) {
         LOG(WARNING) << "[SLAM][Impl][FeedLidar] skip: core null";

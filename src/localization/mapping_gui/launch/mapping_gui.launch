@@ -1,0 +1,17 @@
+<launch>
+  <arg name="start_mapping_manager" default="true" />
+  <arg name="start_slam_mapping_backend" default="true" />
+  <arg name="mapping_manager_config" default="$(find mapping_manager)/config/mapping_manager.yaml" />
+  <arg name="slam_mapping_config" default="$(find slam_mapping)/config/slam_mapping.yaml" />
+  <arg name="gui_node_name" default="mapping_gui" />
+
+  <include if="$(arg start_slam_mapping_backend)" file="$(find slam_mapping)/launch/slam_mapping_manager_backend.launch">
+    <arg name="config" value="$(arg slam_mapping_config)" />
+  </include>
+
+  <include if="$(arg start_mapping_manager)" file="$(find mapping_manager)/launch/mapping_manager.launch">
+    <arg name="config" value="$(arg mapping_manager_config)" />
+  </include>
+
+  <node pkg="mapping_gui" type="mapping_gui_node.py" name="$(arg gui_node_name)" output="screen" required="true" />
+</launch>

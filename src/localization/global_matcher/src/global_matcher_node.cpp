@@ -317,6 +317,7 @@ class GlobalMatcherNode {
     pnh_.param<double>("gate/inlier_distance", inlier_distance_, 0.5);
     pnh_.param<double>("gate/max_delta_translation", max_delta_translation_, 5.0);
     pnh_.param<double>("gate/max_delta_yaw_deg", max_delta_yaw_deg_, 20.0);
+    pnh_.param<std::string>("result/pose_frame", result_pose_frame_, "base");
 
 #ifdef GLOBAL_MATCHER_VIZ_TEST
     viz_test_mode_ = true;
@@ -660,8 +661,11 @@ class GlobalMatcherNode {
 
     updateModeAfterMatch(success);
     publishAligned(source_stamp, source, final_map_source);
-    publishResult(source_stamp, success, fine_converged, final_map_base, fine_fitness, metrics,
-                  elapsed_ms, static_cast<uint32_t>(target_submap->size()),
+    const bool publish_map_source = result_pose_frame_ == "source" || result_pose_frame_ == "odom";
+    const Eigen::Matrix4f result_pose = publish_map_source ? final_map_source : final_map_base;
+    const std::string result_child_frame = publish_map_source ? odom_frame_ : base_frame_;
+    publishResult(source_stamp, success, fine_converged, result_pose, result_child_frame, final_map_base,
+                  fine_fitness, metrics, elapsed_ms, static_cast<uint32_t>(target_submap->size()),
                   delta_translation, delta_yaw, reject_reason);
     publishStatus(success ? deeplumin_msgs::LocalizationStatus::LEVEL_NORMAL
                           : deeplumin_msgs::LocalizationStatus::LEVEL_WARNING,
@@ -928,7 +932,9 @@ class GlobalMatcherNode {
   void publishResult(const ros::Time& stamp,
                      bool success,
                      bool converged,
-                     const Eigen::Matrix4f& map_base,
+                     const Eigen::Matrix4f& result_pose,
+                     const std::string& result_child_frame,
+                     const Eigen::Matrix4f& path_map_base,
                      double fitness,
                      const MatchMetrics& metrics,
                      double elapsed_ms,
@@ -939,8 +945,8 @@ class GlobalMatcherNode {
     deeplumin_msgs::GlobalMatchResult msg;
     msg.header.stamp = stamp;
     msg.header.frame_id = map_frame_;
-    msg.child_frame_id = base_frame_;
-    msg.pose.pose = matrixToPose(map_base);
+    msg.child_frame_id = result_child_frame;
+    msg.pose.pose = matrixToPose(result_pose);
     const double cov_pos = std::max(0.01, metrics.inlier_rmse * metrics.inlier_rmse);
     const double cov_yaw = std::pow(std::max(0.5, std::abs(delta_yaw) * 180.0 / kPi) * kPi / 180.0, 2.0);
     for (int i = 0; i < 36; ++i) {
@@ -969,7 +975,7 @@ class GlobalMatcherNode {
 
     geometry_msgs::PoseStamped path_pose;
     path_pose.header = msg.header;
-    path_pose.pose = msg.pose.pose;
+    path_pose.pose = matrixToPose(path_map_base);
     path_.header.stamp = stamp;
     path_.header.frame_id = map_frame_;
     path_.poses.push_back(path_pose);
@@ -982,8 +988,8 @@ class GlobalMatcherNode {
   void publishRejected(const ros::Time& stamp, const std::string& reason) {
     MatchMetrics empty;
     publishResult(stamp.isZero() ? ros::Time::now() : stamp, false, false,
-                  Eigen::Matrix4f::Identity(), std::numeric_limits<double>::infinity(),
-                  empty, 0.0, 0, 0.0, 0.0, reason);
+                  Eigen::Matrix4f::Identity(), base_frame_, Eigen::Matrix4f::Identity(),
+                  std::numeric_limits<double>::infinity(), empty, 0.0, 0, 0.0, 0.0, reason);
     publishStatus(deeplumin_msgs::LocalizationStatus::LEVEL_WARNING, 0.0, reason);
   }
 
@@ -1108,6 +1114,7 @@ class GlobalMatcherNode {
   double inlier_distance_ = 0.5;
   double max_delta_translation_ = 5.0;
   double max_delta_yaw_deg_ = 20.0;
+  std::string result_pose_frame_ = "base";
 };
 
 int main(int argc, char** argv) {

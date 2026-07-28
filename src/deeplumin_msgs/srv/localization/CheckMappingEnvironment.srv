@@ -1,0 +1,6 @@
+bool include_runtime_checks
+string config_path
+---
+bool overall_ok
+string summary
+MappingEnvironmentItem[] items

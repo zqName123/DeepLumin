@@ -29,6 +29,8 @@ sensors:
   # Standalone ysw test currently consumes raw bag cloud directly.
   # In full localization closed loop, use sensor_frame_adapter and set this to /localization/points.
   lidar_topic: "/ouster/points"
+  wheel_topic: "/can_receive_info"
+  gnss_topic: "/gnss_chc_data"
 
 outputs:
   slam_topic: "/localization/slam_odom"
@@ -67,6 +69,13 @@ slam:
 
   faster_lio:
     scan_rate: 10
+    use_vel: true
+    use_gnss_attitude: true
+    can_vel_diff_thresh_kmh: 2.0
+    can_timeout_sec: 0.2
+    gnss_attitude_timeout_sec: 1.0
+    attitude_diff_thresh_deg: 2.0
+    attitude_correction_gain: 0.7
     preprocess:
       lidar_type: 3
       scan_line: 64

@@ -1,0 +1,5 @@
+string task_id
+---
+MappingStatus status
+MappingRecordStatus record_status
+MappingEnvironmentStatus environment_status

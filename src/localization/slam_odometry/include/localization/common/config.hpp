@@ -72,6 +72,14 @@ struct SlamConfig {
     Vec3d extrinsic_T = Vec3d::Zero();
     Mat3d extrinsic_R = Mat3d::Identity();
     double degeneracy_threshold = 100.0;
+
+    bool use_vel = false;
+    bool use_gnss_attitude = true;
+    double can_vel_diff_thresh_kmh = 2.0;
+    double can_timeout_sec = 0.2;
+    double gnss_attitude_timeout_sec = 1.0;
+    double attitude_diff_thresh_deg = 2.0;
+    double attitude_correction_gain = 0.7;
 };
 
 struct FusionConfig {

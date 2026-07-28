@@ -1,0 +1,8 @@
+<launch>
+  <arg name="node_name" default="mapping_manager" />
+  <arg name="config" default="$(find mapping_manager)/config/mapping_manager.yaml" />
+
+  <node pkg="mapping_manager" type="mapping_manager_node" name="$(arg node_name)" output="screen">
+    <rosparam file="$(arg config)" command="load" />
+  </node>
+</launch>

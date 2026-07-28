@@ -89,6 +89,12 @@ pose_fusion::FusionConfig loadFusionConfig(ros::NodeHandle& pnh) {
   // --- observers/slam ---
   pnh.param<bool>("observers/slam/enabled", cfg.slam.enabled, cfg.slam.enabled);
   pnh.param<double>("observers/slam/smooth_gain", cfg.slam.smooth_gain, cfg.slam.smooth_gain);
+  pnh.param<double>("observers/slam/observation_std_position", cfg.slam.observation_std_position,
+                    cfg.slam.observation_std_position);
+  pnh.param<double>("observers/slam/observation_std_yaw_deg", cfg.slam.observation_std_yaw_deg,
+                    cfg.slam.observation_std_yaw_deg);
+  pnh.param<int>("observers/slam/relock_after_residual_rejects", cfg.slam.relock_after_residual_rejects,
+                 cfg.slam.relock_after_residual_rejects);
   pnh.param<double>("observers/slam/max_position_residual", cfg.slam.max_position_residual,
                     cfg.slam.max_position_residual);
   pnh.param<double>("observers/slam/max_yaw_residual_deg", cfg.slam.max_yaw_residual_deg,
@@ -97,6 +103,9 @@ pose_fusion::FusionConfig loadFusionConfig(ros::NodeHandle& pnh) {
   // --- observers/global_matcher ---
   pnh.param<bool>("observers/global_matcher/enabled", cfg.global_matcher.enabled,
                   cfg.global_matcher.enabled);
+  pnh.param<bool>("observers/global_matcher/use_only_for_initialization",
+                  cfg.global_matcher.use_only_for_initialization,
+                  cfg.global_matcher.use_only_for_initialization);
   pnh.param<bool>("observers/global_matcher/allow_converged_false",
                   cfg.global_matcher.allow_converged_false,
                   cfg.global_matcher.allow_converged_false);
@@ -156,6 +165,8 @@ pose_fusion::FusionConfig loadFusionConfig(ros::NodeHandle& pnh) {
   cfg.buffer.max_queue_size = static_cast<std::size_t>(std::max(1, max_queue_size));
   pnh.param<double>("buffer/odom_history_duration", cfg.buffer.odom_history_duration,
                     cfg.buffer.odom_history_duration);
+  pnh.param<double>("buffer/max_slam_time_offset", cfg.buffer.max_slam_time_offset,
+                    cfg.buffer.max_slam_time_offset);
   pnh.param<double>("buffer/max_global_matcher_time_offset", cfg.buffer.max_global_matcher_time_offset,
                     cfg.buffer.max_global_matcher_time_offset);
   return cfg;

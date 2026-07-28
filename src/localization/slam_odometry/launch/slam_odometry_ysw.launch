@@ -12,7 +12,7 @@
   <arg name="bag_rate" default="1.0" />
   <arg name="bag_delay" default="2.0" />
   <arg name="clock" default="true" />
-  <arg name="rviz" default="true" />
+  <arg name="rviz" default="false" />
   <arg name="adapter_config" default="$(find sensor_frame_adapter)/config/sensor_frame_adapter.yaml" />
 
   <node pkg="sensor_frame_adapter" type="sensor_frame_adapter_node" name="sensor_frame_adapter" output="screen">

@@ -1,0 +1,7 @@
+string task_id
+bool save_now
+---
+bool accepted
+string state
+string reason
+string bag_path

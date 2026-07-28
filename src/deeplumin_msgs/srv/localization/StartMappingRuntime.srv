@@ -1,0 +1,11 @@
+string task_id
+string task_name
+string config_path
+string output_dir
+bool enable_loop_closure
+bool enable_visualization
+bool reset_before_start
+---
+bool accepted
+string state
+string reason

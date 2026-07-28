@@ -7,6 +7,7 @@
 #include <cstdint>
 #include <cmath>
 #include <execution>
+#include <limits>
 #include <iomanip>
 #include <memory>
 #include <mutex>
@@ -150,6 +151,23 @@ void logPDiagonal(const char* tag, const char* stage, std::uint64_t sync_id, int
 
 }  // namespace
 
+float normalizePitchRoll(float angle_deg) {
+    while (angle_deg > 180.0f) angle_deg -= 360.0f;
+    while (angle_deg < -180.0f) angle_deg += 360.0f;
+    return angle_deg;
+}
+
+Eigen::Quaterniond anglesToQuaternion(double heading_deg, double pitch_deg, double roll_deg) {
+    const double heading_rad = heading_deg * M_PI / 180.0;
+    const double pitch_rad = pitch_deg * M_PI / 180.0;
+    const double roll_rad = roll_deg * M_PI / 180.0;
+    const Eigen::Quaterniond q_z(Eigen::AngleAxisd(heading_rad, Eigen::Vector3d::UnitZ()));
+    const Eigen::Quaterniond q_y(Eigen::AngleAxisd(pitch_rad, Eigen::Vector3d::UnitY()));
+    const Eigen::Quaterniond q_x(Eigen::AngleAxisd(roll_rad, Eigen::Vector3d::UnitX()));
+    return (q_z * q_y * q_x).normalized();
+}
+
+
 struct LaserMappingCore::Impl {
     IVoxType::Options ivox_options;
     std::shared_ptr<IVoxType> ivox;
@@ -163,6 +181,20 @@ struct LaserMappingCore::Impl {
     double filter_size_map_min = 0.2;
     bool localmap_initialized = false;
     bool extrinsic_est_en = false;
+
+    bool use_vel = false;
+    bool use_gnss_attitude = true;
+    double can_vel_diff_thresh_kmh = 2.0;
+    double can_timeout_sec = 0.2;
+    double gnss_attitude_timeout_sec = 1.0;
+    double attitude_diff_thresh_deg = 2.0;
+    double attitude_correction_gain = 0.7;
+    CanVelocityData last_can;
+    GnssAttitudeData last_gnss_attitude;
+    bool has_can = false;
+    bool has_gnss_attitude = false;
+    std::uint64_t vel_reset_count = 0;
+    std::uint64_t attitude_reset_count = 0;
 
     Vec3d extrinT = Vec3d::Zero();
     Mat3d extrinR = Mat3d::Identity();
@@ -573,6 +605,14 @@ bool LaserMappingCore::initialize(const SlamConfig& cfg) {
                                   static_cast<float>(cfg.filter_size_surf),
                                   static_cast<float>(cfg.filter_size_surf));
 
+    impl_->use_vel = cfg.use_vel;
+    impl_->use_gnss_attitude = cfg.use_gnss_attitude;
+    impl_->can_vel_diff_thresh_kmh = cfg.can_vel_diff_thresh_kmh;
+    impl_->can_timeout_sec = cfg.can_timeout_sec;
+    impl_->gnss_attitude_timeout_sec = cfg.gnss_attitude_timeout_sec;
+    impl_->attitude_diff_thresh_deg = cfg.attitude_diff_thresh_deg;
+    impl_->attitude_correction_gain = cfg.attitude_correction_gain;
+
     impl_->imu_process->SetExtrinsic(cfg.extrinsic_T, cfg.extrinsic_R);
     impl_->imu_process->SetGyrCov(common::V3D(cfg.gyr_cov, cfg.gyr_cov, cfg.gyr_cov));
     impl_->imu_process->SetAccCov(common::V3D(cfg.acc_cov, cfg.acc_cov, cfg.acc_cov));
@@ -600,6 +640,7 @@ bool LaserMappingCore::initialize(const SlamConfig& cfg) {
               << " point_filter=" << cfg.point_filter_num << " ivox_res=" << cfg.ivox_grid_resolution
               << " max_iter=" << cfg.max_iteration << " filter_size_map=" << cfg.filter_size_map
               << " extrinsic_est=" << cfg.estimate_extrinsic << " scan_period=" << impl_->lidar_mean_scantime
+              << " use_vel=" << cfg.use_vel << " use_gnss_attitude=" << cfg.use_gnss_attitude
               << " LASER_POINT_COV=" << options::LASER_POINT_COV
               << " NUM_MAX_ITERATIONS=" << options::NUM_MAX_ITERATIONS;
 
@@ -639,6 +680,25 @@ void LaserMappingCore::feedLidar(const TimestampedPointCloud& pc) {
     feedLidarCloud(pc.timestamp, pc.cloud);
 }
 
+void LaserMappingCore::feedCanVelocity(const CanVelocityData& can) {
+    if (!initialized_) {
+        return;
+    }
+    std::lock_guard<std::mutex> lock(impl_->buffer_mutex);
+    impl_->last_can = can;
+    impl_->has_can = true;
+}
+
+void LaserMappingCore::feedGnssAttitude(const GnssAttitudeData& gnss) {
+    if (!initialized_) {
+        return;
+    }
+    std::lock_guard<std::mutex> lock(impl_->buffer_mutex);
+    impl_->last_gnss_attitude = gnss;
+    impl_->has_gnss_attitude = true;
+}
+
+
 
 void LaserMappingCore::feedLidarCloud(double timestamp, PointCloudPtr cloud) {
     if (!initialized_) {
@@ -676,6 +736,78 @@ void LaserMappingCore::feedLidarCloud(double timestamp, PointCloudPtr cloud) {
     }
 }
 
+bool LaserMappingCore::applyYswVelocityAid() {
+    auto& impl = *impl_;
+    if (!impl.use_vel || !impl.has_can) {
+        return false;
+    }
+
+    // const double can_age_sec = std::abs(impl.measures.lidar_bag_time_ - impl.last_can.timestamp);
+    // if (can_age_sec > impl.can_timeout_sec) {
+    //     return false;
+    // }
+
+    state_ikfom state = impl.kf.get_x();
+    const Eigen::Quaterniond q(state.rot.coeffs()[3], state.rot.coeffs()[0],
+                               state.rot.coeffs()[1], state.rot.coeffs()[2]);
+    const Eigen::Matrix3d R = q.normalized().toRotationMatrix();
+    const float pitch_rad = static_cast<float>(std::asin(R(0, 2)));
+    const float roll_rad = static_cast<float>(std::atan2(-R(1, 2), R(2, 2)));
+    const float heading_rad = static_cast<float>(std::atan2(R(1, 0), R(0, 0)));
+    const float pitch_deg = normalizePitchRoll(pitch_rad * 180.0f / static_cast<float>(M_PI));
+    const float roll_deg = normalizePitchRoll(roll_rad * 180.0f / static_cast<float>(M_PI));
+    const float final_heading = heading_rad * 180.0f / static_cast<float>(M_PI);
+
+    bool changed = false;
+    if (impl.use_gnss_attitude && impl.has_gnss_attitude) {
+        const double gnss_age_sec = std::abs(impl.measures.lidar_bag_time_ - impl.last_gnss_attitude.timestamp);
+        // gnss_age_sec <= impl.gnss_attitude_timeout_sec &&
+        if (
+            (std::abs(pitch_deg + impl.last_gnss_attitude.pitch_deg) > impl.attitude_diff_thresh_deg ||
+             std::abs(roll_deg - impl.last_gnss_attitude.roll_deg) > impl.attitude_diff_thresh_deg)) {
+            const double modified_pitch_deg = pitch_deg + impl.attitude_correction_gain *
+                                                          (-impl.last_gnss_attitude.pitch_deg - pitch_deg);
+            const double modified_roll_deg = roll_deg + impl.attitude_correction_gain *
+                                                        (impl.last_gnss_attitude.roll_deg - roll_deg);
+            const Eigen::Quaterniond q_modified = anglesToQuaternion(final_heading, modified_pitch_deg,
+                                                                     modified_roll_deg);
+            state.rot = SO3(q_modified.w(), q_modified.x(), q_modified.y(), q_modified.z());
+            impl.kf.change_x(state);
+            ++impl.attitude_reset_count;
+            changed = true;
+            LOG(INFO) << "[SLAM][YswVel] Heading: " << final_heading << " , Pitch: " << pitch_deg
+                      << " , Roll: " << roll_deg;
+            LOG(INFO) << "[SLAM][YswVel] reset pitch error = "
+                      << (-impl.last_gnss_attitude.pitch_deg - pitch_deg);
+            LOG(INFO) << "[SLAM][YswVel] modified pitch = " << modified_pitch_deg
+                      << " modified roll = " << modified_roll_deg
+                      << " gnss_age=" << gnss_age_sec
+                      << " attitude_reset_count=" << impl.attitude_reset_count;
+        }
+    }
+
+    // state = impl.kf.get_x();
+    const double lidar_speed_kmh = std::sqrt(state.vel(0) * state.vel(0) + state.vel(1) * state.vel(1)) * 3.6;
+    const double can_speed_correct = impl.last_can.speed_kmh;
+    if (std::abs(lidar_speed_kmh - can_speed_correct) > impl.can_vel_diff_thresh_kmh) {
+        const Eigen::Matrix3d rot_world_body = state.rot.toRotationMatrix();
+        const Eigen::Vector3d can_body_vel_kmh(can_speed_correct, 0.0001, 0.0001);
+        const Eigen::Vector3d can_world_vel_kmh = rot_world_body * can_body_vel_kmh;
+        state.vel(0) = can_world_vel_kmh(0) / 3.6;
+        state.vel(1) = can_world_vel_kmh(1) / 3.6;
+        state.vel(2) = can_world_vel_kmh(2) / 3.6;
+        impl.kf.change_x(state);
+        ++impl.vel_reset_count;
+        changed = true;
+        LOG(INFO) << "[SLAM][YswVel] CAN velocity correction: LiDAR=" << lidar_speed_kmh
+                  << " km/h, CAN=" << can_speed_correct << " km/h,"
+                  << " reset_count=" << impl.vel_reset_count
+                  << " vel=(" << state.vel.transpose() << ")";
+    }
+    return changed;
+}
+
+
 bool LaserMappingCore::processOnce() {
     if (!initialized_) {
         LOG(WARNING) << "[SLAM][Core][Process] skip: not initialized";
@@ -711,6 +843,7 @@ bool LaserMappingCore::processOnce() {
     }
 
     logIkfState("after_ImuProcess", impl_->sync_ok_count, impl_->scan_count, impl_->kf.get_x());
+    applyYswVelocityAid();
     if (impl_->frame_num < Impl::kObsDiagMaxIekfFrames) {
         logPDiagonal("Align", "after_ImuProcess", impl_->sync_ok_count, impl_->frame_num, impl_->kf);
     }
@@ -829,10 +962,15 @@ bool LaserMappingCore::processOnce() {
 }
 
 void LaserMappingCore::reset() {
-    std::lock_guard<std::mutex> lock(mutex_);
-    if (initialized_) {
-        initialize(config_);
+    SlamConfig cfg;
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        if (!initialized_) {
+            return;
+        }
+        cfg = config_;
     }
+    initialize(cfg);
 }
 
 OdomResult LaserMappingCore::getOdometry() const {

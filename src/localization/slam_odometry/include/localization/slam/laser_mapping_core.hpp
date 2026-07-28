@@ -21,6 +21,8 @@ public:
     bool initialize(const SlamConfig& cfg);
     void feedImu(const ImuData& imu);
     void feedLidar(const TimestampedPointCloud& pc);
+    void feedCanVelocity(const CanVelocityData& can);
+    void feedGnssAttitude(const GnssAttitudeData& gnss);
     /** 对齐 ysw StandardPCLCallBack：持锁入队，不拷贝点云 */
     void feedLidarCloud(double timestamp, PointCloudPtr cloud);
     bool processOnce();
@@ -44,6 +46,8 @@ private:
     bool initialized_ = false;
     bool is_degenerate_ = false; // 是否退化
     double degeneracy_factor_ = 0.0;
+
+    bool applyYswVelocityAid();
 };
 
 }  // namespace localization

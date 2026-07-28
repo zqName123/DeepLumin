@@ -1,0 +1,9 @@
+string task_id
+string bag_name
+string output_dir
+string[] topics
+---
+bool accepted
+string state
+string reason
+string bag_path

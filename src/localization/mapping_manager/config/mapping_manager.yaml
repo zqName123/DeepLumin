@@ -1,0 +1,28 @@
+topics:
+  status: /mapping/status
+  record_status: /mapping/record_status
+  environment_last_result: /mapping/environment_last_result
+
+services:
+  check_environment: /mapping/check_environment
+  get_status: /mapping/get_status
+  start_mapping: /mapping/start
+  stop_mapping: /mapping/stop
+  start_bag_recording: /mapping/start_bag_recording
+  stop_bag_recording: /mapping/stop_bag_recording
+
+runtime:
+  status_hz: 5.0
+  startup_delay_sec: 1.0
+  save_delay_sec: 1.5
+  auto_finish_delay_sec: 0.5
+
+defaults:
+  output_root: /tmp/deeplumin_mapping
+  bag_output_dir: /tmp/deeplumin_mapping/bag
+
+backend:
+  enabled: true
+  start_service: /slam_mapping/start
+  stop_service: /slam_mapping/stop
+  get_status_service: /slam_mapping/get_status
