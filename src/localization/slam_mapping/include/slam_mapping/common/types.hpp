@@ -47,6 +47,10 @@ struct MappingRuntimeStatus {
   std::uint64_t frame_count = 0;
   std::uint64_t keyframe_count = 0;
   std::uint64_t loop_count = 0;
+  int last_loop_from = -1;
+  int last_loop_to = -1;
+  double last_loop_score = -1.0;
+  bool loop_updated_last_frame = false;
   std::uint64_t accumulated_point_count = 0;
   double start_time = 0.0;
   double last_frame_time = 0.0;
@@ -92,6 +96,7 @@ struct SaveResult {
 struct LoopClosureResult {
   bool updated = false;
   int loop_count = 0;
+  double latest_score = -1.0;
   std::vector<std::pair<int, int>> loop_pairs;
 };
 

@@ -48,6 +48,7 @@ bool MappingRuntime::initialize(const SlamMappingConfig& cfg) {
   loop_backend_.configure(config_.loop_closure);
   status_.state = RuntimeState::READY;
   status_.message = "ready";
+  status_.loop_supported = loop_backend_.supported();
   return true;
 }
 
@@ -117,6 +118,7 @@ void MappingRuntime::reset() {
   status_ = MappingRuntimeStatus();
   status_.state = RuntimeState::READY;
   status_.message = "ready";
+  status_.loop_supported = loop_backend_.supported();
 }
 
 void MappingRuntime::feedImu(const localization::ImuData& imu) { if (slam_) slam_->feedImu(imu); }
@@ -137,12 +139,27 @@ bool MappingRuntime::processOnce() {
 bool MappingRuntime::handleFrame(const localization::OdomResult& odom,
                                  const localization::TimestampedPointCloud& scan,
                                  const localization::TimestampedPointCloud&) {
-  keyframe_manager_.add(odom, scan);
-  auto loop_result = loop_backend_.update(&keyframe_manager_.mutableKeyframes());
-  loop_pairs_ = loop_result.loop_pairs;
-  status_.loop_count = loop_result.loop_count;
+  const bool keyframe_added = keyframe_manager_.add(odom, scan);
+  LoopClosureResult loop_result;
+  if (keyframe_added && status_.loop_enabled) {
+    loop_result = loop_backend_.update(&keyframe_manager_.mutableKeyframes());
+    loop_pairs_ = loop_result.loop_pairs;
+    status_.loop_count = loop_result.loop_count;
+    if (!loop_result.loop_pairs.empty()) {
+      status_.last_loop_from = loop_result.loop_pairs.back().first;
+      status_.last_loop_to = loop_result.loop_pairs.back().second;
+    }
+  }
+  status_.loop_updated_last_frame = loop_result.updated;
+  status_.last_loop_score = loop_result.latest_score;
   updateStatusOnFrame(odom, scan);
   status_.keyframe_count = keyframe_manager_.keyframes().size();
+  if (loop_result.updated && status_.last_loop_from >= 0 && status_.last_loop_to >= 0) {
+    status_.message = "loop_detected:" + std::to_string(status_.last_loop_from) + "->" +
+                      std::to_string(status_.last_loop_to) + " score=" + std::to_string(status_.last_loop_score);
+  } else if (status_.state == RuntimeState::RUNNING) {
+    status_.message = "running";
+  }
   return true;
 }
 

@@ -68,6 +68,10 @@ deeplumin_msgs::MappingStatus toRosStatus(const slam_mapping::MappingRuntimeStat
   msg.frame_count = status.frame_count;
   msg.keyframe_count = status.keyframe_count;
   msg.loop_count = status.loop_count;
+  msg.last_loop_from = status.last_loop_from;
+  msg.last_loop_to = status.last_loop_to;
+  msg.last_loop_score = status.last_loop_score;
+  msg.loop_updated_last_frame = status.loop_updated_last_frame;
   msg.accumulated_point_count = status.accumulated_point_count;
   msg.duration_sec = status.duration_sec;
   return msg;

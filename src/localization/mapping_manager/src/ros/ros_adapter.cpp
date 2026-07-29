@@ -102,6 +102,10 @@ deeplumin_msgs::MappingStatus toRos(const mapping_manager::MappingStatusData& sr
   msg.frame_count = src.frame_count;
   msg.keyframe_count = src.keyframe_count;
   msg.loop_count = src.loop_count;
+  msg.last_loop_from = src.last_loop_from;
+  msg.last_loop_to = src.last_loop_to;
+  msg.last_loop_score = src.last_loop_score;
+  msg.loop_updated_last_frame = src.loop_updated_last_frame;
   msg.accumulated_point_count = src.accumulated_point_count;
   msg.duration_sec = src.duration_sec;
   return msg;
@@ -182,6 +186,10 @@ mapping_manager::MappingStatusData fromRos(const deeplumin_msgs::MappingStatus& 
   out.frame_count = msg.frame_count;
   out.keyframe_count = msg.keyframe_count;
   out.loop_count = msg.loop_count;
+  out.last_loop_from = msg.last_loop_from;
+  out.last_loop_to = msg.last_loop_to;
+  out.last_loop_score = msg.last_loop_score;
+  out.loop_updated_last_frame = msg.loop_updated_last_frame;
   out.accumulated_point_count = msg.accumulated_point_count;
   out.duration_sec = msg.duration_sec;
   return out;

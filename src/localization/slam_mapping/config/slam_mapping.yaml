@@ -1,7 +1,7 @@
 mapping:
   auto_start: false
   task_name: "manual_mapping"
-  output_root: "/tmp/deeplumin_mapping"
+  output_root: "/home/hhy/2004ros/deeplumin_mapping"
   publish_tf: true
   process_rate_hz: 5000.0
 
@@ -89,13 +89,14 @@ map_saver:
   keyframe_dir_name: "keyframes"
 
 loop_closure:
-  enable: false
+  enable: true
+  type: "fastlio2_sam_lc"
   search_radius: 15.0
-  min_index_gap: 20
+  min_index_gap: 20 # 最小的关键帧间隔数目
   submap_search_num: 25
   submap_resolution: 0.3
   icp_fitness_thresh: 0.3
-  pose_graph_enable: false
+  pose_graph_enable: true
 
 visualization:
   publish_path: true

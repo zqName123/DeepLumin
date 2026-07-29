@@ -62,6 +62,10 @@ struct MappingStatusData {
   unsigned int frame_count = 0;
   unsigned int keyframe_count = 0;
   unsigned int loop_count = 0;
+  int last_loop_from = -1;
+  int last_loop_to = -1;
+  double last_loop_score = -1.0;
+  bool loop_updated_last_frame = false;
   unsigned long long accumulated_point_count = 0;
   double duration_sec = 0.0;
   double stamp = 0.0;

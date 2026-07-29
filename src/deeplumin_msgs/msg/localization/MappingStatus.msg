@@ -20,5 +20,9 @@ string loop_result_path
 uint32 frame_count
 uint32 keyframe_count
 uint32 loop_count
+int32 last_loop_from
+int32 last_loop_to
+float64 last_loop_score
+bool loop_updated_last_frame
 uint64 accumulated_point_count
 float64 duration_sec

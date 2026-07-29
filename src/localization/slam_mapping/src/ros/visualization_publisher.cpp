@@ -3,6 +3,9 @@
 #include "slam_mapping/ros/ros_converters.hpp"
 
 #include <geometry_msgs/Point.h>
+#include <pcl/common/transforms.h>
+#include <pcl/filters/voxel_grid.h>
+#include <pcl_conversions/pcl_conversions.h>
 
 namespace slam_mapping_ros {
 
@@ -63,7 +66,33 @@ void VisualizationPublisher::publishLocalMap(const localization::TimestampedPoin
   local_map_pub_.publish(msg);
 }
 
-void VisualizationPublisher::publishMapPreview(const std::vector<slam_mapping::MappingKeyframe>&) {}
+void VisualizationPublisher::publishMapPreview(const std::vector<slam_mapping::MappingKeyframe>& keyframes) {
+  if (!cfg_.publish_accumulated_map_preview || !map_preview_pub_) return;
+  localization::PointCloudPtr map(new localization::PointCloud());
+  for (const auto& kf : keyframes) {
+    if (!kf.cloud_body || kf.cloud_body->empty()) continue;
+    Eigen::Matrix4f T = Eigen::Matrix4f::Identity();
+    T.block<3, 3>(0, 0) = kf.pose_map.orientation.normalized().toRotationMatrix().cast<float>();
+    T.block<3, 1>(0, 3) = kf.pose_map.position.cast<float>();
+    localization::PointCloud temp;
+    pcl::transformPointCloud(*kf.cloud_body, temp, T);
+    *map += temp;
+  }
+  if (map->empty()) return;
+  if (cfg_.accumulated_map_voxel_leaf > 0.0) {
+    pcl::VoxelGrid<localization::PointType> voxel;
+    voxel.setLeafSize(cfg_.accumulated_map_voxel_leaf, cfg_.accumulated_map_voxel_leaf, cfg_.accumulated_map_voxel_leaf);
+    voxel.setInputCloud(map);
+    localization::PointCloudPtr filtered(new localization::PointCloud());
+    voxel.filter(*filtered);
+    map = filtered;
+  }
+  localization::TimestampedPointCloud pc;
+  pc.timestamp = ros::Time::now().toSec();
+  pc.frame_id = frames_.map;
+  pc.cloud = map;
+  map_preview_pub_.publish(toRosPointCloud(pc));
+}
 
 void VisualizationPublisher::publishKeyframeMarkers(const std::vector<slam_mapping::MappingKeyframe>& keyframes) {
   if (!cfg_.publish_keyframes || !keyframe_markers_pub_) return;
@@ -98,17 +127,35 @@ void VisualizationPublisher::publishLoopMarkers(const std::vector<std::pair<int,
                                                 const std::vector<slam_mapping::MappingKeyframe>& keyframes) {
   if (!cfg_.publish_loop_markers || !loop_markers_pub_) return;
   visualization_msgs::MarkerArray array;
-  visualization_msgs::Marker marker;
-  marker.header.frame_id = frames_.map;
-  marker.header.stamp = ros::Time::now();
-  marker.ns = "loop_edges";
-  marker.id = 0;
-  marker.type = visualization_msgs::Marker::LINE_LIST;
-  marker.action = visualization_msgs::Marker::ADD;
-  marker.pose.orientation.w = 1.0;
-  marker.scale.x = 0.1;
-  marker.color.g = 1.0f;
-  marker.color.a = 1.0f;
+  visualization_msgs::Marker nodes;
+  nodes.header.frame_id = frames_.map;
+  nodes.header.stamp = ros::Time::now();
+  nodes.ns = "loop_nodes";
+  nodes.id = 0;
+  nodes.type = visualization_msgs::Marker::SPHERE_LIST;
+  nodes.action = visualization_msgs::Marker::ADD;
+  nodes.pose.orientation.w = 1.0;
+  nodes.scale.x = 0.3;
+  nodes.scale.y = 0.3;
+  nodes.scale.z = 0.3;
+  nodes.color.r = 1.0f;
+  nodes.color.g = 0.8f;
+  nodes.color.b = 0.0f;
+  nodes.color.a = 1.0f;
+
+  visualization_msgs::Marker edges;
+  edges.header = nodes.header;
+  edges.ns = "loop_edges";
+  edges.id = 1;
+  edges.type = visualization_msgs::Marker::LINE_LIST;
+  edges.action = visualization_msgs::Marker::ADD;
+  edges.pose.orientation.w = 1.0;
+  edges.scale.x = 0.1;
+  edges.color.r = 0.0f;
+  edges.color.g = 0.8f;
+  edges.color.b = 0.0f;
+  edges.color.a = 1.0f;
+
   for (const auto& lp : loop_pairs) {
     if (lp.first < 0 || lp.second < 0 || lp.first >= static_cast<int>(keyframes.size()) || lp.second >= static_cast<int>(keyframes.size())) continue;
     geometry_msgs::Point a, b;
@@ -118,10 +165,13 @@ void VisualizationPublisher::publishLoopMarkers(const std::vector<std::pair<int,
     b.x = keyframes[lp.second].pose_map.position.x();
     b.y = keyframes[lp.second].pose_map.position.y();
     b.z = keyframes[lp.second].pose_map.position.z();
-    marker.points.push_back(a);
-    marker.points.push_back(b);
+    nodes.points.push_back(a);
+    nodes.points.push_back(b);
+    edges.points.push_back(a);
+    edges.points.push_back(b);
   }
-  array.markers.push_back(marker);
+  array.markers.push_back(nodes);
+  array.markers.push_back(edges);
   loop_markers_pub_.publish(array);
 }
 

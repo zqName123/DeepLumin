@@ -42,12 +42,18 @@ struct MapSaverConfig {
 
 struct LoopClosureConfig {
   bool enable = false;
+  std::string type = "fastlio2_sam_lc";
+  std::string optimizer = "gtsam_isam2";
   double search_radius = 15.0;
   int min_index_gap = 20;
+  double time_thresh_sec = 30.0;
   int submap_search_num = 25;
   double submap_resolution = 0.3;
   double icp_fitness_thresh = 0.3;
   bool pose_graph_enable = false;
+  double odom_rot_noise = 1e-6;
+  double odom_pos_noise = 1e-4;
+  double loop_noise_scale = 1.0;
 };
 
 struct VisualizationConfig {

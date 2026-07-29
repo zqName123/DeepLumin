@@ -70,7 +70,7 @@ slam:
   faster_lio:
     scan_rate: 10
     use_vel: true
-    use_gnss_attitude: true
+    use_gnss_attitude: false
     can_vel_diff_thresh_kmh: 2.0
     can_timeout_sec: 0.2
     gnss_attitude_timeout_sec: 1.0

@@ -81,6 +81,7 @@ class MappingGuiNode:
         self.result_traj_path_var = tk.StringVar(value="-")
         self.result_keyframe_dir_var = tk.StringVar(value="-")
         self.result_keyframe_pose_path_var = tk.StringVar(value="-")
+        self.loop_info_var = tk.StringVar(value="-")
 
     def _build_layout(self):
         self.root.columnconfigure(0, weight=0)
@@ -148,6 +149,7 @@ class MappingGuiNode:
         self._add_readonly_row(box, 3, "状态说明", self.task_message_var)
         self._add_readonly_row(box, 4, "录包状态", self.record_state_var)
         self._add_readonly_row(box, 5, "Bag 路径", self.record_bag_path_var)
+        self._add_readonly_row(box, 6, "最近回环", self.loop_info_var)
 
     def _build_environment_panel(self, parent):
         box = ttk.LabelFrame(parent, text="环境检测 / 接口约定", padding=10)
@@ -348,6 +350,10 @@ class MappingGuiNode:
         self.result_traj_path_var.set(status.trajectory_path or "-")
         self.result_keyframe_dir_var.set(status.keyframe_dir or "-")
         self.result_keyframe_pose_path_var.set(status.keyframe_pose_path or "-")
+        if status.last_loop_from >= 0 and status.last_loop_to >= 0:
+            self.loop_info_var.set(f"{status.last_loop_from} -> {status.last_loop_to}  score={status.last_loop_score:.4f}")
+        else:
+            self.loop_info_var.set("-")
 
         env_lines = []
         summary = environment.summary or "当前还没有环境检测结果。"
