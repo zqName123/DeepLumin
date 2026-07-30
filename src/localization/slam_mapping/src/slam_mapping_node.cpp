@@ -19,5 +19,8 @@ int main(int argc, char** argv) {
     node.spinOnce();
     rate.sleep();
   }
+
+  // [NEW][shutdown_autosave] Save unfinished standalone runs exactly once on exit.
+  node.shutdown();
   return 0;
 }

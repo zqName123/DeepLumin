@@ -120,6 +120,17 @@ localization::Pose matrixToPose(const Eigen::Matrix4d& T, double timestamp) {
   return pose;
 }
 
+gtsam::SharedNoiseModel buildLoopNoiseModel(const LoopClosureConfig& cfg, double score) {
+  const double fitness_th = cfg.icp_fitness_thresh > 1e-9 ? cfg.icp_fitness_thresh : 1.0;
+  const double clamped_score = std::max(cfg.loop_score_floor, std::min(score, fitness_th));
+  const double ratio = std::max(0.1, std::min(clamped_score / fitness_th, 1.0));
+  const double rot_sigma = std::max(1e-6, cfg.loop_rot_noise * ratio * cfg.loop_noise_scale);
+  const double pos_sigma = std::max(1e-6, cfg.loop_pos_noise * ratio * cfg.loop_noise_scale);
+  return gtsam::noiseModel::Diagonal::Sigmas(
+      (gtsam::Vector(6) << rot_sigma, rot_sigma, rot_sigma,
+       pos_sigma, pos_sigma, pos_sigma).finished());
+}
+
 }  // namespace
 
 void Fastlio2SamLcLoopClosureBackend::configure(const LoopClosureConfig& cfg) {
@@ -141,6 +152,10 @@ void Fastlio2SamLcLoopClosureBackend::configure(const LoopClosureConfig& cfg) {
   loop_history_.clear();
   graph_.resize(0);
   initialized_estimate_.clear();
+  last_loop_check_index_ = -1;
+  latest_current_submap_.reset();
+  latest_history_submap_.reset();
+  latest_loop_pair_ = {-1, -1};
 }
 
 void Fastlio2SamLcLoopClosureBackend::reset() {
@@ -148,6 +163,10 @@ void Fastlio2SamLcLoopClosureBackend::reset() {
   loop_history_.clear();
   graph_.resize(0);
   initialized_estimate_.clear();
+  last_loop_check_index_ = -1;
+  latest_current_submap_.reset();
+  latest_history_submap_.reset();
+  latest_loop_pair_ = {-1, -1};
   if (isam2_) {
     gtsam::ISAM2Params params;
     params.relinearizeThreshold = 0.01;
@@ -187,6 +206,45 @@ localization::PointCloudPtr Fastlio2SamLcLoopClosureBackend::addNormals(const lo
   return icp_ready;
 }
 
+bool Fastlio2SamLcLoopClosureBackend::shouldDetectLoopForLatestKeyframe(const std::vector<MappingKeyframe>& keyframes,
+                                                                 int current_idx) const {
+  if (current_idx < 0 || current_idx >= static_cast<int>(keyframes.size())) {
+    return false;
+  }
+  const int min_required_gap = std::max(config_.min_index_gap, config_.closest_id_th);
+  if (current_idx < min_required_gap) {
+    return false;
+  }
+  if (config_.loop_kf_gap > 0 && last_loop_check_index_ >= 0 &&
+      (current_idx - last_loop_check_index_) < config_.loop_kf_gap) {
+    return false;
+  }
+  return true;
+}
+
+bool Fastlio2SamLcLoopClosureBackend::isCandidateNearExistingLoop(int current_idx, int history_idx) const {
+  if (config_.min_id_interval <= 0) {
+    return false;
+  }
+  for (const auto& loop_pair : loop_history_) {
+    if (std::abs(loop_pair.first - history_idx) < config_.min_id_interval &&
+        std::abs(loop_pair.second - current_idx) < std::max(1, config_.loop_kf_gap)) {
+      return true;
+    }
+  }
+  return false;
+}
+
+localization::PointCloudPtr Fastlio2SamLcLoopClosureBackend::buildCurrentSubmap(const std::vector<MappingKeyframe>& keyframes,
+                                                                                 int current_idx) const {
+  return buildSubmap(keyframes, current_idx, 0);
+}
+
+localization::PointCloudPtr Fastlio2SamLcLoopClosureBackend::buildHistorySubmap(const std::vector<MappingKeyframe>& keyframes,
+                                                                                 int history_idx) const {
+  return buildSubmap(keyframes, history_idx, config_.submap_search_num);
+}
+
 localization::PointCloudPtr Fastlio2SamLcLoopClosureBackend::buildSubmap(const std::vector<MappingKeyframe>& keyframes,
                                                                          int center_index,
                                                                          int search_num) const {
@@ -217,15 +275,8 @@ localization::PointCloudPtr Fastlio2SamLcLoopClosureBackend::buildSubmap(const s
   return cloud;
 }
 
-bool Fastlio2SamLcLoopClosureBackend::detectCandidate(const std::vector<MappingKeyframe>& keyframes,
-                                                      int* current_idx,
-                                                      int* history_idx,
-                                                      double* score,
-                                                      Eigen::Matrix3d* diff_rot,
-                                                      Eigen::Vector3d* diff_pos) {
-  if (!current_idx || !history_idx || !score || !diff_rot || !diff_pos) return false;
-  if (keyframes.size() < static_cast<std::size_t>(config_.min_index_gap + 1)) return false;
-
+int Fastlio2SamLcLoopClosureBackend::findBestHistoryCandidateIndex(const std::vector<MappingKeyframe>& keyframes,
+                                                                      int current_idx) {
   cloud_history_poses_->clear();
   for (const auto& kf : keyframes) {
     pcl::PointXYZ p;
@@ -241,70 +292,141 @@ bool Fastlio2SamLcLoopClosureBackend::detectCandidate(const std::vector<MappingK
     cloud_history_poses_->push_back(p);
   }
 
-  *current_idx = static_cast<int>(keyframes.size()) - 1;
-  *history_idx = -1;
-  if (!pcl::isFinite(cloud_history_poses_->back())) {
-    debugLoopLog("detectCandidate latest history pose invalid before radiusSearch");
-    return false;
+  if (cloud_history_poses_->empty() || !pcl::isFinite(cloud_history_poses_->back())) {
+    debugLoopLog("findBestHistoryCandidateIndex latest history pose invalid before radiusSearch");
+    return -1;
   }
-  debugLoopLog("detectCandidate before history radiusSearch poses=" + std::to_string(cloud_history_poses_->size()) +
-               " current_idx=" + std::to_string(*current_idx) +
-               " search_radius=" + std::to_string(config_.search_radius));
+
+  const double search_radius = config_.max_range > 0.0 ? config_.max_range : config_.search_radius;
+  debugLoopLog("findBestHistoryCandidateIndex before history radiusSearch poses=" +
+               std::to_string(cloud_history_poses_->size()) +
+               " current_idx=" + std::to_string(current_idx) +
+               " search_radius=" + std::to_string(search_radius));
   kdtree_history_poses_->setInputCloud(cloud_history_poses_);
 
   std::vector<int> ids;
   std::vector<float> sqdists;
-  kdtree_history_poses_->radiusSearch(cloud_history_poses_->back(), config_.search_radius, ids, sqdists, 0);
-  debugLoopLog("detectCandidate radiusSearch result candidates=" + std::to_string(ids.size()));
-  for (const int id : ids) {
-    if (id < 0 || id >= *current_idx) continue;
-    if (!pcl::isFinite(cloud_history_poses_->at(id))) continue;
-    if (std::abs(keyframes[id].timestamp - keyframes.back().timestamp) > config_.time_thresh_sec &&
-        (*current_idx - id) >= config_.min_index_gap) {
-      *history_idx = id;
-      break;
+  kdtree_history_poses_->radiusSearch(cloud_history_poses_->back(), search_radius, ids, sqdists, 0);
+  debugLoopLog("findBestHistoryCandidateIndex radiusSearch result candidates=" + std::to_string(ids.size()));
+
+  int best_history_idx = -1;
+  float best_sqdist = std::numeric_limits<float>::max();
+  const int required_index_gap = std::max(config_.min_index_gap, config_.closest_id_th);
+  for (std::size_t i = 0; i < ids.size(); ++i) {
+    const int id = ids[i];
+    if (id < 0 || id >= current_idx) {
+      continue;
+    }
+    if (!pcl::isFinite(cloud_history_poses_->at(id))) {
+      continue;
+    }
+    if ((current_idx - id) < required_index_gap) {
+      continue;
+    }
+    if (config_.time_thresh_sec > 0.0 &&
+        std::abs(keyframes[id].timestamp - keyframes.back().timestamp) <= config_.time_thresh_sec) {
+      continue;
+    }
+    if (std::find(loop_history_.begin(), loop_history_.end(), std::make_pair(id, current_idx)) != loop_history_.end()) {
+      continue;
+    }
+    if (isCandidateNearExistingLoop(current_idx, id)) {
+      continue;
+    }
+
+    const float sqdist = i < sqdists.size() ? sqdists[i] : std::numeric_limits<float>::max();
+    if (sqdist < best_sqdist) {
+      best_sqdist = sqdist;
+      best_history_idx = id;
     }
   }
-  if (*history_idx < 0) return false;
-  if (std::find(loop_history_.begin(), loop_history_.end(), std::make_pair(*history_idx, *current_idx)) !=
-      loop_history_.end()) {
+
+  return best_history_idx;
+}
+
+bool Fastlio2SamLcLoopClosureBackend::alignCandidateSubmaps(const std::vector<MappingKeyframe>& keyframes,
+                                                            int current_idx,
+                                                            int history_idx,
+                                                            double* score,
+                                                            Eigen::Matrix3d* diff_rot,
+                                                            Eigen::Vector3d* diff_pos) {
+  if (!score || !diff_rot || !diff_pos) {
     return false;
   }
 
-  auto cur_submap = buildSubmap(keyframes, *current_idx, 0);
-  auto hist_submap = buildSubmap(keyframes, *history_idx, config_.submap_search_num);
-  if (!cur_submap || !hist_submap || cur_submap->empty() || hist_submap->empty()) return false;
+  auto cur_submap = buildCurrentSubmap(keyframes, current_idx);
+  auto hist_submap = buildHistorySubmap(keyframes, history_idx);
+  latest_current_submap_ = cur_submap;
+  latest_history_submap_ = hist_submap;
+  if (!cur_submap || !hist_submap || cur_submap->empty() || hist_submap->empty()) {
+    return false;
+  }
 
   auto cur_norm = sanitizeIcpInputCloud(addNormals(cur_submap));
   auto hist_norm = sanitizeIcpInputCloud(addNormals(hist_submap));
-  debugLoopLog(std::string("detectCandidate ICP source ") + summarizeCloud("cur_norm", cur_norm));
-  debugLoopLog(std::string("detectCandidate ICP target ") + summarizeCloud("hist_norm", hist_norm));
+  debugLoopLog(std::string("alignCandidateSubmaps ICP source ") + summarizeCloud("cur_norm", cur_norm));
+  debugLoopLog(std::string("alignCandidateSubmaps ICP target ") + summarizeCloud("hist_norm", hist_norm));
   if (!cur_norm || !hist_norm ||
       cur_norm->size() < static_cast<std::size_t>(kMinNormalEstimationPoints) ||
       hist_norm->size() < static_cast<std::size_t>(kMinNormalEstimationPoints) ||
       !hasOnlyFinitePoints(cur_norm) || !hasOnlyFinitePoints(hist_norm)) {
     return false;
   }
+
   localization::PointCloud aligned;
-  debugLoopLog("detectCandidate before ICP setInputSource/setInputTarget");
+  debugLoopLog("alignCandidateSubmaps before ICP setInputSource/setInputTarget");
   icp_->setInputSource(cur_norm);
   icp_->setInputTarget(hist_norm);
-  debugLoopLog("detectCandidate before ICP align");
+  debugLoopLog("alignCandidateSubmaps before ICP align");
   icp_->align(aligned, Eigen::Matrix4f::Identity());
-  debugLoopLog(std::string("detectCandidate after ICP align ") + summarizeCloud("aligned", localization::PointCloudPtr(new localization::PointCloud(aligned))));
+  debugLoopLog(std::string("alignCandidateSubmaps after ICP align ") +
+               summarizeCloud("aligned", localization::PointCloudPtr(new localization::PointCloud(aligned))));
   *score = icp_->getFitnessScore();
-  if (!icp_->hasConverged() || !std::isfinite(*score) || *score > config_.icp_fitness_thresh) return false;
+  if (!icp_->hasConverged() || !std::isfinite(*score) || *score > config_.icp_fitness_thresh) {
+    return false;
+  }
 
   const Eigen::Matrix4d T_hist_cur = icp_->getFinalTransformation().cast<double>();
-  if (!T_hist_cur.array().isFinite().all()) return false;
-  const auto& pre = keyframes[*history_idx];
-  const auto& cur = keyframes[*current_idx];
+  if (!T_hist_cur.array().isFinite().all()) {
+    return false;
+  }
+
+  const auto& pre = keyframes[history_idx];
+  const auto& cur = keyframes[current_idx];
   *diff_rot = pre.pose_map.orientation.normalized().toRotationMatrix().transpose() *
               T_hist_cur.block<3, 3>(0, 0) * cur.pose_map.orientation.normalized().toRotationMatrix();
   *diff_pos = pre.pose_map.orientation.normalized().toRotationMatrix().transpose() *
               (T_hist_cur.block<3, 3>(0, 0) * cur.pose_map.position + T_hist_cur.block<3, 1>(0, 3) - pre.pose_map.position);
-  if (!diff_rot->array().isFinite().all() || !diff_pos->array().isFinite().all()) return false;
+  if (!diff_rot->array().isFinite().all() || !diff_pos->array().isFinite().all()) {
+    return false;
+  }
+
   return true;
+}
+
+bool Fastlio2SamLcLoopClosureBackend::detectCandidate(const std::vector<MappingKeyframe>& keyframes,
+                                                      int* current_idx,
+                                                      int* history_idx,
+                                                      double* score,
+                                                      Eigen::Matrix3d* diff_rot,
+                                                      Eigen::Vector3d* diff_pos) {
+  if (!current_idx || !history_idx || !score || !diff_rot || !diff_pos) {
+    return false;
+  }
+
+  *current_idx = static_cast<int>(keyframes.size()) - 1;
+  *history_idx = -1;
+  if (!shouldDetectLoopForLatestKeyframe(keyframes, *current_idx)) {
+    return false;
+  }
+  last_loop_check_index_ = *current_idx;
+
+  *history_idx = findBestHistoryCandidateIndex(keyframes, *current_idx);
+  if (*history_idx < 0) {
+    return false;
+  }
+
+  return alignCandidateSubmaps(keyframes, *current_idx, *history_idx, score, diff_rot, diff_pos);
 }
 
 void Fastlio2SamLcLoopClosureBackend::addOdomFactors(const std::vector<MappingKeyframe>& keyframes) {
@@ -335,6 +457,7 @@ void Fastlio2SamLcLoopClosureBackend::addOdomFactors(const std::vector<MappingKe
                                                   gtsam::Pose3(gtsam::Rot3(R12), gtsam::Point3(t12)), noise));
   }
   previous_index_ = latest_index;
+  debugLoopLog("addOdomFactors done");
 }
 
 void Fastlio2SamLcLoopClosureBackend::addLoopFactor(int pre_idx,
@@ -347,7 +470,24 @@ void Fastlio2SamLcLoopClosureBackend::addLoopFactor(int pre_idx,
   }
   const gtsam::Pose3 pose_between{gtsam::Rot3(diff_rot), gtsam::Point3(diff_pos)};
   graph_.add(gtsam::BetweenFactor<gtsam::Pose3>(pre_idx, cur_idx, pose_between,
-                                                gtsam::noiseModel::Diagonal::Variances(gtsam::Vector6::Ones() * score * config_.loop_noise_scale)));
+                                                buildLoopNoiseModel(config_, score)));
+  debugLoopLog("addLoopFactor done score=" + std::to_string(score));
+}
+
+void Fastlio2SamLcLoopClosureBackend::markLoopClosed(std::vector<MappingKeyframe>* keyframes,
+                                                     int history_idx,
+                                                     int current_idx) {
+  if (!keyframes) {
+    return;
+  }
+  for (const int idx : {history_idx, current_idx}) {
+    if (idx < 0 || idx >= static_cast<int>(keyframes->size())) {
+      continue;
+    }
+    auto& kf = (*keyframes)[idx];
+    kf.loop_closed = true;
+    kf.loop_match_count += 1;
+  }
 }
 
 void Fastlio2SamLcLoopClosureBackend::optimize(std::vector<MappingKeyframe>* keyframes, int latest_index) {
@@ -366,29 +506,34 @@ void Fastlio2SamLcLoopClosureBackend::optimize(std::vector<MappingKeyframe>* key
     T(2,3) = pose.translation().z();
     (*keyframes)[i].pose_map = matrixToPose(T, (*keyframes)[i].timestamp);
     (*keyframes)[i].pose_map.frame_id = (*keyframes)[i].pose_odom.frame_id;
+    (*keyframes)[i].optimized = true;
   }
+  debugLoopLog("optimize done");
 }
 
 LoopClosureResult Fastlio2SamLcLoopClosureBackend::update(std::vector<MappingKeyframe>* keyframes) {
   LoopClosureResult out;
   if (!config_.enable || !keyframes || keyframes->empty()) return out;
   const int latest_index = static_cast<int>(keyframes->size()) - 1;
+  latest_loop_pair_ = {-1, -1};
   addOdomFactors(*keyframes);
 
   int current_idx = -1;
   int history_idx = -1;
-  double score = 0.0;
+  double score = -1.0;
   Eigen::Matrix3d diff_rot = Eigen::Matrix3d::Identity();
   Eigen::Vector3d diff_pos = Eigen::Vector3d::Zero();
   if (detectCandidate(*keyframes, &current_idx, &history_idx, &score, &diff_rot, &diff_pos)) {
+    latest_loop_pair_ = {history_idx, current_idx};
     loop_history_.emplace_back(history_idx, current_idx);
+    markLoopClosed(keyframes, history_idx, current_idx);
     addLoopFactor(history_idx, current_idx, score, diff_rot, diff_pos);
     optimize(keyframes, latest_index);
     out.updated = true;
-    out.latest_score = score;
   } else if (!initialized_estimate_.empty() || graph_.size() > 0) {
     optimize(keyframes, latest_index);
   }
+  out.latest_score = score;
   out.loop_pairs = loop_history_;
   out.loop_count = static_cast<int>(loop_history_.size());
   return out;

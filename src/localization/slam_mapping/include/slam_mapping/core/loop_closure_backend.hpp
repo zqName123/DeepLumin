@@ -13,6 +13,9 @@ class LoopClosureBackend {
   void configure(const LoopClosureConfig& cfg);
   void reset();
   LoopClosureResult update(std::vector<MappingKeyframe>* keyframes);
+  localization::PointCloudPtr latestCurrentSubmap() const;
+  localization::PointCloudPtr latestHistorySubmap() const;
+  std::pair<int, int> latestLoopPair() const;
   bool enabled() const;
   bool supported() const;
   std::string name() const;

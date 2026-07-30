@@ -17,6 +17,9 @@ class ILoopClosureBackend {
   virtual void configure(const LoopClosureConfig& cfg) = 0;
   virtual void reset() = 0;
   virtual LoopClosureResult update(std::vector<MappingKeyframe>* keyframes) = 0;
+  virtual localization::PointCloudPtr latestCurrentSubmap() const = 0;
+  virtual localization::PointCloudPtr latestHistorySubmap() const = 0;
+  virtual std::pair<int, int> latestLoopPair() const = 0;
 };
 
 }  // namespace slam_mapping

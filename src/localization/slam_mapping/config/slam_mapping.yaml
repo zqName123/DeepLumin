@@ -1,119 +1,240 @@
+# slam_mapping 配置文件
+# 目标：在保留当前工程结构的前提下，对齐 lightning-lm 的关键帧、回环、优化、地图保存行为。
+# 使用建议：优先调整 keyframe 和 loop_closure 两段参数，其他参数尽量保持和实际传感器一致。
+
 mapping:
+  # 是否在节点启动后自动开始建图任务
   auto_start: false
+  # 默认任务名；若 auto_start=true，会作为默认输出目录名的一部分
   task_name: "manual_mapping"
+  # 建图结果输出根目录
   output_root: "/home/hhy/2004ros/deeplumin_mapping"
+  # 是否发布 TF
   publish_tf: true
+  # 运行时主循环频率上限；实际频率还受传感器输入和前后端耗时影响
   process_rate_hz: 5000.0
 
 frames:
+  # 全局地图坐标系；关键帧优化位姿、回环子图、全局路径都以该坐标系为准
   map: "map"
+  # 里程计坐标系；前端局部地图和 odom 发布通常使用该坐标系
   odom: "odom"
+  # 车体坐标系
   base_link: "base_link"
+  # 激光雷达坐标系
   lidar: "lidar_link"
+  # IMU 坐标系
   imu: "imu_link"
 
 sensors:
+  # IMU 话题
   imu_topic: "/ouster/imu"
+  # 激光点云话题
   lidar_topic: "/ouster/points"
+  # 车速/CAN 话题
   can_topic: "/can_receive_info"
+  # GNSS 姿态话题
   gnss_topic: "/gnss_chc_data"
 
 slam:
+  # 前端建图/里程计实现类型；当前使用 faster_lio
   type: "faster_lio"
+  # 是否在前端层发布 TF
   publish_tf: true
 
+  # 点云时间戳模式；auto 表示自动判断点时间字段是否可用
   point_time_mode: "auto"
 
   startup:
+    # 是否启用 IMU 预热；预热期间激光数据会被丢弃，不进入建图主流程
     enable_imu_warmup: true
+    # IMU 预热最小时长（秒）
     imu_warmup_duration: 1.0
+    # IMU 预热最少样本数
     min_imu_samples: 20
 
   no_point_time:
+    # 当点云没有逐点时间时，启动阶段处理频率
     startup_process_rate: 2.0
+    # 当点云没有逐点时间时，正常阶段处理频率
     normal_process_rate: 10.0
+    # 当点云没有逐点时间时，启动阶段需要累计多少帧后再进入正常节奏
     startup_valid_frames: 20
 
   faster_lio:
+    # 雷达帧率（Hz）
     scan_rate: 10
+    # 是否使用 CAN 速度辅助前端
     use_vel: true
-    use_gnss_attitude: false
+    # 是否使用 GNSS 姿态辅助前端
+    use_gnss_attitude: true
+    # CAN 速度跳变阈值（km/h）；过大时可能认为速度异常
     can_vel_diff_thresh_kmh: 2.0
+    # CAN 数据超时阈值（秒）
     can_timeout_sec: 0.2
+    # GNSS 姿态超时阈值（秒）
     gnss_attitude_timeout_sec: 1.0
+    # GNSS 姿态与当前估计差异阈值（度）
     attitude_diff_thresh_deg: 2.0
+    # GNSS 姿态修正增益
     attitude_correction_gain: 0.7
     preprocess:
+      # 雷达类型：当前 3 对应 Ouster
       lidar_type: 3
+      # 线数
       scan_line: 64
+      # 盲区半径（米）；距离小于该值的点会被剔除
       blind: 3.0
+      # 点时间缩放系数
       time_scale: 1.0e-3
+      # 预处理抽样因子；值越大，保留点越少
       point_filter_num: 2
     mapping:
+      # IMU 噪声参数
       acc_cov: 0.1
       gyr_cov: 0.1
       b_acc_cov: 0.0001
       b_gyr_cov: 0.0001
+      # 视场角
       fov_degree: 180.0
+      # 有效探测范围（米）
       det_range: 150.0
+      # 是否在线估计 IMU-LiDAR 外参
       extrinsic_est_en: false
+      # 平移外参
       extrinsic_T: [0.0, 0.0, 0.0]
+      # 旋转外参
       extrinsic_R: [1.0, 0.0, 0.0,
                     0.0, 1.0, 0.0,
                     0.0, 0.0, 1.0]
     ivox:
+      # ivox 网格分辨率；越小越精细，但计算更重
       grid_resolution: 0.5
+      # 邻域类型
       nearby_type: 18
+      # 局部地图立方体边长
       cube_side_length: 2000.0
+    # 当前帧点云滤波分辨率
     filter_size_surf: 0.5
+    # 局部地图滤波分辨率
     filter_size_map: 0.5
+    # 前端最大迭代次数
     max_iteration: 5
+    # 平面估计阈值
     esti_plane_threshold: 0.1
+    # 退化检测阈值
     degeneracy_threshold: 100.0
 
 keyframe:
+  # 与上一关键帧的平移阈值（米）；超过后允许生成新关键帧
   distance_thresh: 1.5
-  rotation_thresh_rad: 0.2
-  time_thresh_sec: 0.0
+  # 与上一关键帧的旋转阈值（弧度）；超过后允许生成新关键帧
+  rotation_thresh_rad: 3.0
+  # 与上一关键帧的时间阈值（秒）；当平移/旋转都不明显时，可用时间强制切关键帧
+  time_thresh_sec: 0.5
+  # 当前帧最少点数；小于该值不允许成为关键帧
   min_points: 50
+  # 相邻关键帧最少间隔的输入雷达帧数；可抑制关键帧过密
+  min_frame_gap: 5
 
 map_saver:
+  # 最终整图降采样分辨率（米）
   default_resolution: 0.2
+  # 停止任务时是否自动保存
   save_on_stop: true
+  # 是否导出关键帧点云目录
   save_keyframes: true
+  # 是否导出关键帧优化后位姿 CSV
   save_keyframe_poses: true
+  # 是否导出优化后轨迹文件
   save_trajectory: true
+  # 是否导出回环调试结果（回环对、最近回环子图）
+  save_loop_results: true
+  # 全局地图文件名
   map_filename: "map.pcd"
+  # 轨迹文件名
   trajectory_filename: "trajectory.csv"
+  # 关键帧位姿文件名
   keyframe_pose_filename: "keyframes.csv"
+  # 关键帧点云目录名
   keyframe_dir_name: "keyframes"
+  # 回环调试结果目录名
+  loop_result_dir_name: "loop_results"
+  # 回环对导出文件名
+  loop_pairs_filename: "loop_pairs.csv"
+  # 最近一次回环的当前子图文件名
+  loop_current_submap_filename: "latest_loop_current_submap.pcd"
+  # 最近一次回环的历史子图文件名
+  loop_history_submap_filename: "latest_loop_history_submap.pcd"
 
 loop_closure:
+  # 是否启用回环模块
   enable: true
+  # 当前回环实现类型；当前包内仅实现 fastlio2_sam_lc
   type: "fastlio2_sam_lc"
+  # 兼容旧配置；若设置了 max_range，则优先使用 max_range 做候选搜索半径
   search_radius: 15.0
-  min_index_gap: 20 # 最小的关键帧间隔数目
+  # 当前帧与历史候选之间最小关键帧索引差；过小会把近邻帧误当回环
+  min_index_gap: 5
+  # 当前帧和历史候选之间最小时间差（秒）；时间太近的候选会被过滤
+  time_thresh_sec: 30.0
+  # 两次回环检查之间至少间隔多少个关键帧；值越大，回环线程负担越小，但更晚检测到回环
+  loop_kf_gap: 20
+  # 新候选与已有闭环历史在历史帧维度上的最小间隔；用于抑制重复闭环
+  min_id_interval: 20
+  # 当前帧与历史候选之间的“强制远离”阈值；小于该值时直接不考虑为回环
+  closest_id_th: 50
+  # lightning-lm 对齐参数，回环候选空间搜索半径（米）；当前主路径优先用它
+  max_range: 20.0
+  # 历史子图窗口大小；值越大，历史子图越完整，但构图和 ICP 更重
   submap_search_num: 25
+  # 回环子图体素降采样分辨率；越小越精细，但匹配耗时更高
   submap_resolution: 0.3
+  # ICP/NDT 风格匹配的 fitness 阈值；超过视为回环验证失败
   icp_fitness_thresh: 0.3
-  pose_graph_enable: true
+  # 对 loop_rot_noise / loop_pos_noise 的统一缩放
+  loop_noise_scale: 1.0
+  # 回环边旋转噪声基础值；越小表示越相信回环角度约束
+  loop_rot_noise: 0.05
+  # 回环边平移噪声基础值；越小表示越相信回环平移约束
+  loop_pos_noise: 0.5
+  # 回环评分下限；用于避免特别小的 score 被当成过强约束
+  loop_score_floor: 0.05
 
 visualization:
+  # 是否发布优化后路径
   publish_path: true
+  # 是否发布关键帧 marker
   publish_keyframes: true
+  # 是否发布前端 local_map
   publish_local_map: true
+  # 是否发布当前扫描点云
   publish_current_scan: true
+  # 是否发布全局预览地图
   publish_accumulated_map_preview: true
+  # 是否发布回环边和回环节点 marker
   publish_loop_markers: true
-  accumulated_map_publish_period: 2.0
+  # 全局预览地图的体素滤波分辨率
   accumulated_map_voxel_leaf: 0.5
 
 outputs:
+  # 里程计输出话题
   odom_topic: "/slam_mapping/odom"
+  # 优化后路径话题
   path_topic: "/slam_mapping/path"
+  # 当前扫描点云话题
   current_scan_topic: "/slam_mapping/current_scan"
+  # 前端局部地图话题
   local_map_topic: "/slam_mapping/local_map"
+  # 全局地图预览话题
   map_preview_topic: "/slam_mapping/map_preview"
+  # 最近一次回环的当前子图话题
+  loop_current_submap_topic: "/slam_mapping/loop_current_submap"
+  # 最近一次回环的历史子图话题
+  loop_history_submap_topic: "/slam_mapping/loop_history_submap"
+  # 关键帧 marker 话题
   keyframe_markers_topic: "/slam_mapping/keyframes"
+  # 回环 marker 话题
   loop_markers_topic: "/slam_mapping/loop_markers"
+  # 状态话题
   status_topic: "/slam_mapping/status"

@@ -33,6 +33,8 @@ class MappingRuntime {
   localization::OdomResult currentOdom() const;
   localization::TimestampedPointCloud currentScan() const;
   localization::TimestampedPointCloud localMap() const;
+  localization::TimestampedPointCloud latestLoopCurrentSubmap() const;
+  localization::TimestampedPointCloud latestLoopHistorySubmap() const;
 
  private:
   bool handleFrame(const localization::OdomResult& odom,
@@ -40,6 +42,10 @@ class MappingRuntime {
                    const localization::TimestampedPointCloud& local_map);
   void updateStatusOnFrame(const localization::OdomResult& odom,
                            const localization::TimestampedPointCloud& scan);
+  void updateImuWarmup(double stamp);
+  bool canFeedLidar() const;
+  bool warmupReady() const;
+  void updateWarmupStatusMessage();
 
   SlamMappingConfig config_;
   std::shared_ptr<localization::ISlamOdometry> slam_;
@@ -50,7 +56,14 @@ class MappingRuntime {
   localization::OdomResult current_odom_;
   localization::TimestampedPointCloud current_scan_;
   localization::TimestampedPointCloud local_map_;
+  localization::TimestampedPointCloud latest_loop_current_submap_;
+  localization::TimestampedPointCloud latest_loop_history_submap_;
   std::vector<std::pair<int, int>> loop_pairs_;
+  double first_imu_stamp_ = 0.0;
+  double last_imu_stamp_ = 0.0;
+  std::uint64_t imu_warmup_samples_ = 0;
+  std::uint64_t dropped_lidar_before_warmup_ = 0;
+  bool imu_warmup_ready_ = true;
 };
 
 }  // namespace slam_mapping

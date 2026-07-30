@@ -25,8 +25,9 @@ POINT_CLOUD_REGISTER_POINT_STRUCT(
 
 namespace localization_ros {
 
-// 与 ysw_loc faster-lio pointcloud_preprocess.h 中 LidarType 对齐
-enum class LidarType { AVIA = 1, VELO32 = 2, OUST64 = 3 };
+// 与 ysw_loc faster-lio pointcloud_preprocess.h 中 LidarType 对齐。
+// [NEW][parking_bag_adaptation] 额外扩展 ROBOSENSE16，用于 parking bag 的有组织点云适配。
+enum class LidarType { AVIA = 1, VELO32 = 2, OUST64 = 3, ROBOSENSE16 = 4 };
 
 /**
  * @brief 点云预处理（从 ysw_loc faster-lio PointCloudPreprocess 移植）
@@ -52,6 +53,8 @@ public:
 private:
     void oust64Handler(const sensor_msgs::PointCloud2& msg);
     void velodyneHandler(const sensor_msgs::PointCloud2& msg);
+    // [NEW][parking_bag_adaptation] Robosense 16 organized PointCloud2 handler.
+    void robosense16Handler(const sensor_msgs::PointCloud2& msg);
 
     localization::PointCloud cloud_out_; // 输出点云
 
@@ -61,6 +64,8 @@ private:
     double blind_ = 3.0;
     float time_scale_ = 1e-3f;
     bool given_offset_time_ = false;
+    // [NEW][parking_bag_adaptation] Keep scan rate local to estimate per-point offset time.
+    double scan_rate_ = 10.0;
 
 };
 

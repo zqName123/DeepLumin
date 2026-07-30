@@ -9,6 +9,13 @@
 
 namespace slam_mapping_ros {
 
+namespace {
+std::string resolveFrameId(const localization::TimestampedPointCloud& cloud,
+                           const std::string& fallback_frame_id) {
+  return cloud.frame_id.empty() ? fallback_frame_id : cloud.frame_id;
+}
+}  // namespace
+
 void VisualizationPublisher::initialize(ros::NodeHandle& nh,
                                         const slam_mapping::VisualizationConfig& cfg,
                                         const localization::FrameConfig& frames,
@@ -20,6 +27,8 @@ void VisualizationPublisher::initialize(ros::NodeHandle& nh,
   path_pub_ = nh.advertise<nav_msgs::Path>(topics_.path_topic, 10);
   current_scan_pub_ = nh.advertise<sensor_msgs::PointCloud2>(topics_.current_scan_topic, 10);
   local_map_pub_ = nh.advertise<sensor_msgs::PointCloud2>(topics_.local_map_topic, 10);
+  loop_current_submap_pub_ = nh.advertise<sensor_msgs::PointCloud2>(topics_.loop_current_submap_topic, 10);
+  loop_history_submap_pub_ = nh.advertise<sensor_msgs::PointCloud2>(topics_.loop_history_submap_topic, 10);
   map_preview_pub_ = nh.advertise<sensor_msgs::PointCloud2>(topics_.map_preview_topic, 1);
   keyframe_markers_pub_ = nh.advertise<visualization_msgs::MarkerArray>(topics_.keyframe_markers_topic, 10);
   loop_markers_pub_ = nh.advertise<visualization_msgs::MarkerArray>(topics_.loop_markers_topic, 10);
@@ -54,7 +63,7 @@ void VisualizationPublisher::publishCurrentScan(const localization::TimestampedP
                                                 const std::string& frame_id) {
   if (!cfg_.publish_current_scan || !current_scan_pub_ || !scan.cloud) return;
   auto msg = toRosPointCloud(scan);
-  msg.header.frame_id = frame_id;
+  msg.header.frame_id = resolveFrameId(scan, frame_id);
   current_scan_pub_.publish(msg);
 }
 
@@ -62,8 +71,24 @@ void VisualizationPublisher::publishLocalMap(const localization::TimestampedPoin
                                              const std::string& frame_id) {
   if (!cfg_.publish_local_map || !local_map_pub_ || !map.cloud) return;
   auto msg = toRosPointCloud(map);
-  msg.header.frame_id = frame_id;
+  msg.header.frame_id = resolveFrameId(map, frame_id);
   local_map_pub_.publish(msg);
+}
+
+void VisualizationPublisher::publishLoopCurrentSubmap(const localization::TimestampedPointCloud& map,
+                                                        const std::string& frame_id) {
+  if (!cfg_.publish_local_map || !loop_current_submap_pub_ || !map.cloud || map.cloud->empty()) return;
+  auto msg = toRosPointCloud(map);
+  msg.header.frame_id = resolveFrameId(map, frame_id);
+  loop_current_submap_pub_.publish(msg);
+}
+
+void VisualizationPublisher::publishLoopHistorySubmap(const localization::TimestampedPointCloud& map,
+                                                        const std::string& frame_id) {
+  if (!cfg_.publish_local_map || !loop_history_submap_pub_ || !map.cloud || map.cloud->empty()) return;
+  auto msg = toRosPointCloud(map);
+  msg.header.frame_id = resolveFrameId(map, frame_id);
+  loop_history_submap_pub_.publish(msg);
 }
 
 void VisualizationPublisher::publishMapPreview(const std::vector<slam_mapping::MappingKeyframe>& keyframes) {

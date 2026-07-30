@@ -18,12 +18,30 @@ class Fastlio2SamLcLoopClosureBackend : public ILoopClosureBackend {
   void configure(const LoopClosureConfig& cfg) override;
   void reset() override;
   LoopClosureResult update(std::vector<MappingKeyframe>* keyframes) override;
+  localization::PointCloudPtr latestCurrentSubmap() const override { return latest_current_submap_; }
+  localization::PointCloudPtr latestHistorySubmap() const override { return latest_history_submap_; }
+  std::pair<int, int> latestLoopPair() const override { return latest_loop_pair_; }
 
  private:
   localization::PointCloudPtr buildSubmap(const std::vector<MappingKeyframe>& keyframes,
                                           int center_index,
                                           int search_num) const;
+  localization::PointCloudPtr buildCurrentSubmap(const std::vector<MappingKeyframe>& keyframes,
+                                                 int current_idx) const;
+  localization::PointCloudPtr buildHistorySubmap(const std::vector<MappingKeyframe>& keyframes,
+                                                 int history_idx) const;
   localization::PointCloudPtr addNormals(const localization::PointCloudPtr& cloud) const;
+  bool shouldDetectLoopForLatestKeyframe(const std::vector<MappingKeyframe>& keyframes,
+                                         int current_idx) const;
+  bool isCandidateNearExistingLoop(int current_idx, int history_idx) const;
+  int findBestHistoryCandidateIndex(const std::vector<MappingKeyframe>& keyframes,
+                                    int current_idx);
+  bool alignCandidateSubmaps(const std::vector<MappingKeyframe>& keyframes,
+                             int current_idx,
+                             int history_idx,
+                             double* score,
+                             Eigen::Matrix3d* diff_rot,
+                             Eigen::Vector3d* diff_pos);
   bool detectCandidate(const std::vector<MappingKeyframe>& keyframes,
                        int* current_idx,
                        int* history_idx,
@@ -36,6 +54,9 @@ class Fastlio2SamLcLoopClosureBackend : public ILoopClosureBackend {
                      double score,
                      const Eigen::Matrix3d& diff_rot,
                      const Eigen::Vector3d& diff_pos);
+  void markLoopClosed(std::vector<MappingKeyframe>* keyframes,
+                      int history_idx,
+                      int current_idx);
   void optimize(std::vector<MappingKeyframe>* keyframes, int latest_index);
 
   LoopClosureConfig config_;
@@ -48,6 +69,10 @@ class Fastlio2SamLcLoopClosureBackend : public ILoopClosureBackend {
   pcl::VoxelGrid<localization::PointType> submap_voxel_;
   pcl::IterativeClosestPointWithNormals<localization::PointType, localization::PointType>::Ptr icp_;
   std::vector<std::pair<int, int>> loop_history_;
+  int last_loop_check_index_ = -1;
+  localization::PointCloudPtr latest_current_submap_;
+  localization::PointCloudPtr latest_history_submap_;
+  std::pair<int, int> latest_loop_pair_{-1, -1};
 };
 
 }  // namespace slam_mapping

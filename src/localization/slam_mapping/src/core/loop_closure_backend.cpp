@@ -23,6 +23,18 @@ LoopClosureResult LoopClosureBackend::update(std::vector<MappingKeyframe>* keyfr
   return impl_->update(keyframes);
 }
 
+localization::PointCloudPtr LoopClosureBackend::latestCurrentSubmap() const {
+  return impl_ ? impl_->latestCurrentSubmap() : localization::PointCloudPtr();
+}
+
+localization::PointCloudPtr LoopClosureBackend::latestHistorySubmap() const {
+  return impl_ ? impl_->latestHistorySubmap() : localization::PointCloudPtr();
+}
+
+std::pair<int, int> LoopClosureBackend::latestLoopPair() const {
+  return impl_ ? impl_->latestLoopPair() : std::pair<int, int>{-1, -1};
+}
+
 bool LoopClosureBackend::enabled() const { return config_.enable; }
 bool LoopClosureBackend::supported() const { return impl_ && impl_->supported(); }
 std::string LoopClosureBackend::name() const { return impl_ ? impl_->name() : std::string(); }

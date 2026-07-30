@@ -60,13 +60,13 @@ class MappingGuiNode:
     def _build_vars(self):
         self.task_name_var = tk.StringVar(value="建图任务")
         self.config_path_var = tk.StringVar(value="")
-        self.output_root_var = tk.StringVar(value="/tmp/deeplumin_mapping")
+        self.output_root_var = tk.StringVar(value="/home/hhy/2004ros/deeplumin_mapping")
         self.enable_loop_var = tk.BooleanVar(value=True)
         self.enable_rviz_var = tk.BooleanVar(value=True)
         self.auto_record_var = tk.BooleanVar(value=False)
 
         self.bag_name_var = tk.StringVar(value="mapping")
-        self.bag_output_dir_var = tk.StringVar(value="/tmp/deeplumin_mapping/bag")
+        self.bag_output_dir_var = tk.StringVar(value="/home/hhy/2004ros/deeplumin_mapping/bag")
         self.bag_topics_var = tk.StringVar(
             value="/localization/points,/ouster/imu,/mapping/status,/mapping/odom,/mapping/map_points,/mapping/loop_markers"
         )

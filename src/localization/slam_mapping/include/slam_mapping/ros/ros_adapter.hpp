@@ -22,6 +22,8 @@ class SlamMappingRosAdapter {
   bool initialize(ros::NodeHandle& nh, ros::NodeHandle& pnh);
   void spinOnce();
   double processRateHz() const;
+  // [NEW][shutdown_autosave] Save once on process exit only if runtime is still running.
+  void shutdown();
 
  private:
   void onImu(const sensor_msgs::Imu::ConstPtr& msg);

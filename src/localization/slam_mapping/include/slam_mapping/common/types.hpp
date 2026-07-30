@@ -26,6 +26,10 @@ struct MappingKeyframe {
   localization::Pose pose_map;
   localization::PointCloudPtr cloud_body;
   std::size_t point_count = 0;
+  std::uint64_t source_frame_index = 0;
+  bool optimized = false;
+  bool loop_closed = false;
+  int loop_match_count = 0;
 };
 
 struct MappingRuntimeStatus {
@@ -52,6 +56,11 @@ struct MappingRuntimeStatus {
   double last_loop_score = -1.0;
   bool loop_updated_last_frame = false;
   std::uint64_t accumulated_point_count = 0;
+  // [Task B] Warmup stats are kept in runtime status for logging and service inspection.
+  bool warming_up = false;
+  std::uint64_t imu_warmup_samples = 0;
+  std::uint64_t dropped_lidar_before_warmup = 0;
+  double imu_warmup_duration_sec = 0.0;
   double start_time = 0.0;
   double last_frame_time = 0.0;
   double duration_sec = 0.0;
@@ -82,6 +91,7 @@ struct SaveRequest {
   bool save_keyframes = true;
   bool save_keyframe_poses = true;
   bool save_trajectory = true;
+  bool save_loop_results = true;
 };
 
 struct SaveResult {
@@ -91,6 +101,7 @@ struct SaveResult {
   std::string keyframe_dir;
   std::string keyframe_pose_path;
   std::string trajectory_path;
+  std::string loop_result_path;
 };
 
 struct LoopClosureResult {

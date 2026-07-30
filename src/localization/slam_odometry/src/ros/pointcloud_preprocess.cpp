@@ -6,10 +6,20 @@
 
 #include <pcl_conversions/pcl_conversions.h>
 
+#include <algorithm>
 #include <cmath>
+#include <limits>
 
 namespace localization_ros {
 namespace {
+
+// [NEW][parking_bag_adaptation] Convert scan rate to angular speed in deg/ms.
+double scanRateToOmegaDegPerMs(const double scan_rate) {
+    if (scan_rate <= 1e-6) {
+        return 3.61;
+    }
+    return 360.0 / (1000.0 / scan_rate);
+}
 
 }  // namespace
 
@@ -25,6 +35,11 @@ void PointCloudPreprocess::set(const localization::SlamConfig& cfg) {
             lidar_type_ = LidarType::VELO32;
             break;
         case 3:
+            lidar_type_ = LidarType::OUST64;
+            break;
+        case 4:  // [NEW][parking_bag_adaptation]
+            lidar_type_ = LidarType::ROBOSENSE16;
+            break;
         default:
             lidar_type_ = LidarType::OUST64;
             break;
@@ -33,6 +48,7 @@ void PointCloudPreprocess::set(const localization::SlamConfig& cfg) {
     point_filter_num_ = cfg.point_filter_num;  // 点云滤波数量
     num_scans_ = cfg.scan_line;  // 扫描线数
     time_scale_ = static_cast<float>(cfg.time_scale);  // 时间尺度
+    scan_rate_ = cfg.scan_rate;  // [NEW][parking_bag_adaptation] 用于估计每点时间偏移
 }
 
 void PointCloudPreprocess::process(const sensor_msgs::PointCloud2& msg, localization::PointCloudPtr& pcl_out) {
@@ -42,6 +58,9 @@ void PointCloudPreprocess::process(const sensor_msgs::PointCloud2& msg, localiza
             break;
         case LidarType::VELO32:
             velodyneHandler(msg);
+            break;
+        case LidarType::ROBOSENSE16:  // [NEW][parking_bag_adaptation]
+            robosense16Handler(msg);
             break;
         case LidarType::AVIA:
         default:
@@ -94,11 +113,84 @@ void PointCloudPreprocess::oust64Handler(const sensor_msgs::PointCloud2& msg) {
     cloud_out_.is_dense = false;
 }
 
+// [NEW][parking_bag_adaptation] Handle Robosense-16 organized clouds without ring/time fields.
+void PointCloudPreprocess::robosense16Handler(const sensor_msgs::PointCloud2& msg) {
+    cloud_out_.clear();
+
+    pcl::PointCloud<pcl::PointXYZI> pl_orig;
+    pcl::fromROSMsg(msg, pl_orig);
+    const int height = static_cast<int>(pl_orig.height);
+    const int width = static_cast<int>(pl_orig.width);
+    const int plsize = static_cast<int>(pl_orig.points.size());
+    cloud_out_.reserve(plsize);
+
+    if (height <= 1 || width <= 0) {
+        ROS_WARN_THROTTLE(1.0, "[PointCloudPreprocess][parking_bag_adaptation] /rslidar_points is not organized, fallback to XYZI-only ordering");
+    }
+
+    const int rings = std::max(1, height);
+    const int cols = std::max(1, width);
+    const double omega_l = scanRateToOmegaDegPerMs(scan_rate_);
+    std::vector<bool> is_first(rings, true);
+    std::vector<double> yaw_fp(rings, 0.0);
+    std::vector<float> time_last(rings, 0.0f);
+
+    for (int idx = 0; idx < plsize; ++idx) {
+        const auto& src = pl_orig.points[idx];
+        if (!std::isfinite(src.x) || !std::isfinite(src.y) || !std::isfinite(src.z)) {
+            continue;
+        }
+
+        localization::PointType added_pt;
+        added_pt.normal_x = 0.0f;
+        added_pt.normal_y = 0.0f;
+        added_pt.normal_z = 0.0f;
+        added_pt.x = src.x;
+        added_pt.y = src.y;
+        added_pt.z = src.z;
+        added_pt.intensity = src.intensity;
+
+        const double range = added_pt.x * added_pt.x + added_pt.y * added_pt.y + added_pt.z * added_pt.z;
+        if (range <= blind_ * blind_) {
+            continue;
+        }
+
+        const int ring = std::min(rings - 1, idx / cols);
+        const double yaw_angle = std::atan2(added_pt.y, added_pt.x) * 57.29577951308232;
+        float offset_ms = 0.0f;
+        if (is_first[ring]) {
+            yaw_fp[ring] = yaw_angle;
+            is_first[ring] = false;
+        } else {
+            if (yaw_angle <= yaw_fp[ring]) {
+                offset_ms = static_cast<float>((yaw_fp[ring] - yaw_angle) / omega_l);
+            } else {
+                offset_ms = static_cast<float>((yaw_fp[ring] - yaw_angle + 360.0) / omega_l);
+            }
+            if (offset_ms < time_last[ring]) {
+                offset_ms += static_cast<float>(360.0 / omega_l);
+            }
+        }
+        time_last[ring] = offset_ms;
+        added_pt.curvature = offset_ms;
+
+        const int col = idx % cols;
+        const int linear_index = ring * cols + col;
+        if (linear_index % point_filter_num_ == 0) {
+            cloud_out_.points.push_back(added_pt);
+        }
+    }
+
+    cloud_out_.width = cloud_out_.points.size();
+    cloud_out_.height = 1;
+    cloud_out_.is_dense = false;
+}
+
 void PointCloudPreprocess::velodyneHandler(const sensor_msgs::PointCloud2& msg) {
     cloud_out_.clear();
 
     pcl::PointCloud<velodyne_ros::Point> pl_orig;
-    pcl::fromROSMsg(msg, pl_orig);
+    pcl::fromROSMsg(msg, pl_orig); // 
     const int plsize = static_cast<int>(pl_orig.points.size());
     cloud_out_.reserve(plsize);
 

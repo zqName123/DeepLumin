@@ -57,6 +57,38 @@ void SlamMappingRosAdapter::spinOnce() {
 
 double SlamMappingRosAdapter::processRateHz() const { return config_.mapping.process_rate_hz; }
 
+void SlamMappingRosAdapter::shutdown() {
+  const auto status = runtime_.status();
+  if (status.state != slam_mapping::RuntimeState::RUNNING) {
+    ROS_INFO("[slam_mapping] shutdown skip autosave state=%s running=%s output_valid=%s",
+             slam_mapping::toString(status.state).c_str(),
+             status.running ? "true" : "false",
+             status.output_valid ? "true" : "false");
+    return;
+  }
+
+  slam_mapping::RuntimeStopRequest req;
+  req.task_id = status.task_id;
+  req.save_map = true;
+  req.save_keyframes = config_.map_saver.save_keyframes;
+  req.save_keyframe_poses = config_.map_saver.save_keyframe_poses;
+  req.save_trajectory = config_.map_saver.save_trajectory;
+
+  ROS_INFO("[slam_mapping] shutdown autosave task_id=%s output_dir=%s save_keyframes=%s save_keyframe_poses=%s save_trajectory=%s",
+           status.task_id.c_str(),
+           status.output_dir.c_str(),
+           req.save_keyframes ? "true" : "false",
+           req.save_keyframe_poses ? "true" : "false",
+           req.save_trajectory ? "true" : "false");
+  const bool ok = runtime_.stop(req);
+  const auto after = runtime_.status();
+  ROS_INFO("[slam_mapping] shutdown autosave result ok=%s state=%s message=%s map_path=%s",
+           ok ? "true" : "false",
+           slam_mapping::toString(after.state).c_str(),
+           after.message.c_str(),
+           after.map_path.c_str());
+}
+
 void SlamMappingRosAdapter::onImu(const sensor_msgs::Imu::ConstPtr& msg) { runtime_.feedImu(slam_mapping_ros::fromRos(*msg)); }
 void SlamMappingRosAdapter::onLidar(const sensor_msgs::PointCloud2::ConstPtr& msg) { runtime_.feedLidar(slam_mapping_ros::fromRos(*msg, config_.slam_backend)); }
 void SlamMappingRosAdapter::onCan(const deeplumin_msgs::CanReceiveInfo::ConstPtr& msg) { runtime_.feedCanVelocity(slam_mapping_ros::fromRos(*msg)); }
@@ -147,6 +179,9 @@ void SlamMappingRosAdapter::publishOutputs() {
   viz_.publishPath(runtime_.keyframes());
   viz_.publishCurrentScan(runtime_.currentScan(), config_.frames.base_link);
   viz_.publishLocalMap(runtime_.localMap(), config_.frames.odom);
+  viz_.publishMapPreview(runtime_.keyframes());
+  viz_.publishLoopCurrentSubmap(runtime_.latestLoopCurrentSubmap(), config_.frames.map);
+  viz_.publishLoopHistorySubmap(runtime_.latestLoopHistorySubmap(), config_.frames.map);
   viz_.publishKeyframeMarkers(runtime_.keyframes());
   viz_.publishLoopMarkers(runtime_.loopPairs(), runtime_.keyframes());
   if (config_.mapping.publish_tf && runtime_.currentOdom().valid) {

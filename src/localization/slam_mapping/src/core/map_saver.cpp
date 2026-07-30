@@ -13,6 +13,9 @@ void MapSaver::configure(const MapSaverConfig& cfg) { config_ = cfg; }
 
 bool MapSaver::saveAll(const SaveRequest& req,
                        const std::vector<MappingKeyframe>& keyframes,
+                       const std::vector<std::pair<int, int>>& loop_pairs,
+                       const localization::PointCloudPtr& latest_loop_current_submap,
+                       const localization::PointCloudPtr& latest_loop_history_submap,
                        SaveResult* result) {
   if (!result) return false;
   result->success = false;
@@ -38,6 +41,15 @@ bool MapSaver::saveAll(const SaveRequest& req,
   if (req.save_trajectory) {
     result->trajectory_path = (std::filesystem::path(req.output_dir) / config_.trajectory_filename).string();
     saveTrajectory(result->trajectory_path, keyframes);
+  }
+  if (req.save_loop_results && config_.save_loop_results) {
+    const auto loop_dir = std::filesystem::path(req.output_dir) / config_.loop_result_dir_name;
+    std::filesystem::create_directories(loop_dir);
+    result->loop_result_path = loop_dir.string();
+    const auto loop_pairs_path = (loop_dir / config_.loop_pairs_filename).string();
+    saveLoopPairs(loop_pairs_path, loop_pairs);
+    saveLoopSubmap((loop_dir / config_.loop_current_submap_filename).string(), latest_loop_current_submap);
+    saveLoopSubmap((loop_dir / config_.loop_history_submap_filename).string(), latest_loop_history_submap);
   }
   result->success = true;
   result->message = "ok";
@@ -100,6 +112,25 @@ bool MapSaver::saveTrajectory(const std::string& path,
         << kf.pose_map.position.z() << ' ' << q.x() << ' ' << q.y() << ' ' << q.z() << ' ' << q.w() << '\n';
   }
   return true;
+}
+
+bool MapSaver::saveLoopPairs(const std::string& path,
+                             const std::vector<std::pair<int, int>>& loop_pairs) const {
+  std::ofstream ofs(path);
+  if (!ofs.is_open()) return false;
+  ofs << "history_id,current_id\n";
+  for (const auto& loop_pair : loop_pairs) {
+    ofs << loop_pair.first << ',' << loop_pair.second << '\n';
+  }
+  return true;
+}
+
+bool MapSaver::saveLoopSubmap(const std::string& path,
+                              const localization::PointCloudPtr& cloud) const {
+  if (!cloud || cloud->empty()) {
+    return false;
+  }
+  return savePcd(path, *cloud);
 }
 
 void MapSaver::transformCloud(const localization::PointCloud& in,

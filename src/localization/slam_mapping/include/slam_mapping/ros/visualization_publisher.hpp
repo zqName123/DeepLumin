@@ -24,6 +24,10 @@ class VisualizationPublisher {
                           const std::string& frame_id);
   void publishLocalMap(const localization::TimestampedPointCloud& map,
                        const std::string& frame_id);
+  void publishLoopCurrentSubmap(const localization::TimestampedPointCloud& map,
+                                const std::string& frame_id);
+  void publishLoopHistorySubmap(const localization::TimestampedPointCloud& map,
+                                const std::string& frame_id);
   void publishMapPreview(const std::vector<slam_mapping::MappingKeyframe>& keyframes);
   void publishKeyframeMarkers(const std::vector<slam_mapping::MappingKeyframe>& keyframes);
   void publishLoopMarkers(const std::vector<std::pair<int, int>>& loop_pairs,
@@ -38,6 +42,8 @@ class VisualizationPublisher {
   ros::Publisher path_pub_;
   ros::Publisher current_scan_pub_;
   ros::Publisher local_map_pub_;
+  ros::Publisher loop_current_submap_pub_;
+  ros::Publisher loop_history_submap_pub_;
   ros::Publisher map_preview_pub_;
   ros::Publisher keyframe_markers_pub_;
   ros::Publisher loop_markers_pub_;

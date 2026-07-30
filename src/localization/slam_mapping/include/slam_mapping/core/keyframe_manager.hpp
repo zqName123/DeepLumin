@@ -18,8 +18,13 @@ class KeyframeManager {
   const std::vector<MappingKeyframe>& keyframes() const;
   std::vector<MappingKeyframe>& mutableKeyframes();
   const MappingKeyframe* latest() const;
+  MappingKeyframe* latestMutable();
+  int latestIndex() const;
 
  private:
+  bool shouldAddAtFrame(const localization::OdomResult& odom,
+                        const localization::TimestampedPointCloud& scan,
+                        std::uint64_t frame_index) const;
   double relativeDistance(const localization::Pose& a,
                           const localization::Pose& b) const;
   double relativeRotationRad(const localization::Pose& a,
@@ -27,6 +32,8 @@ class KeyframeManager {
 
   KeyframeConfig config_;
   std::vector<MappingKeyframe> keyframes_;
+  std::uint64_t next_frame_index_ = 0;
+  std::uint64_t last_keyframe_frame_index_ = 0;
 };
 
 }  // namespace slam_mapping

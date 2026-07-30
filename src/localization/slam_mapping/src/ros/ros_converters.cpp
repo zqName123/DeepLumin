@@ -107,6 +107,7 @@ slam_mapping::SaveRequest fromRos(const deeplumin_msgs::SaveMappingRuntime::Requ
   out.save_keyframes = req.save_keyframes;
   out.save_keyframe_poses = req.save_keyframe_poses;
   out.save_trajectory = req.save_trajectory;
+  out.save_loop_results = true;
   return out;
 }
 
