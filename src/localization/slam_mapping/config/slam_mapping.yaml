@@ -43,7 +43,7 @@ slam:
   publish_tf: true
 
   # 点云时间戳模式；auto 表示自动判断点时间字段是否可用
-  point_time_mode: "auto"
+  point_time_mode: "present"
 
   startup:
     # 是否启用 IMU 预热；预热期间激光数据会被丢弃，不进入建图主流程
@@ -55,11 +55,11 @@ slam:
 
   no_point_time:
     # 当点云没有逐点时间时，启动阶段处理频率
-    startup_process_rate: 2.0
+    startup_process_rate: 12.0
     # 当点云没有逐点时间时，正常阶段处理频率
-    normal_process_rate: 10.0
+    normal_process_rate: 12.0
     # 当点云没有逐点时间时，启动阶段需要累计多少帧后再进入正常节奏
-    startup_valid_frames: 20
+    startup_valid_frames: 10
 
   faster_lio:
     # 雷达帧率（Hz）
@@ -127,19 +127,19 @@ slam:
 
 keyframe:
   # 与上一关键帧的平移阈值（米）；超过后允许生成新关键帧
-  distance_thresh: 1.5
+  distance_thresh: 0.00
   # 与上一关键帧的旋转阈值（弧度）；超过后允许生成新关键帧
-  rotation_thresh_rad: 3.0
+  rotation_thresh_rad: 0.0
   # 与上一关键帧的时间阈值（秒）；当平移/旋转都不明显时，可用时间强制切关键帧
-  time_thresh_sec: 0.5
+  time_thresh_sec: 0.0
   # 当前帧最少点数；小于该值不允许成为关键帧
   min_points: 50
   # 相邻关键帧最少间隔的输入雷达帧数；可抑制关键帧过密
-  min_frame_gap: 5
+  min_frame_gap: 0
 
 map_saver:
   # 最终整图降采样分辨率（米）
-  default_resolution: 0.2
+  default_resolution: 0.0
   # 停止任务时是否自动保存
   save_on_stop: true
   # 是否导出关键帧点云目录
@@ -169,7 +169,7 @@ map_saver:
 
 loop_closure:
   # 是否启用回环模块
-  enable: true
+  enable: false
   # 当前回环实现类型；当前包内仅实现 fastlio2_sam_lc
   type: "fastlio2_sam_lc"
   # 兼容旧配置；若设置了 max_range，则优先使用 max_range 做候选搜索半径
@@ -211,7 +211,7 @@ visualization:
   # 是否发布当前扫描点云
   publish_current_scan: true
   # 是否发布全局预览地图
-  publish_accumulated_map_preview: true
+  publish_accumulated_map_preview: false
   # 是否发布回环边和回环节点 marker
   publish_loop_markers: true
   # 全局预览地图的体素滤波分辨率
