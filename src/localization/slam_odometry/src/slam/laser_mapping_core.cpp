@@ -1347,10 +1347,11 @@ bool LaserMappingCore::processOnce() {
     // 注意：不转换到世界系，下游使用时以 odom_.pose 做外部变换；
     // 如需发布世界系，由调用方（如 slam_debug_node）自行用 odom 变换。
     current_scan_.timestamp = impl_->lidar_end_time;
+    current_scan_.cloud.reset(new PointCloud(*impl_->scan_down_body));
     // 进行下采样
-    pcl::VoxelGrid<PointI> voxel_grid;
-    impl_->voxel_scan.setInputCloud(impl_->scan_undistort);
-    impl_->voxel_scan.filter(*current_scan_.cloud);
+    // pcl::VoxelGrid<PointI> voxel_grid;
+    // impl_->voxel_scan.setInputCloud(impl_->scan_undistort);
+    // impl_->voxel_scan.filter(*current_scan_.cloud);
     // current_scan_.cloud.reset(new PointCloud(*impl_->scan_undistort));
 
     local_map_.timestamp = impl_->lidar_end_time;

@@ -52,7 +52,36 @@ void SlamMappingRosAdapter::spinOnce() {
                     ok ? "true" : "false",
                     static_cast<unsigned long long>(runtime_.status().frame_count),
                     static_cast<unsigned long long>(runtime_.status().keyframe_count));
-  publishOutputs();
+  // publishOutputs();
+  // 状态消息
+  if ((ros::WallTime::now() - last_status_pub_time_).toSec() >= 0.1) {
+    last_status_pub_time_ = ros::WallTime::now();
+    viz_.publishStatus(runtime_.status());
+  }
+
+  // odom / 点云 / tf
+  if (!ok) return;
+  const auto odom = runtime_.currentOdom();
+  if (!odom.valid) return;
+
+  viz_.publishOdom(odom);
+  viz_.publishCurrentScan(runtime_.currentScan(), config_.frames.base_link);
+  viz_.publishLocalMap(runtime_.localMap(), config_.frames.odom);
+  if (config_.mapping.publish_tf) {
+    tf_broadcaster_.sendTransform(
+        slam_mapping_ros::toRosTransform(odom, config_.frames.odom, config_.frames.base_link));
+  }
+
+  // path / 关键帧 / 整图预览按 1~2Hz 增量发布（见第 2 点）
+  if ((ros::WallTime::now() - last_slow_pub_time_).toSec() >= 0.5) {
+    last_slow_pub_time_ = ros::WallTime::now();
+    const auto& kfs = runtime_.keyframes();   // 建议改成返回 const&，见下
+    viz_.publishPath(kfs);
+    viz_.publishKeyframeMarkers(kfs);
+    viz_.publishMapPreview(kfs);
+    viz_.publishLoopMarkers(runtime_.loopPairs(), kfs);
+  }
+
 }
 
 double SlamMappingRosAdapter::processRateHz() const { return config_.mapping.process_rate_hz; }

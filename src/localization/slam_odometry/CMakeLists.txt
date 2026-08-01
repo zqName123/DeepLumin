@@ -56,11 +56,17 @@ add_library(slam_odometry_core
   ${FASTER_LIO_ROOT}/src/utils.cc
 )
 add_dependencies(slam_odometry_core ${catkin_EXPORTED_TARGETS})
-target_compile_options(slam_odometry_core PRIVATE 
+# target_compile_options(slam_odometry_core PRIVATE 
+#   -pthread
+#   $<$<CONFIG:Release>:-O2>
+#   $<$<CONFIG:Release>:-fno-fast-math>
+#   $<$<CONFIG:Release>:-ffp-contract=off>
+# )
+target_compile_options(slam_odometry_core PRIVATE
   -pthread
-  $<$<CONFIG:Release>:-O2>
-  $<$<CONFIG:Release>:-fno-fast-math>
-  $<$<CONFIG:Release>:-ffp-contract=off>
+  -O3
+  -fno-fast-math
+  -ffp-contract=off
 )
 target_link_libraries(slam_odometry_core
   ${catkin_LIBRARIES}

@@ -12,7 +12,7 @@ mapping:
   # 是否发布 TF
   publish_tf: true
   # 运行时主循环频率上限；实际频率还受传感器输入和前后端耗时影响
-  process_rate_hz: 5000.0
+  process_rate_hz: 100.0
 
 frames:
   # 全局地图坐标系；关键帧优化位姿、回环子图、全局路径都以该坐标系为准

@@ -60,6 +60,9 @@ class SlamMappingRosAdapter {
   ros::ServiceServer save_srv_;
   ros::ServiceServer reset_srv_;
   ros::ServiceServer get_status_srv_;
+
+  ros::WallTime last_slow_pub_time_;
+  ros::WallTime last_status_pub_time_;
 };
 
 }  // namespace slam_mapping_ros

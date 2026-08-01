@@ -48,6 +48,11 @@ class VisualizationPublisher {
   ros::Publisher keyframe_markers_pub_;
   ros::Publisher loop_markers_pub_;
   ros::Publisher status_pub_;
+
+  nav_msgs::Path path;
+  visualization_msgs::MarkerArray keyframe_markers_msg_;
+  std::size_t path_count_ = 0;                  // 已入 path 的关键帧数
+  std::size_t marker_count_ = 0;
 };
 
 }  // namespace slam_mapping_ros

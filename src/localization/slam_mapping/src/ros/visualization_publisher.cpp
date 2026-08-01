@@ -41,10 +41,15 @@ void VisualizationPublisher::publishOdom(const localization::OdomResult& odom) {
 
 void VisualizationPublisher::publishPath(const std::vector<slam_mapping::MappingKeyframe>& keyframes) {
   if (!cfg_.publish_path || !path_pub_) return;
-  nav_msgs::Path path;
+  if (keyframes.size() < path_count_) {
+    path.poses.clear();
+    path_count_ = 0;
+  }
+  // nav_msgs::Path path;
   path.header.frame_id = frames_.map;
   path.header.stamp = ros::Time::now();
-  for (const auto& kf : keyframes) {
+  for (std::size_t i = path_count_; i < keyframes.size(); ++i) {
+    const auto& kf = keyframes[i];
     geometry_msgs::PoseStamped pose;
     pose.header = path.header;
     pose.pose.position.x = kf.pose_map.position.x();
@@ -56,7 +61,9 @@ void VisualizationPublisher::publishPath(const std::vector<slam_mapping::Mapping
     pose.pose.orientation.w = kf.pose_map.orientation.w();
     path.poses.push_back(pose);
   }
+  path_count_ = keyframes.size();
   path_pub_.publish(path);
+
 }
 
 void VisualizationPublisher::publishCurrentScan(const localization::TimestampedPointCloud& scan,
