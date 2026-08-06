@@ -1,5 +1,6 @@
 #include "mapping_manager/core/manager_core.hpp"
 #include "mapping_manager/ros/ros_adapter.hpp"
+#include "mapping_manager/ros/bag_recorder.hpp"
 
 #include <deeplumin_msgs/CheckMappingEnvironment.h>
 #include <deeplumin_msgs/GetMappingRuntimeStatus.h>
@@ -14,6 +15,8 @@
 #include <deeplumin_msgs/StopMapping.h>
 #include <deeplumin_msgs/StopMappingRuntime.h>
 #include <ros/ros.h>
+
+#include <sys/stat.h>
 
 class MappingManagerNode {
  public:
@@ -52,11 +55,46 @@ class MappingManagerNode {
 
     timer_ = nh_.createTimer(ros::Duration(1.0 / std::max(1.0, config_.runtime.status_hz)),
                              &MappingManagerNode::onTimer, this);
+    record_active_since_ = ros::Time::now();
     ROS_INFO("[mapping_manager] started backend_enabled=%s", config_.backend.enabled ? "true" : "false");
+  }
+
+  ~MappingManagerNode() {
+    if (recorder_.running()) {
+      ROS_WARN("[mapping_manager] node shutting down with active bag recording, stopping rosbag pid=%d",
+               static_cast<int>(recorder_.pid()));
+    }
+    recorder_.shutdown();
   }
 
  private:
   static double nowSec() { return ros::Time::now().toSec(); }
+
+  bool spawnBagRecorder(const std::string& bag_path, const std::vector<std::string>& topics) {
+    if (!recorder_.start(bag_path, topics)) {
+      ROS_ERROR("[mapping_manager] failed to spawn rosbag record path=%s", bag_path.c_str());
+      return false;
+    }
+    record_active_since_ = ros::Time::now();
+    ROS_INFO("[mapping_manager] bag recording started path=%s topics=%zu",
+             bag_path.c_str(), topics.size());
+    return true;
+  }
+
+  void startAutoBagRecording() {
+    record_active_since_ = ros::Time::now();
+    const auto snapshot = core_.getStatus();
+    if (!snapshot.record_status.active || recorder_.running()) return;
+    std::vector<std::string> topics = config_.defaults.bag_topics;
+    if (topics.empty()) {
+      core_.failBagRecording("自动录包未配置录制话题", nowSec());
+      ROS_WARN("[mapping_manager] auto bag recording skipped: no topics configured");
+      return;
+    }
+    if (!spawnBagRecorder(snapshot.record_status.bag_path, topics)) {
+      core_.failBagRecording("无法启动 rosbag record 进程", nowSec());
+    }
+  }
 
   bool backendServiceReady(ros::ServiceClient& client, const std::string& name, double timeout_sec = 1.0) {
     if (!config_.backend.enabled) return false;
@@ -128,6 +166,7 @@ class MappingManagerNode {
     if (config_.backend.enabled) {
       if (!backendServiceReady(backend_start_client_, config_.backend.start_service)) {
         core_.markFailed("slam_mapping start service unavailable", nowSec());
+        core_.failBagRecording("slam_mapping 启动失败，自动录包已取消", nowSec());
         mapping_manager::StartMappingResponseData failed = out;
         failed.accepted = false;
         failed.state = "FAILED";
@@ -150,6 +189,7 @@ class MappingManagerNode {
         ROS_ERROR("[mapping_manager] backend start failed state=%s reason=%s",
                   srv.response.state.c_str(), srv.response.reason.c_str());
         core_.markFailed(srv.response.reason.empty() ? "backend start failed" : srv.response.reason, nowSec());
+        core_.failBagRecording("slam_mapping 启动失败，自动录包已取消", nowSec());
         mapping_manager::StartMappingResponseData failed = out;
         failed.accepted = false;
         failed.state = srv.response.state.empty() ? "FAILED" : srv.response.state;
@@ -160,6 +200,8 @@ class MappingManagerNode {
       ROS_INFO("[mapping_manager] backend start accepted state=%s reason=%s",
                srv.response.state.c_str(), srv.response.reason.c_str());
     }
+
+    if (req.auto_start_recording) startAutoBagRecording();
 
     mapping_manager_ros::fillRos(out, &res);
     return true;
@@ -220,7 +262,27 @@ class MappingManagerNode {
 
   bool handleStartBag(deeplumin_msgs::StartBagRecording::Request& req,
                       deeplumin_msgs::StartBagRecording::Response& res) {
+    record_active_since_ = ros::Time::now();
     const auto out = core_.startBagRecording(mapping_manager_ros::fromRos(req), nowSec());
+    if (!out.accepted) {
+      mapping_manager_ros::fillRos(out, &res);
+      return true;
+    }
+
+    std::vector<std::string> topics(req.topics.begin(), req.topics.end());
+    if (topics.empty()) topics = config_.defaults.bag_topics;
+    if (topics.empty() || !spawnBagRecorder(out.bag_path, topics)) {
+      const std::string reason = topics.empty() ? "未指定录制话题" : "无法启动 rosbag record 进程";
+      core_.failBagRecording(reason, nowSec());
+      const auto snapshot = core_.getStatus();
+      res.accepted = false;
+      res.state = mapping_manager::toString(snapshot.record_status.state);
+      res.reason = reason;
+      res.bag_path = out.bag_path;
+      ROS_ERROR("[mapping_manager] start bag rejected: %s", reason.c_str());
+      return true;
+    }
+
     mapping_manager_ros::fillRos(out, &res);
     return true;
   }
@@ -228,13 +290,41 @@ class MappingManagerNode {
   bool handleStopBag(deeplumin_msgs::StopBagRecording::Request& req,
                      deeplumin_msgs::StopBagRecording::Response& res) {
     const auto out = core_.stopBagRecording(mapping_manager_ros::fromRos(req), nowSec());
+    if (!out.accepted) {
+      mapping_manager_ros::fillRos(out, &res);
+      return true;
+    }
+
+    if (!recorder_.stop()) {
+      ROS_WARN("[mapping_manager] bag recorder did not exit gracefully, force killed");
+    } else {
+      ROS_INFO("[mapping_manager] bag recording stopped path=%s", out.bag_path.c_str());
+    }
+    struct stat st{};
+    if (stat(out.bag_path.c_str(), &st) == 0) {
+      core_.setRecordBytes(static_cast<unsigned long long>(st.st_size), nowSec());
+    }
     mapping_manager_ros::fillRos(out, &res);
     return true;
   }
 
   void onTimer(const ros::TimerEvent&) {
     core_.update(nowSec());
-    const auto snapshot = core_.getStatus();
+    recorder_.poll();
+
+    auto snapshot = core_.getStatus();
+    if (snapshot.record_status.active && !recorder_.running() && !recorder_.stopping() &&
+        (ros::Time::now() - record_active_since_).toSec() > 2.0) {
+      core_.failBagRecording("rosbag record 进程意外退出", nowSec());
+      snapshot = core_.getStatus();
+    } else if (snapshot.record_status.active && !snapshot.record_status.bag_path.empty()) {
+      struct stat st{};
+      if (stat(snapshot.record_status.bag_path.c_str(), &st) == 0) {
+        core_.setRecordBytes(static_cast<unsigned long long>(st.st_size), nowSec());
+        snapshot = core_.getStatus();
+      }
+    }
+
     const ros::Time stamp = ros::Time::now();
     status_pub_.publish(mapping_manager_ros::toRos(snapshot.status, stamp));
     record_status_pub_.publish(mapping_manager_ros::toRos(snapshot.record_status, stamp));
@@ -245,6 +335,8 @@ class MappingManagerNode {
   ros::NodeHandle pnh_;
   mapping_manager::ManagerConfig config_;
   mapping_manager::ManagerCore core_;
+  mapping_manager::BagRecorder recorder_;
+  ros::Time record_active_since_;  // guard against false "unexpected exit" during startup
 
   ros::Publisher status_pub_;
   ros::Publisher record_status_pub_;

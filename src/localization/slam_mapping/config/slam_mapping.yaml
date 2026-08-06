@@ -127,7 +127,7 @@ slam:
 
 keyframe:
   # 与上一关键帧的平移阈值（米）；超过后允许生成新关键帧
-  distance_thresh: 0.00
+  distance_thresh: 1.00
   # 与上一关键帧的旋转阈值（弧度）；超过后允许生成新关键帧
   rotation_thresh_rad: 0.0
   # 与上一关键帧的时间阈值（秒）；当平移/旋转都不明显时，可用时间强制切关键帧
@@ -135,7 +135,7 @@ keyframe:
   # 当前帧最少点数；小于该值不允许成为关键帧
   min_points: 50
   # 相邻关键帧最少间隔的输入雷达帧数；可抑制关键帧过密
-  min_frame_gap: 0
+  min_frame_gap: 10
 
 map_saver:
   # 最终整图降采样分辨率（米）
@@ -169,17 +169,17 @@ map_saver:
 
 loop_closure:
   # 是否启用回环模块
-  enable: false
+  enable: true
   # 当前回环实现类型；当前包内仅实现 fastlio2_sam_lc
   type: "fastlio2_sam_lc"
   # 兼容旧配置；若设置了 max_range，则优先使用 max_range 做候选搜索半径
   search_radius: 15.0
   # 当前帧与历史候选之间最小关键帧索引差；过小会把近邻帧误当回环
-  min_index_gap: 5
+  min_index_gap: 10
   # 当前帧和历史候选之间最小时间差（秒）；时间太近的候选会被过滤
-  time_thresh_sec: 30.0
+  time_thresh_sec: 20.0
   # 两次回环检查之间至少间隔多少个关键帧；值越大，回环线程负担越小，但更晚检测到回环
-  loop_kf_gap: 20
+  loop_kf_gap: 30
   # 新候选与已有闭环历史在历史帧维度上的最小间隔；用于抑制重复闭环
   min_id_interval: 20
   # 当前帧与历史候选之间的“强制远离”阈值；小于该值时直接不考虑为回环
@@ -211,11 +211,11 @@ visualization:
   # 是否发布当前扫描点云
   publish_current_scan: true
   # 是否发布全局预览地图
-  publish_accumulated_map_preview: false
+  publish_accumulated_map_preview: true
   # 是否发布回环边和回环节点 marker
   publish_loop_markers: true
   # 全局预览地图的体素滤波分辨率
-  accumulated_map_voxel_leaf: 0.5
+  accumulated_map_voxel_leaf: 0.7
 
 outputs:
   # 里程计输出话题

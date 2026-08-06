@@ -5,7 +5,7 @@
   <arg name="slam_mapping_config" default="$(find slam_mapping)/config/slam_mapping.yaml" />
   <arg name="gui_node_name" default="mapping_gui" />
 
-  <include if="$(arg start_slam_mapping_backend)" file="$(find slam_mapping)/launch/slam_mapping_parking_rslidar.launch">
+  <include if="$(arg start_slam_mapping_backend)" file="$(find slam_mapping)/launch/slam_mapping_manager_backend.launch">
     <arg name="config" value="$(arg slam_mapping_config)" />
   </include>
 

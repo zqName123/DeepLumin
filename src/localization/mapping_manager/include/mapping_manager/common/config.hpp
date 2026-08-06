@@ -1,6 +1,7 @@
 #pragma once
 
 #include <string>
+#include <vector>
 
 namespace mapping_manager {
 
@@ -29,6 +30,9 @@ struct RuntimeConfig {
 struct DefaultConfig {
   std::string output_root = "/tmp/deeplumin_mapping";
   std::string bag_output_dir = "/tmp/deeplumin_mapping/bag";
+  std::vector<std::string> bag_topics = {
+      "/localization/points", "/ouster/imu", "/mapping/status",
+      "/mapping/odom",       "/mapping/map_points", "/mapping/loop_markers"};
 };
 
 struct BackendConfig {

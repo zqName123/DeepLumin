@@ -20,6 +20,7 @@ runtime:
 defaults:
   output_root: /tmp/deeplumin_mapping
   bag_output_dir: /tmp/deeplumin_mapping/bag
+  bag_topics: /localization/points,/ouster/imu,/mapping/status,/mapping/odom,/mapping/map_points,/mapping/loop_markers
 
 backend:
   enabled: true

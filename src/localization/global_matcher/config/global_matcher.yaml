@@ -75,25 +75,41 @@ runtime:
     rpy_deg: [0.0, 0.0, 0.0]
 
 crop:
-  forward: 35.0
+  forward: 60.0
   backward: 7.0
   left: 30.0
   right: 30.0
   down: 10.0
   up: 10.0
 
+# matcher:
+#   # type: fast_gicp, gicp, or icp
+#   type: fast_gicp
+#   source_voxel_leaf: 0.01
+#   target_voxel_leaf: 0.08
+#   coarse_scale: 6.0
+#   fine_scale: 3.0
+#   max_iterations: 20
+#   transformation_epsilon: 0.001
+#   max_correspondence_distance: 2.0
+#   fast_gicp_num_threads: 4
+#   fast_gicp_correspondence_randomness: 20
+
 matcher:
-  # type: fast_gicp, gicp, or icp
-  type: fast_gicp
+  type: vgicp
   source_voxel_leaf: 0.01
-  target_voxel_leaf: 0.08
-  coarse_scale: 6.0
-  fine_scale: 3.0
-  max_iterations: 20
+  target_voxel_leaf: 0.1
+  coarse_scale: 10
+  fine_scale: 1
+  max_iterations: 30
   transformation_epsilon: 0.001
   max_correspondence_distance: 2.0
-  fast_gicp_num_threads: 2
-  fast_gicp_correspondence_randomness: 20
+
+  vgicp_voxel_resolution: 0.5
+  vgicp_num_neighbors: 20
+  vgicp_num_threads: 4
+
+
 
 # Success is decided by these quality gates only.
 # matcher hasConverged() is logged as a soft warning and does not reject the result.

@@ -48,6 +48,8 @@ private:
     double degeneracy_factor_ = 0.0;
 
     bool applyYswVelocityAid();
+
+    bool applyCanVelocityUpdate(); // 速度采用观测方式融合
 };
 
 }  // namespace localization

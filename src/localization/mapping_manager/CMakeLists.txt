@@ -24,6 +24,7 @@ add_executable(mapping_manager_node
   src/mapping_manager_node.cpp
   src/core/manager_core.cpp
   src/ros/ros_adapter.cpp
+  src/ros/bag_recorder.cpp
 )
 add_dependencies(mapping_manager_node ${catkin_EXPORTED_TARGETS})
 target_link_libraries(mapping_manager_node ${catkin_LIBRARIES})

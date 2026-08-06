@@ -6,4 +6,6 @@
     <rosparam file="$(arg config)" command="load" />
     <param name="mapping/auto_start" value="$(arg auto_start)" />
   </node>
+
+  <node name="rviz" pkg="rviz" type="rviz" args="-d $(find slam_mapping)/rviz/hhy.rviz" output="screen" />
 </launch>

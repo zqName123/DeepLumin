@@ -1,3 +1,21 @@
+/**
+ * @file global_matcher_node.cpp
+ * @brief 全局匹配定位节点 - 基于点云配准的全局定位
+ *
+ * 该节点接收实时点云数据，通过与预先加载的全局地图进行配准（ICP/GICP/FastGICP），
+ * 计算车辆在地图坐标系中的精确位姿。支持多种初始位姿来源（跟踪模式、引导模式、
+ * 手动设置、默认值），并采用粗细两级配准策略提高匹配精度和鲁棒性。
+ *
+ * 主要功能：
+ * 1. 加载和发布全局点云地图
+ * 2. 接收实时点云和里程计数据
+ * 3. 选择初始位姿猜测（跟踪/引导/默认）
+ * 4. 从全局地图中裁剪局部子地图
+ * 5. 执行粗细两级点云配准
+ * 6. 计算内点指标并进行质量门控
+ * 7. 发布匹配结果和可视化数据
+ */
+
 #include <algorithm>
 #include <cmath>
 #include <limits>
@@ -11,6 +29,16 @@
 #include <Eigen/Geometry>
 
 #include <fast_gicp/gicp/fast_gicp.hpp>
+
+#include <small_gicp/points/point_cloud.hpp>               // small_gicp::PointCloud
+#include <small_gicp/util/normal_estimation_omp.hpp>       // estimate_covariances_omp
+#include <small_gicp/ann/gaussian_voxelmap.hpp>            // GaussianVoxelMap（VGICP 的 target）
+#include <small_gicp/factors/gicp_factor.hpp>              // GICPFactor
+#include <small_gicp/registration/reduction_omp.hpp>       // ParallelReductionOMP
+#include <small_gicp/registration/registration.hpp>        // Registration 模板
+
+#include <small_gicp/ros/ros1.hpp>   // small_gicp::from_ros_msg / to_ros_msg
+#include <small_gicp/registration/registration_helper.hpp>
 
 #include <geometry_msgs/PoseStamped.h>
 #include <geometry_msgs/PoseWithCovarianceStamped.h>
@@ -37,41 +65,70 @@
 
 namespace {
 
+// 点云类型定义：使用pcl::PointXYZ作为基本点类型
 using PointT = pcl::PointXYZ;
 using CloudT = pcl::PointCloud<PointT>;
 using CloudPtr = CloudT::Ptr;
 using CloudConstPtr = CloudT::ConstPtr;
 
+small_gicp::GaussianVoxelMap::Ptr vgicp_coarse_map = nullptr; // 测试
+small_gicp::GaussianVoxelMap::Ptr vgicp_fine_map = nullptr;
+// 数学常量：圆周率
 constexpr double kPi = 3.14159265358979323846;
 
+/**
+ * @brief 匹配质量指标结构体
+ * @details 存储点云配准后的各项质量评估指标，用于判断匹配结果是否可靠
+ */
 struct MatchMetrics {
-  uint32_t total_points = 0;
-  uint32_t inlier_count = 0;
-  double inlier_ratio = 0.0;
-  double inlier_rmse = std::numeric_limits<double>::infinity();
+  uint32_t total_points = 0;      ///< 参与评估的总点数
+  uint32_t inlier_count = 0;      ///< 内点数量（距离小于阈值的匹配点）
+  double inlier_ratio = 0.0;      ///< 内点比例 = inlier_count / total_points
+  double inlier_rmse = std::numeric_limits<double>::infinity();  ///< 内点均方根误差
+  double fitness = std::numeric_limits<double>::infinity();  ///< 平均最近邻平方距离（PCL 语义 fitness，日志/消息用）
 };
 
+/**
+ * @brief 地图分段结构体
+ * @details 支持多地图分段管理，每个分段包含完整地图和可视化用降采样地图
+ */
 struct MapSegment {
-  std::string id;
-  std::string path;
-  CloudPtr full_map;
-  CloudPtr viz_map;
+  std::string id;      ///< 地图分段唯一标识
+  std::string path;    ///< PCD文件路径
+  CloudPtr full_map;   ///< 完整分辨率地图（用于配准）
+  CloudPtr viz_map;    ///< 降采样地图（用于可视化发布）
+  small_gicp::GaussianVoxelMap::Ptr vgicp_coarse;  ///< VGICP 粗体素地图（整张地图预构建）
+  small_gicp::GaussianVoxelMap::Ptr vgicp_fine;    ///< VGICP 细体素地图（整张地图预构建）
 };
 
+/**
+ * @brief 匹配器运行模式枚举
+ * @details BOOTSTRAP: 引导模式，使用外部提供的初始位姿
+ *          TRACKING: 跟踪模式，使用融合里程计作为初始猜测
+ */
 enum class MatcherRunMode {
-  BOOTSTRAP,
-  TRACKING
+  BOOTSTRAP,   ///< 引导模式：依赖外部初始位姿输入
+  TRACKING     ///< 跟踪模式：使用融合里程计持续跟踪
 };
 
+/**
+ * @brief 初始位姿猜测结构体
+ * @details 包含从map到source的变换、source到base的变换、以及运行模式等信息
+ */
 struct InitialGuess {
-  Eigen::Matrix4f map_source = Eigen::Matrix4f::Identity();
-  Eigen::Matrix4f source_base = Eigen::Matrix4f::Identity();
-  Eigen::Matrix4f map_base = Eigen::Matrix4f::Identity();
-  MatcherRunMode mode = MatcherRunMode::BOOTSTRAP;
-  std::string reason;
-  bool valid = true;
+  Eigen::Matrix4f map_source = Eigen::Matrix4f::Identity();  ///< map -> source（点云坐标系）变换
+  Eigen::Matrix4f source_base = Eigen::Matrix4f::Identity(); ///< source -> base_link变换
+  Eigen::Matrix4f map_base = Eigen::Matrix4f::Identity();    ///< map -> base_link变换
+  MatcherRunMode mode = MatcherRunMode::BOOTSTRAP;           ///< 当前运行模式
+  std::string reason;    ///< 选择该初始猜测的原因说明
+  bool valid = true;     ///< 该猜测是否有效
 };
 
+/**
+ * @brief 将运行模式枚举转换为字符串
+ * @param mode 运行模式枚举值
+ * @return 对应的字符串表示（"bootstrap"或"tracking"）
+ */
 std::string modeToString(MatcherRunMode mode) {
   switch (mode) {
     case MatcherRunMode::BOOTSTRAP: return "bootstrap";
@@ -80,6 +137,12 @@ std::string modeToString(MatcherRunMode mode) {
   return "unknown";
 }
 
+/**
+ * @brief 将ROS Pose消息转换为4x4变换矩阵
+ * @param pose geometry_msgs::Pose类型输入
+ * @return Eigen::Matrix4f 4x4齐次变换矩阵（map->base或odom->base等）
+ * @details 提取位置（translation）和四元数（rotation），构建齐次变换矩阵
+ */
 Eigen::Matrix4f poseToMatrix(const geometry_msgs::Pose& pose) {
   Eigen::Quaternionf q(static_cast<float>(pose.orientation.w),
                        static_cast<float>(pose.orientation.x),
@@ -99,6 +162,12 @@ Eigen::Matrix4f poseToMatrix(const geometry_msgs::Pose& pose) {
   return mat;
 }
 
+/**
+ * @brief 将4x4变换矩阵转换为ROS Pose消息
+ * @param mat Eigen::Matrix4f 4x4齐次变换矩阵
+ * @return geometry_msgs::Pose ROS位姿消息
+ * @details 从矩阵中提取平移部分作为position，旋转部分转换为四元数
+ */
 geometry_msgs::Pose matrixToPose(const Eigen::Matrix4f& mat) {
   geometry_msgs::Pose pose;
   Eigen::Matrix3f rot = mat.block<3, 3>(0, 0);
@@ -114,25 +183,55 @@ geometry_msgs::Pose matrixToPose(const Eigen::Matrix4f& mat) {
   return pose;
 }
 
+/**
+ * @brief 从变换矩阵中提取偏航角（yaw）
+ * @param mat 4x4齐次变换矩阵
+ * @return double 偏航角（弧度）
+ * @details 使用atan2从旋转矩阵的第一列提取yaw角，假设使用ZYX欧拉角顺序
+ */
 double yawFromMatrix(const Eigen::Matrix4f& mat) {
   return std::atan2(mat(1, 0), mat(0, 0));
 }
 
+/**
+ * @brief 角度归一化到[-π, π]范围
+ * @param angle 输入角度（弧度）
+ * @return double 归一化后的角度
+ */
 double normalizeAngle(double angle) {
   while (angle > kPi) angle -= 2.0 * kPi;
   while (angle < -kPi) angle += 2.0 * kPi;
   return angle;
 }
 
+/**
+ * @brief 计算两个变换矩阵之间的偏航角差
+ * @param a 第一个变换矩阵
+ * @param b 第二个变换矩阵
+ * @return double 归一化后的yaw角差（弧度）
+ */
 double yawDiff(const Eigen::Matrix4f& a, const Eigen::Matrix4f& b) {
   return normalizeAngle(yawFromMatrix(a) - yawFromMatrix(b));
 }
 
+/**
+ * @brief 计算两个变换矩阵之间的平移距离
+ * @param a 第一个变换矩阵
+ * @param b 第二个变换矩阵
+ * @return double 平移向量差的欧氏距离
+ */
 double translationDiff(const Eigen::Matrix4f& a, const Eigen::Matrix4f& b) {
   const Eigen::Vector3f da = a.block<3, 1>(0, 3) - b.block<3, 1>(0, 3);
   return da.norm();
 }
 
+/**
+ * @brief 对点云进行体素网格降采样
+ * @param input 输入点云（常量指针）
+ * @param leaf 体素叶子大小（米）
+ * @return CloudPtr 降采样后的点云指针
+ * @details 使用PCL的VoxelGrid滤波器，如果leaf<=1e-4则直接返回原点云副本
+ */
 CloudPtr downsample(const CloudConstPtr& input, double leaf) {
   CloudPtr output(new CloudT());
   if (!input || input->empty()) {
@@ -149,7 +248,14 @@ CloudPtr downsample(const CloudConstPtr& input, double leaf) {
   return output;
 }
 
-
+/**
+ * @brief 从ROS参数服务器加载3D向量
+ * @param nh ROS节点句柄
+ * @param key 参数键名
+ * @param value 输出Eigen::Vector3f指针
+ * @return bool 加载成功返回true，失败返回false
+ * @details 期望参数为包含3个double值的数组 [x, y, z]
+ */
 bool loadVector3(ros::NodeHandle& nh, const std::string& key, Eigen::Vector3f* value) {
   std::vector<double> flat;
   if (!nh.getParam(key, flat) || flat.size() != 3) {
@@ -161,6 +267,14 @@ bool loadVector3(ros::NodeHandle& nh, const std::string& key, Eigen::Vector3f* v
   return true;
 }
 
+/**
+ * @brief 从ROS参数服务器加载3x3旋转矩阵
+ * @param nh ROS节点句柄
+ * @param key 参数键名
+ * @param value 输出Eigen::Matrix3f指针
+ * @return bool 加载成功返回true，失败返回false
+ * @details 期望参数为包含9个double值的数组，按行优先顺序排列
+ */
 bool loadMatrix3(ros::NodeHandle& nh, const std::string& key, Eigen::Matrix3f* value) {
   std::vector<double> flat;
   if (!nh.getParam(key, flat) || flat.size() != 9) {
@@ -172,6 +286,12 @@ bool loadMatrix3(ros::NodeHandle& nh, const std::string& key, Eigen::Matrix3f* v
   return true;
 }
 
+/**
+ * @brief 将角度制RPY转换为旋转矩阵
+ * @param rpy_deg 角度制的roll, pitch, yaw向量（度）
+ * @return Eigen::Matrix3f 3x3旋转矩阵
+ * @details 使用ZYX欧拉角顺序：先roll绕X，再pitch绕Y，最后yaw绕Z
+ */
 Eigen::Matrix3f rpyDegToMatrix(const Eigen::Vector3f& rpy_deg) {
   const float deg_to_rad = static_cast<float>(kPi / 180.0);
   const Eigen::AngleAxisf roll(rpy_deg.x() * deg_to_rad, Eigen::Vector3f::UnitX());
@@ -180,6 +300,13 @@ Eigen::Matrix3f rpyDegToMatrix(const Eigen::Vector3f& rpy_deg) {
   return (yaw * pitch * roll).toRotationMatrix();
 }
 
+/**
+ * @brief 从ROS参数加载外参变换矩阵
+ * @param nh ROS节点句柄
+ * @param key 参数键名前缀
+ * @return Eigen::Matrix4f 4x4齐次变换矩阵
+ * @details 加载translation（3维向量）和rotation（3x3矩阵），组合成4x4变换矩阵
+ */
 Eigen::Matrix4f loadExtrinsic(ros::NodeHandle& nh, const std::string& key) {
   Eigen::Vector3f translation = Eigen::Vector3f::Zero();
   Eigen::Matrix3f rotation = Eigen::Matrix3f::Identity();
@@ -191,6 +318,12 @@ Eigen::Matrix4f loadExtrinsic(ros::NodeHandle& nh, const std::string& key) {
   return transform;
 }
 
+/**
+ * @brief 移除点云中的无效点（NaN）
+ * @param input 输入点云
+ * @return CloudPtr 过滤后的点云指针
+ * @details 使用PCL的removeNaNFromPointCloud函数清理包含NaN坐标值的点
+ */
 CloudPtr removeInvalid(const CloudConstPtr& input) {
   CloudPtr output(new CloudT());
   if (!input) {
@@ -203,42 +336,96 @@ CloudPtr removeInvalid(const CloudConstPtr& input) {
 
 }  // namespace
 
+/**
+ * @class GlobalMatcherNode
+ * @brief 全局匹配定位节点主类
+ *
+ * 该类实现了完整的全局匹配定位流程：
+ * 1. 参数加载与ROS话题初始化
+ * 2. 全局地图加载与管理（支持多地图分段）
+ * 3. 接收实时点云、里程计、初始位姿等输入
+ * 4. 定时执行点云配准（粗细两级策略）
+ * 5. 质量评估与门控判断
+ * 6. 发布匹配结果、可视化数据和状态信息
+ */
 class GlobalMatcherNode {
  public:
+  /**
+   * @brief 构造函数
+   * @param nh 公共节点句柄（用于创建全局话题）
+   * @param pnh 私有节点句柄（用于加载参数）
+   *
+   * 初始化流程：
+   * 1. 从参数服务器加载所有配置参数
+   * 2. 创建发布器和订阅器
+   * 3. 加载默认地图并发布
+   * 4. 创建匹配定时器和地图发布定时器
+   */
   GlobalMatcherNode(ros::NodeHandle& nh, ros::NodeHandle& pnh)
       : nh_(nh), pnh_(pnh) {
     loadParams();
 
+    // 创建结果发布器：发布全局匹配结果（位姿、质量指标等）
     result_pub_ = nh_.advertise<deeplumin_msgs::GlobalMatchResult>(result_topic_, 10);
+    // 创建状态发布器：发布定位状态（正常/警告/失败）
     status_pub_ = nh_.advertise<deeplumin_msgs::LocalizationStatus>(status_topic_, 10);
+    // 创建初始点云发布器（用于可视化初始猜测变换后的点云）
     source_initial_pub_ = nh_.advertise<sensor_msgs::PointCloud2>(source_initial_scan_topic_, 2);
+    // 创建对齐点云发布器（用于可视化配准后的点云）
     aligned_pub_ = nh_.advertise<sensor_msgs::PointCloud2>(aligned_scan_topic_, 2);
+    // 创建子地图发布器（用于可视化当前使用的局部地图）
     submap_pub_ = nh_.advertise<sensor_msgs::PointCloud2>(target_submap_topic_, 2);
+    // 创建初始猜测位姿发布器
     initial_guess_pub_ = nh_.advertise<geometry_msgs::PoseStamped>(initial_guess_topic_, 2);
+    // 创建轨迹发布器
     path_pub_ = nh_.advertise<nav_msgs::Path>(path_topic_, 2);
+    // 创建全局地图发布器（latch=true，新订阅者能收到最后一条消息）
     global_map_pub_ = nh_.advertise<sensor_msgs::PointCloud2>(global_map_topic_, 1, true);
 
+    // 订阅实时点云（source cloud）
     source_sub_ = nh_.subscribe(source_cloud_topic_, 2, &GlobalMatcherNode::onSourceCloud, this);
+    // 订阅跟踪初始位姿（融合里程计）
     tracking_initial_sub_ = nh_.subscribe(initial_pose_topic_, 5, &GlobalMatcherNode::onTrackingInitialOdom, this);
+    // 订阅源里程计（用于确定点云坐标系）
     source_odom_sub_ = nh_.subscribe(source_odom_topic_, 20, &GlobalMatcherNode::onSourceOdom, this);
+    // 订阅引导初始位姿（来自mapping_manager等）
     bootstrap_initial_pose_sub_ = nh_.subscribe(bootstrap_initial_pose_topic_, 2, &GlobalMatcherNode::onBootstrapInitialPose, this);
+    // 订阅手动初始位姿（RViz中的2D Pose Estimate）
     manual_initial_pose_sub_ = nh_.subscribe(manual_initial_pose_topic_, 2, &GlobalMatcherNode::onManualInitialPose, this);
+    // 订阅加载地图命令
     load_map_command_sub_ = nh_.subscribe(load_map_command_topic_, 2, &GlobalMatcherNode::onLoadMapCommand, this);
+    // 订阅切换地图分段命令
     set_map_segment_command_sub_ = nh_.subscribe(set_map_segment_command_topic_, 2, &GlobalMatcherNode::onSetMapSegmentCommand, this);
 
+    // 加载默认地图，失败则发布失败状态
     if (!loadMap()) {
       publishStatus(deeplumin_msgs::LocalizationStatus::LEVEL_FAILURE, 0.0, "failed to load map");
     } else {
       publishGlobalMap();
     }
 
+    // 创建匹配定时器：按match_rate频率执行点云配准
     match_timer_ = nh_.createTimer(ros::Duration(1.0 / std::max(0.1, match_rate_)),
                                   &GlobalMatcherNode::onMatchTimer, this);
+    // 创建地图发布定时器：按global_map_publish_period周期发布全局地图
     map_timer_ = nh_.createTimer(ros::Duration(std::max(0.5, global_map_publish_period_)),
                                 &GlobalMatcherNode::onMapTimer, this);
   }
 
  private:
+  /**
+   * @brief 从ROS参数服务器加载所有配置参数
+   *
+   * 参数分组：
+   * - frames/*: 坐标系名称配置
+   * - topics/*: ROS话题名称配置
+   * - map/*: 地图加载和发布参数
+   * - runtime/*: 运行时行为控制参数
+   * - crop/*: 局部地图裁剪范围参数
+   * - matcher/*: 点云配准算法参数
+   * - gate/*: 匹配质量门控阈值参数
+   * - result/*: 结果输出格式参数
+   */
   void loadParams() {
     pnh_.param<std::string>("frames/map", map_frame_, "map");
     pnh_.param<std::string>("frames/odom", odom_frame_, "odom");
@@ -309,6 +496,11 @@ class GlobalMatcherNode {
     pnh_.param<int>("matcher/fast_gicp_num_threads", fast_gicp_num_threads_, 2);
     pnh_.param<int>("matcher/fast_gicp_correspondence_randomness", fast_gicp_correspondence_randomness_, 20);
 
+    // [vgicp]
+    pnh_.param<double>("matcher/vgicp_voxel_resolution", vgicp_voxel_resolution_, 1.0);
+    pnh_.param<int>("matcher/vgicp_num_neighbors", vgicp_num_neighbors_, 20);
+    pnh_.param<int>("matcher/vgicp_num_threads", vgicp_num_threads_, 4);
+
     pnh_.param<int>("gate/min_source_points", min_source_points_, 200);
     pnh_.param<int>("gate/min_target_points", min_target_points_, 1000);
     pnh_.param<double>("gate/max_fitness_score", max_fitness_score_, 1.0);
@@ -327,6 +519,14 @@ class GlobalMatcherNode {
     }
   }
 
+  /**
+   * @brief 加载默认地图和配置的所有地图分段
+   * @return bool 加载成功返回true
+   *
+   * 加载流程：
+   * 1. 加载默认地图分段并激活
+   * 2. 加载配置文件中指定的其他地图分段（不激活）
+   */
   bool loadMap() {
     if (!loadMapSegment(default_map_id_, pcd_path_, true)) {
       return false;
@@ -335,18 +535,35 @@ class GlobalMatcherNode {
     return true;
   }
 
+  /**
+   * @brief 加载单个地图分段
+   * @param map_id 地图分段标识
+   * @param pcd_path PCD文件路径
+   * @param activate 是否立即激活该地图
+   * @return bool 加载成功返回true
+   *
+   * 加载流程：
+   * 1. 从PCD文件读取原始点云
+   * 2. 移除无效点（NaN）
+   * 3. 根据map_load_voxel_leaf_进行降采样（0表示不降采样）
+   * 4. 生成可视化用降采样地图
+   * 5. 存入map_segments_映射表
+   * 6. 如需要则激活该地图
+   */
   bool loadMapSegment(const std::string& map_id, const std::string& pcd_path, bool activate) {
     if (map_id.empty() || pcd_path.empty()) {
       ROS_ERROR("[global_matcher] map_id/path is empty, map_id='%s' path='%s'", map_id.c_str(), pcd_path.c_str());
       return false;
     }
 
+    // 从PCD文件加载原始点云
     CloudPtr raw(new CloudT());
     const int ret = pcl::io::loadPCDFile<PointT>(pcd_path, *raw);
     if (ret != 0 || raw->empty()) {
       ROS_ERROR("[global_matcher] failed to load pcd map_id=%s path=%s", map_id.c_str(), pcd_path.c_str());
       return false;
     }
+    // 移除包含NaN坐标值的无效点
     raw = removeInvalid(raw);
     if (!raw || raw->empty()) {
       ROS_ERROR("[global_matcher] pcd map is empty after invalid-point filtering, map_id=%s path=%s",
@@ -355,9 +572,10 @@ class GlobalMatcherNode {
     }
 
     const std::size_t raw_points = raw->size();
+    // 根据配置进行加载时降采样（减少内存占用和后续处理时间）
     CloudPtr loaded = raw;
     if (map_load_voxel_leaf_ > 1e-4) {
-      loaded = downsample(raw, map_load_voxel_leaf_);
+      loaded = downsample(raw, map_load_voxel_leaf_);  // 0.4
       if (!loaded || loaded->empty()) {
         ROS_ERROR("[global_matcher] pcd map is empty after load voxel leaf=%.3f, map_id=%s path=%s",
                   map_load_voxel_leaf_, map_id.c_str(), pcd_path.c_str());
@@ -365,13 +583,31 @@ class GlobalMatcherNode {
       }
     }
 
+    // 构建地图分段结构体
     MapSegment segment;
     segment.id = map_id;
     segment.path = pcd_path;
-    segment.full_map = loaded;
+    segment.full_map = loaded;  // 用于配准的完整（或降采样后）地图
+    // 生成可视化用地图（进一步降采样以减少网络传输）
     segment.viz_map = downsample(segment.full_map, global_map_publish_voxel_leaf_);
     if (!segment.viz_map || segment.viz_map->empty()) {
       segment.viz_map = segment.full_map;
+    }
+
+    // VGICP 模式：对整张地图预构建体素化协方差地图（一次性成本），
+    // 配准时直接复用，避免每帧对 target 重复降采样/协方差估计/体素化。
+    if (matcher_type_ == "vgicp") {
+      const ros::Time vg_start = ros::Time::now();
+      // segment.vgicp_coarse = buildVgicpVoxelMap(segment.full_map, vgicp_voxel_resolution_ * coarse_scale_);
+      // segment.vgicp_fine = buildVgicpVoxelMap(segment.full_map, vgicp_voxel_resolution_ * fine_scale_);
+      segment.vgicp_coarse = nullptr;
+      segment.vgicp_fine = nullptr;
+      ROS_INFO("[global_matcher] built VGICP voxel maps id=%s coarse=%.2fm/%zu voxels fine=%.2fm/%zu voxels cost=%.2fs",
+               map_id.c_str(), vgicp_voxel_resolution_ * coarse_scale_,
+               segment.vgicp_coarse ? segment.vgicp_coarse->size() : 0,
+               vgicp_voxel_resolution_ * fine_scale_,
+               segment.vgicp_fine ? segment.vgicp_fine->size() : 0,
+               (ros::Time::now() - vg_start).toSec());
     }
 
     {
@@ -391,6 +627,14 @@ class GlobalMatcherNode {
     return true;
   }
 
+  /**
+   * @brief 从参数服务器加载配置的额外地图分段
+   *
+   * 期望参数格式为数组，每个元素为包含id和path字段的结构体：
+   * map/segments:
+   *   - {id: "segment1", path: "/path/to/map1.pcd"}
+   *   - {id: "segment2", path: "/path/to/map2.pcd"}
+   */
   void loadConfiguredMapSegments() {
     XmlRpc::XmlRpcValue segments;
     if (!pnh_.getParam("map/segments", segments)) {
@@ -409,6 +653,7 @@ class GlobalMatcherNode {
       }
       const std::string id = static_cast<std::string>(segments[i]["id"]);
       const std::string path = static_cast<std::string>(segments[i]["path"]);
+      // 跳过已加载的默认地图
       if (id == default_map_id_ && path == pcd_path_) {
         continue;
       }
@@ -416,18 +661,40 @@ class GlobalMatcherNode {
     }
   }
 
+  /**
+   * @brief 激活指定地图分段（必须在已持有mutex锁的情况下调用）
+   * @param map_id 要激活的地图分段标识
+   * @return bool 激活成功返回true
+   *
+   * 激活操作：
+   * 1. 设置active_map_id_
+   * 2. 更新global_map_和global_map_viz_指针
+   * 3. 清空历史轨迹（path_）
+   */
   bool activateSegmentLocked(const std::string& map_id) {
     auto it = map_segments_.find(map_id);
     if (it == map_segments_.end() || !it->second.full_map || it->second.full_map->empty()) {
       return false;
     }
     active_map_id_ = map_id;
-    global_map_ = it->second.full_map;
-    global_map_viz_ = it->second.viz_map;
-    path_.poses.clear();
+    global_map_ = it->second.full_map;      // 用于配准的全局地图
+    global_map_viz_ = it->second.viz_map;   // 用于可视化的降采样地图
+    vgicp_coarse_voxelmap_ = it->second.vgicp_coarse;  // VGICP 预构建体素地图随地图分段切换
+    vgicp_fine_voxelmap_ = it->second.vgicp_fine;
+    path_.poses.clear();  // 切换地图后清空历史轨迹
     return true;
   }
 
+  /**
+   * @brief 实时点云数据回调函数
+   * @param msg PointCloud2消息指针
+   *
+   * 处理流程：
+   * 1. 将ROS消息转换为PCL点云格式
+   * 2. 移除无效点（NaN）
+   * 3. 记录接收时间戳
+   * 4. 在mutex保护下更新latest_source_等成员变量
+   */
   void onSourceCloud(const sensor_msgs::PointCloud2::ConstPtr& msg) {
     CloudPtr cloud(new CloudT());
     pcl::fromROSMsg(*msg, *cloud);
@@ -435,11 +702,19 @@ class GlobalMatcherNode {
     const ros::Time receive_stamp = ros::Time::now();
     std::lock_guard<std::mutex> lock(mutex_);
     latest_source_ = cloud;
+    // 如果消息时间戳为0，使用接收时间作为备用
     latest_source_stamp_ = msg->header.stamp.isZero() ? receive_stamp : msg->header.stamp;
     latest_source_receive_stamp_ = receive_stamp;
     latest_source_frame_ = msg->header.frame_id;
   }
 
+  /**
+   * @brief 跟踪初始位姿回调（融合里程计）
+   * @param msg Odometry消息指针，包含map->base_link的位姿
+   *
+   * 该回调接收来自simple_odom_fusion的融合位姿，
+   * 在TRACKING模式下作为配准的初始猜测。
+   */
   void onTrackingInitialOdom(const nav_msgs::Odometry::ConstPtr& msg) {
     std::lock_guard<std::mutex> lock(mutex_);
     latest_tracking_map_base_ = poseToMatrix(msg->pose.pose);
@@ -447,6 +722,13 @@ class GlobalMatcherNode {
     have_tracking_map_base_ = true;
   }
 
+  /**
+   * @brief 源里程计回调
+   * @param msg Odometry消息指针，通常包含odom->base_link的位姿
+   *
+   * 用于确定source cloud的坐标系，以及构建map->source的初始猜测。
+   * 当source_cloud_is_odom_frame_=true时，source cloud处于odom坐标系。
+   */
   void onSourceOdom(const nav_msgs::Odometry::ConstPtr& msg) {
     std::lock_guard<std::mutex> lock(mutex_);
     latest_source_base_ = poseToMatrix(msg->pose.pose);
@@ -454,6 +736,13 @@ class GlobalMatcherNode {
     have_source_odom_ = true;
   }
 
+  /**
+   * @brief 引导初始位姿回调
+   * @param msg PoseWithCovarianceStamped消息指针
+   *
+   * 接收来自mapping_manager或其他节点的初始位姿，
+   * 在BOOTSTRAP模式下使用。通常用于系统启动时的初始定位。
+   */
   void onBootstrapInitialPose(const geometry_msgs::PoseWithCovarianceStamped::ConstPtr& msg) {
     std::lock_guard<std::mutex> lock(mutex_);
     latest_bootstrap_map_base_ = poseToMatrix(msg->pose.pose);
@@ -462,6 +751,13 @@ class GlobalMatcherNode {
     ROS_INFO("[global_matcher] received bootstrap initial pose from %s", bootstrap_initial_pose_topic_.c_str());
   }
 
+  /**
+   * @brief 手动初始位姿回调（RViz 2D Pose Estimate）
+   * @param msg PoseWithCovarianceStamped消息指针
+   *
+   * 接收RViz中手动设置的初始位姿，需要use_manual_initial_pose_参数为true才生效。
+   * 通常用于调试或在丢失定位时手动重新初始化。
+   */
   void onManualInitialPose(const geometry_msgs::PoseWithCovarianceStamped::ConstPtr& msg) {
     if (!use_manual_initial_pose_) {
       return;
@@ -473,6 +769,13 @@ class GlobalMatcherNode {
     ROS_INFO("[global_matcher] received manual initial pose from %s", manual_initial_pose_topic_.c_str());
   }
 
+  /**
+   * @brief 加载地图命令回调
+   * @param msg String消息，格式为 "map_id|pcd_path|activate_flag"
+   *
+   * 通过ROS话题动态加载新的地图分段。
+   * 例如："segment1|/path/to/map.pcd|true"
+   */
   void onLoadMapCommand(const std_msgs::String::ConstPtr& msg) {
     std::vector<std::string> fields;
     std::stringstream ss(msg->data);
@@ -506,6 +809,12 @@ class GlobalMatcherNode {
                   activate ? "loaded and activated map segment" : "loaded map segment");
   }
 
+  /**
+   * @brief 切换地图分段命令回调
+   * @param msg String消息，内容为要激活的地图分段id
+   *
+   * 切换到已加载的地图分段，切换后会清空历史轨迹并发布新地图。
+   */
   void onSetMapSegmentCommand(const std_msgs::String::ConstPtr& msg) {
     bool ok = false;
     {
@@ -522,6 +831,13 @@ class GlobalMatcherNode {
     publishStatus(deeplumin_msgs::LocalizationStatus::LEVEL_NORMAL, 1.0, "activated map segment");
   }
 
+  /**
+   * @brief 匹配定时器回调
+   * @param event 定时器事件（未使用）
+   *
+   * 按配置的match_rate频率触发，检查auto_match_标志后执行runMatch()。
+   * 如果auto_match_为false，发布警告状态。
+   */
   void onMatchTimer(const ros::TimerEvent&) {
     if (!auto_match_) {
       publishStatus(deeplumin_msgs::LocalizationStatus::LEVEL_WARNING, 0.0, "auto_match disabled");
@@ -530,12 +846,43 @@ class GlobalMatcherNode {
     runMatch();
   }
 
+  /**
+   * @brief 地图发布定时器回调
+   * @param event 定时器事件（未使用）
+   *
+   * 在viz_test_mode_模式下定期发布全局地图，用于可视化调试。
+   */
   void onMapTimer(const ros::TimerEvent&) {
     if (viz_test_mode_) {
       publishGlobalMap();
     }
   }
 
+  /**
+   * @brief 执行完整的全局匹配流程（核心函数）
+   *
+   * 匹配流程：
+   * 1. 从mutex保护的数据成员中复制最新数据（避免长时间持有锁）
+   * 2. 检查地图和点云数据的有效性
+   * 3. 检查点云时效性（cloud_age < max_cloud_age_）
+   * 4. 检查点云点数是否满足最小要求
+   * 5. 选择初始位姿猜测（跟踪/引导/默认）
+   * 6. 发布初始猜测位姿和变换后的初始点云（用于可视化）
+   * 7. 从全局地图裁剪局部子地图
+   * 8. 执行粗粒度配准（coarse_scale_）
+   * 9. 执行细粒度配准（fine_scale_），以粗配准结果为初始值
+   * 10. 计算内点指标（inlier ratio, RMSE）
+   * 11. 计算与初始猜测的偏差（translation, yaw）
+   * 12. 质量门控判断（fitness score, inlier ratio, RMSE, delta translation/yaw）
+   * 13. 更新失败计数和运行模式
+   * 14. 发布对齐点云、匹配结果、轨迹和状态
+   *
+   * 坐标系说明：
+   * - map: 地图坐标系（全局固定坐标系）
+   * - odom: 里程计坐标系（局部固定坐标系）
+   * - base: 车体坐标系（base_link）
+   * - source: 点云数据的坐标系（可能是odom或lidar）
+   */
   void runMatch() {
     CloudPtr source;
     ros::Time source_stamp;
@@ -608,6 +955,12 @@ class GlobalMatcherNode {
     publishSourceInitial(source_stamp, source, initial_map_source);
 
     CloudPtr target_submap = cropMap(initial_map_base_for_crop);
+
+    const ros::Time start = ros::Time::now();
+    // 把target_submap构建体素地图
+    vgicp_coarse_map = buildVgicpVoxelMap(target_submap, vgicp_voxel_resolution_ * coarse_scale_);
+    vgicp_fine_map = buildVgicpVoxelMap(target_submap, vgicp_voxel_resolution_ * fine_scale_);
+
     if (!target_submap || static_cast<int>(target_submap->size()) < min_target_points_) {
       publishSubmap(source_stamp, target_submap);
       publishRejected(source_stamp, "target submap points below threshold");
@@ -615,15 +968,35 @@ class GlobalMatcherNode {
     }
     publishSubmap(source_stamp, target_submap);
 
-    const ros::Time start = ros::Time::now();
+    // const ros::Time start = ros::Time::now();
     double coarse_fitness = std::numeric_limits<double>::infinity();
     bool coarse_converged = false;
-    const Eigen::Matrix4f coarse = registerAtScale(source, target_submap, initial_map_source,
-                                                   coarse_scale_, &coarse_fitness, &coarse_converged);
+    Eigen::Matrix4f coarse = Eigen::Matrix4f::Identity();
+    Eigen::Matrix4f final_map_source = Eigen::Matrix4f::Identity();
     double fine_fitness = std::numeric_limits<double>::infinity();
     bool fine_converged = false;
-    const Eigen::Matrix4f final_map_source = registerAtScale(source, target_submap, coarse,
-                                                            fine_scale_, &fine_fitness, &fine_converged);
+
+    if (matcher_type_ == "vgicp") {
+      coarse = registerAtScale(source, target_submap, initial_map_source,
+                                                   coarse_scale_, &coarse_fitness, &coarse_converged);
+      final_map_source = registerAtScale(source, target_submap, coarse,
+                                                   fine_scale_, &fine_fitness, &fine_converged);
+    } else {
+      coarse = registerAtScale(source, target_submap, initial_map_source,
+                                                   coarse_scale_, &coarse_fitness, &coarse_converged);
+      // fine_fitness = std::numeric_limits<double>::infinity();
+      // bool fine_converged = false;
+      final_map_source = registerAtScale(source, target_submap, coarse,
+                                                              fine_scale_, &fine_fitness, &fine_converged);
+    }
+
+
+    // const Eigen::Matrix4f coarse = registerAtScale(source, target_submap, initial_map_source,
+    //                                                coarse_scale_, &coarse_fitness, &coarse_converged);
+    // double fine_fitness = std::numeric_limits<double>::infinity();
+    // bool fine_converged = false;
+    // const Eigen::Matrix4f final_map_source = registerAtScale(source, target_submap, coarse,
+    //                                                         fine_scale_, &fine_fitness, &fine_converged);
     const double elapsed_ms = (ros::Time::now() - start).toSec() * 1000.0;
     const Eigen::Matrix4f final_map_base = final_map_source * source_base;
 
@@ -631,11 +1004,17 @@ class GlobalMatcherNode {
     const double delta_translation = translationDiff(final_map_base, initial_map_base_for_crop);
     const double delta_yaw = std::abs(yawDiff(final_map_base, initial_map_base_for_crop));
 
+    // VGICP 不提供 PCL 式 fitness：用 computeInliers 统计的平均最近邻距离填充日志/消息字段，
+    // 成功判定以内点率 / RMSE 为主（fitness 门限仅对 icp/gicp/fast_gicp 生效）。
+    if (matcher_type_ == "vgicp" && std::isfinite(metrics.fitness)) {
+      fine_fitness = metrics.fitness;
+    }
+
     // Gate by match quality only. hasConverged() means the last ICP step was small enough,
     // not that the alignment is bad — treat it as a soft warning.
     std::string reject_reason;
     bool success = true;
-    if (fine_fitness > max_fitness_score_) {
+    if (matcher_type_ != "vgicp" && fine_fitness > max_fitness_score_) {
       reject_reason = "fitness score above threshold";
       success = false;
     } else if (metrics.inlier_ratio < min_inlier_ratio_) {
@@ -678,6 +1057,30 @@ class GlobalMatcherNode {
              delta_yaw * 180.0 / kPi, elapsed_ms, reject_reason.c_str());
   }
 
+  /**
+   * @brief 选择初始位姿猜测
+   * @param source_frame 点云消息的坐标系id
+   * @param have_tracking 是否有跟踪位姿可用
+   * @param tracking_map_base 跟踪模式下的map->base变换
+   * @param have_bootstrap 是否有引导位姿可用
+   * @param bootstrap_map_base 引导模式下的map->base变换
+   * @param have_source_odom 是否有源里程计可用
+   * @param source_odom_base 源里程计的odom->base变换
+   * @return InitialGuess 初始猜测结构体
+   *
+   * 选择优先级（从高到低）：
+   * 1. TRACKING模式：使用融合里程计（fused_odom）作为初始猜测
+   *    - 即使之前匹配失败也继续使用，避免跳回地图原点
+   * 2. BOOTSTRAP模式：
+   *    a. 使用引导初始位姿（来自mapping_manager）
+   *    b. 使用默认初始位姿（参数配置）
+   *    c. 使用单位矩阵（identity，原点）
+   *
+   * 坐标系转换：
+   * - 如果source cloud在odom坐标系：map_source = map_base * odom_base^{-1}
+   * - 如果source cloud在lidar坐标系：map_source = map_base * base_to_lidar
+   * - 否则假设source cloud在base坐标系：map_source = map_base
+   */
   InitialGuess selectInitialGuess(const std::string& source_frame,
                                   bool have_tracking,
                                   const Eigen::Matrix4f& tracking_map_base,
@@ -685,6 +1088,7 @@ class GlobalMatcherNode {
                                   const Eigen::Matrix4f& bootstrap_map_base,
                                   bool have_source_odom,
                                   const Eigen::Matrix4f& source_odom_base) const {
+    // 确定source cloud的坐标系模式
     const std::string source_mode = (source_cloud_frame_ == "auto") ? source_frame : source_cloud_frame_;
     const bool source_is_odom = source_cloud_is_odom_frame_ || source_mode == "odom" || source_mode == odom_frame_;
     const bool source_is_lidar = source_mode == "lidar" || source_mode == lidar_frame_;
@@ -693,14 +1097,16 @@ class GlobalMatcherNode {
     bool have_map_base = false;
     Eigen::Matrix4f map_base = Eigen::Matrix4f::Identity();
 
+    // 优先级1：跟踪模式（使用融合里程计）
     if (use_tracking_initial_pose_ && have_tracking) {
-      // Online tracking must keep using fused_odom even after failed matches. A failed GM frame is
-      // a rejected observation, not a reason to jump the search window back to map origin/default.
+      // 在线跟踪即使在匹配失败后也要继续使用fused_odom。
+      // 失败的匹配帧只是被拒绝的观测，不是跳回地图原点/默认位置的理由。
       guess.mode = MatcherRunMode::TRACKING;
       guess.reason = "tracking:fused_odom";
       map_base = tracking_map_base;
       have_map_base = true;
     } else {
+      // 优先级2：引导模式（BOOTSTRAP）
       guess.mode = MatcherRunMode::BOOTSTRAP;
       if (use_bootstrap_initial_pose_ && have_bootstrap) {
         guess.reason = "bootstrap:initial_pose";
@@ -717,6 +1123,7 @@ class GlobalMatcherNode {
       }
     }
 
+    // 没有任何初始位姿可用
     if (!have_map_base) {
       guess.mode = MatcherRunMode::BOOTSTRAP;
       guess.reason = "bootstrap:no_initial_available";
@@ -724,7 +1131,9 @@ class GlobalMatcherNode {
       return guess;
     }
 
+    // 根据source cloud的坐标系计算map->source变换
     if (source_is_odom) {
+      // source cloud在odom坐标系：需要source_odom来构建map->source
       guess.source_base = have_source_odom ? source_odom_base : Eigen::Matrix4f::Identity();
       guess.map_source = have_source_odom ? map_base * source_odom_base.inverse() : map_base;
       if (!have_source_odom) {
@@ -732,18 +1141,28 @@ class GlobalMatcherNode {
                           guess.reason.c_str());
       }
     } else if (source_is_lidar) {
+      // source cloud在lidar坐标系：使用base_to_lidar外参
       guess.source_base = base_to_lidar_.inverse();
       guess.map_source = map_base * base_to_lidar_;
     } else {
+      // 假设source cloud在base坐标系
       guess.source_base = Eigen::Matrix4f::Identity();
       guess.map_source = map_base;
     }
+    // 验证：map_base应该等于map_source * source_base
     guess.map_base = guess.map_source * guess.source_base;
     ROS_INFO_THROTTLE(2.0, "[global_matcher] mode=%s initial=%s source_frame=%s failures=%d",
                       modeToString(guess.mode).c_str(), guess.reason.c_str(), source_mode.c_str(), consecutive_failures_);
     return guess;
   }
 
+  /**
+   * @brief 根据匹配结果更新运行模式
+   * @param success 本次匹配是否成功通过质量门控
+   *
+   * 成功时重置连续失败计数，失败时增加计数。
+   * 连续失败次数会影响初始猜测的选择策略。
+   */
   void updateModeAfterMatch(bool success) {
     if (success) {
       consecutive_failures_ = 0;
@@ -752,19 +1171,67 @@ class GlobalMatcherNode {
     ++consecutive_failures_;
   }
 
+  /**
+   * @brief 从全局地图中裁剪局部子地图
+   * @param map_base 当前估计的map->base变换（用于确定裁剪中心）
+   * @return CloudPtr 裁剪后的局部点云指针
+   *
+   * 使用PCL的CropBox滤波器，以base_link位置为中心，
+   * 按配置的crop_forward/backward/left/right/up/down范围裁剪。
+   * 注意：CropBox的坐标系是在map_base处，所以需要传入map_base的逆变换。
+   */
   CloudPtr cropMap(const Eigen::Matrix4f& map_base) const {
     CloudPtr cropped(new CloudT());
     pcl::CropBox<PointT> crop;
     crop.setInputCloud(global_map_);
-    crop.setMin(Eigen::Vector4f(static_cast<float>(-crop_backward_),
-                                static_cast<float>(-crop_right_),
-                                static_cast<float>(-crop_down_), 1.0f));
-    crop.setMax(Eigen::Vector4f(static_cast<float>(crop_forward_),
-                                static_cast<float>(crop_left_),
-                                static_cast<float>(crop_up_), 1.0f));
+    // 设置裁剪框范围（以base_link为中心的车辆坐标系）
+    crop.setMin(Eigen::Vector4f(static_cast<float>(-crop_backward_),   // 后方
+                                static_cast<float>(-crop_right_),      // 右侧
+                                static_cast<float>(-crop_down_),       // 下方
+                                1.0f));
+    crop.setMax(Eigen::Vector4f(static_cast<float>(crop_forward_),     // 前方
+                                static_cast<float>(crop_left_),        // 左侧
+                                static_cast<float>(crop_up_),          // 上方
+                                1.0f));
+    // 将裁剪框变换到地图坐标系（使用map_base的逆）
     crop.setTransform(Eigen::Affine3f(map_base.inverse()));
     crop.filter(*cropped);
     return cropped;
+  }
+
+  /**
+   * @brief 将 PCL 点云转换为 small_gicp::PointCloud
+   */
+  small_gicp::PointCloud::Ptr toSmallGicpCloud(const CloudConstPtr& cloud) const {
+    std::vector<Eigen::Vector4f> pts;
+    if (cloud) {
+      pts.reserve(cloud->size());
+      for (const auto& p : cloud->points) {
+        if (!std::isfinite(p.x) || !std::isfinite(p.y) || !std::isfinite(p.z)) continue;
+        pts.emplace_back(p.x, p.y, p.z, 1.0f);
+      }
+    }
+    return std::make_shared<small_gicp::PointCloud>(pts);
+  }
+
+  /**
+   * @brief 对整张地图构建 VGICP 体素化协方差地图（一次性预处理）
+   * @param cloud            地图点云（已按 load_voxel_leaf 降采样）
+   * @param voxel_resolution 体素分辨率
+   */
+  small_gicp::GaussianVoxelMap::Ptr buildVgicpVoxelMap(const CloudConstPtr& cloud, double voxel_resolution) const {
+    if (!cloud || cloud->empty() || voxel_resolution <= 1e-4) {
+      return nullptr;
+    }
+    auto pc = toSmallGicpCloud(cloud);
+    if (!pc || pc->size() < 4) {
+      return nullptr;
+    }
+    small_gicp::estimate_covariances_omp(*pc, vgicp_num_neighbors_, vgicp_num_threads_);
+    auto voxelmap = std::make_shared<small_gicp::GaussianVoxelMap>(voxel_resolution);
+    voxelmap->set_search_offsets(27);
+    voxelmap->insert(*pc);
+    return voxelmap;
   }
 
   Eigen::Matrix4f registerAtScale(const CloudConstPtr& source,
@@ -773,12 +1240,17 @@ class GlobalMatcherNode {
                                   double scale,
                                   double* fitness,
                                   bool* converged) const {
-    const double source_leaf = std::max(0.01, source_voxel_leaf_ * scale);
-    const double target_leaf = std::max(0.01, target_voxel_leaf_ * scale);
+    const double source_leaf = std::max(0.01, source_voxel_leaf_);
+    const double target_leaf = std::max(0.01, target_voxel_leaf_ * 1);
     CloudPtr source_filtered = downsample(source, source_leaf);
-    CloudPtr target_filtered = downsample(target, target_leaf);
+    // VGICP：target 使用整张地图的预构建体素地图，无需每帧降采样/体素化 target
+    CloudPtr target_filtered;
+    if (matcher_type_ != "vgicp") {
+      target_filtered = downsample(target, target_leaf);
+    }
+    // target_filtered = downsample(target, target_leaf);
 
-    if (source_filtered->size() < 4 || target_filtered->size() < 4) {
+    if (source_filtered->size() < 4 || (matcher_type_ != "vgicp" && (!target_filtered || target_filtered->size() < 4))) {
       if (fitness) *fitness = std::numeric_limits<double>::infinity();
       if (converged) *converged = false;
       return initial_guess;
@@ -812,6 +1284,42 @@ class GlobalMatcherNode {
       has_converged = gicp.hasConverged();
       score = gicp.getFitnessScore();
       transform = gicp.getFinalTransformation();
+    } else if (matcher_type_ == "vgicp") {
+      // target 为整张地图的预构建体素地图（coarse/fine 两个分辨率）。
+      // IncrementalVoxelMap 的最近邻搜索只查询变换后点所在 voxel 的邻近体素，
+      // 因此以初始位姿作为初值后，对应点搜索被天然限制在初始位姿附近区域，
+      // 无需遍历全图，也无需每帧重新体素化 target。
+      // small_gicp::GaussianVoxelMap::Ptr voxelmap =
+      //     (std::abs(scale - coarse_scale_) < 1e-6) ? vgicp_coarse_voxelmap_ : vgicp_fine_voxelmap_;
+      small_gicp::GaussianVoxelMap::Ptr voxelmap =
+          (std::abs(scale - coarse_scale_) < 1e-6) ? vgicp_coarse_map : vgicp_fine_map;
+      // small_gicp::GaussianVoxelMap::Ptr voxelmap = vgicp_fine_map;
+
+      auto source_pc = toSmallGicpCloud(source_filtered);
+      if (!voxelmap || voxelmap->size() < 4 || !source_pc || source_pc->size() < 4) {
+        if (fitness) *fitness = std::numeric_limits<double>::infinity();
+        if (converged) *converged = false;
+        return initial_guess;
+      }
+
+      // source 协方差（VGICP 因子依赖 source 点协方差）
+      small_gicp::estimate_covariances_omp(*source_pc, vgicp_num_neighbors_, vgicp_num_threads_);
+
+      // 配准：target=预构建体素地图，target_tree=voxelmap 本身
+      small_gicp::Registration<small_gicp::GICPFactor, small_gicp::ParallelReductionOMP> reg;
+      reg.reduction.num_threads = vgicp_num_threads_;
+      reg.rejector.max_dist_sq = (max_correspondence_distance_ * scale) * (max_correspondence_distance_ * scale);
+      reg.criteria.translation_eps = transformation_epsilon_;
+      reg.criteria.rotation_eps = transformation_epsilon_;
+      reg.optimizer.max_iterations = max_iterations_;
+
+      Eigen::Isometry3d init = Eigen::Isometry3d::Identity();
+      init.matrix() = initial_guess.cast<double>();
+      auto result = reg.align(*voxelmap, *source_pc, *voxelmap, init);
+
+      transform = result.T_target_source.matrix().cast<float>();
+      has_converged = result.converged;
+      // VGICP 无 PCL 式 fitness：score 保持 inf，日志/消息用 computeInliers 的平均最近邻距离（见 runMatch）
     } else {
       fast_gicp::FastGICP<PointT, PointT> gicp;
       gicp.setNumThreads(std::max(1, fast_gicp_num_threads_));
@@ -849,20 +1357,26 @@ class GlobalMatcherNode {
     std::vector<int> indices(1);
     std::vector<float> sq_distances(1);
     const double threshold_sq = threshold * threshold;
-    double sum_sq = 0.0;
+    double sum_sq = 0.0;       // 内点距离平方和（RMSE 用）
+    double sum_all_sq = 0.0;   // 全部对应点距离平方和（fitness 用，PCL 语义）
 
     for (const auto& pt : transformed->points) {
       if (!std::isfinite(pt.x) || !std::isfinite(pt.y) || !std::isfinite(pt.z)) {
         continue;
       }
+      if (kdtree.nearestKSearch(pt, 1, indices, sq_distances) <= 0) {
+        continue;
+      }
       ++metrics.total_points;
-      if (kdtree.nearestKSearch(pt, 1, indices, sq_distances) > 0 && sq_distances[0] <= threshold_sq) {
+      sum_all_sq += sq_distances[0];
+      if (sq_distances[0] <= threshold_sq) {
         ++metrics.inlier_count;
         sum_sq += sq_distances[0];
       }
     }
     if (metrics.total_points > 0) {
       metrics.inlier_ratio = static_cast<double>(metrics.inlier_count) / metrics.total_points;
+      metrics.fitness = sum_all_sq / metrics.total_points;
     }
     if (metrics.inlier_count > 0) {
       metrics.inlier_rmse = std::sqrt(sum_sq / metrics.inlier_count);
@@ -1106,6 +1620,14 @@ class GlobalMatcherNode {
   double max_correspondence_distance_ = 2.0;
   int fast_gicp_num_threads_ = 2;
   int fast_gicp_correspondence_randomness_ = 20;
+
+  // [vgicp]
+  double vgicp_voxel_resolution_ = 1.0;
+  int vgicp_num_neighbors_ = 20;
+  int vgicp_num_threads_ = 4;
+  small_gicp::GaussianVoxelMap::Ptr vgicp_coarse_voxelmap_;  ///< 当前激活地图的 VGICP 粗体素地图
+  small_gicp::GaussianVoxelMap::Ptr vgicp_fine_voxelmap_;    ///< 当前激活地图的 VGICP 细体素地图
+
   int min_source_points_ = 200;
   int min_target_points_ = 1000;
   double max_fitness_score_ = 1.0;

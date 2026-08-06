@@ -3,6 +3,21 @@
 namespace mapping_manager_ros {
 namespace {
 
+std::vector<std::string> splitTopics(const std::string& s) {
+  std::vector<std::string> out;
+  std::string current;
+  for (const char c : s) {
+    if (c == ',') {
+      if (!current.empty()) out.push_back(current);
+      current.clear();
+    } else {
+      current.push_back(c);
+    }
+  }
+  if (!current.empty()) out.push_back(current);
+  return out;
+}
+
 mapping_manager::MappingState stateFromString(const std::string& state) {
   if (state == "CHECKING_ENV") return mapping_manager::MappingState::CHECKING_ENV;
   if (state == "READY") return mapping_manager::MappingState::READY;
@@ -47,6 +62,9 @@ mapping_manager::ManagerConfig loadConfig(ros::NodeHandle& pnh) {
   pnh.param<std::string>("defaults/output_root", cfg.defaults.output_root, cfg.defaults.output_root);
   pnh.param<std::string>("defaults/bag_output_dir", cfg.defaults.bag_output_dir,
                          cfg.defaults.bag_output_dir);
+  std::string bag_topics;
+  pnh.param<std::string>("defaults/bag_topics", bag_topics, "");
+  if (!bag_topics.empty()) cfg.defaults.bag_topics = splitTopics(bag_topics);
 
   pnh.param<bool>("backend/enabled", cfg.backend.enabled, cfg.backend.enabled);
   pnh.param<std::string>("backend/start_service", cfg.backend.start_service, cfg.backend.start_service);

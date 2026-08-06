@@ -42,7 +42,7 @@ slam:
     startup_valid_frames: 20
 
   faster_lio:
-    scan_rate: 5
+    scan_rate: 10
     use_vel: false
     use_gnss_attitude: false
     can_vel_diff_thresh_kmh: 2.0
@@ -51,8 +51,8 @@ slam:
     attitude_diff_thresh_deg: 2.0
     attitude_correction_gain: 0.7
     preprocess:
-      lidar_type: 4
-      scan_line: 16
+      lidar_type: 2
+      scan_line: 32
       blind: 1.0
       time_scale: 1.0
       point_filter_num: 2
@@ -65,10 +65,11 @@ slam:
       det_range: 120.0
       extrinsic_est_en: false
       # [NEW][parking_bag_adaptation] Placeholder extrinsic. Replace with calibrated LiDAR->IMU if available.
-      extrinsic_T: [-0.13, 0.0, -1.03]
+      # extrinsic_T: [-0.13, 0.0, -1.03]
+      extrinsic_T: [0.27255, -0.00053, 0.17954]
       extrinsic_R: [1.0, 0.0, 0.0,
-                    0.0, -1.0, 0.0,
-                    0.0, 0.0, -1.0]
+                    0.0, 1.0, 0.0,
+                    0.0, 0.0, 1.0]
     ivox:
       grid_resolution: 0.5
       nearby_type: 18
@@ -82,7 +83,7 @@ slam:
 keyframe:
   distance_thresh: 1.0
   rotation_thresh_rad: 0.0
-  time_thresh_sec: 5.0
+  time_thresh_sec: 2.0
   min_points: 50
 
 map_saver:
@@ -97,7 +98,7 @@ map_saver:
   keyframe_dir_name: "keyframes"
 
 loop_closure:
-  enable: false
+  enable: true
   type: "fastlio2_sam_lc"
   search_radius: 15.0
   min_index_gap: 5

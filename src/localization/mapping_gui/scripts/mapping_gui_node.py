@@ -68,7 +68,7 @@ class MappingGuiNode:
         self.bag_name_var = tk.StringVar(value="mapping")
         self.bag_output_dir_var = tk.StringVar(value="/home/hhy/2004ros/deeplumin_mapping/bag")
         self.bag_topics_var = tk.StringVar(
-            value="/localization/points,/ouster/imu,/mapping/status,/mapping/odom,/mapping/map_points,/mapping/loop_markers"
+            value="/ouster/points,/ouster/imu,/mapping/status,/mapping/loop_markers"
         )
 
         self.state_var = tk.StringVar(value="未知")

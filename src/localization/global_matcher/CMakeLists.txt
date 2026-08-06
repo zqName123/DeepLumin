@@ -1,6 +1,10 @@
 cmake_minimum_required(VERSION 3.0.2)
 project(global_matcher)
 
+set(CMAKE_CXX_STANDARD 17)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+set(CMAKE_CXX_EXTENSIONS OFF)
+
 find_package(deeplumin_cmake REQUIRED)
 
 find_package(catkin REQUIRED COMPONENTS
@@ -13,13 +17,15 @@ find_package(catkin REQUIRED COMPONENTS
   pcl_conversions
   deeplumin_msgs
   fast_gicp
+  small_gicp
 )
 find_package(PCL ${DEEPLUMIN_PCL_VERSION} EXACT REQUIRED)
 find_package(Eigen3 ${DEEPLUMIN_EIGEN_VERSION} EXACT REQUIRED)
+find_package(OpenMP REQUIRED)
 
 catkin_package(
   INCLUDE_DIRS include
-  CATKIN_DEPENDS roscpp std_msgs geometry_msgs sensor_msgs nav_msgs pcl_ros pcl_conversions deeplumin_msgs fast_gicp
+  CATKIN_DEPENDS roscpp std_msgs geometry_msgs sensor_msgs nav_msgs pcl_ros pcl_conversions deeplumin_msgs fast_gicp small_gicp
 )
 
 include_directories(
@@ -31,16 +37,16 @@ include_directories(
 
 add_executable(global_matcher_node src/global_matcher_node.cpp)
 add_dependencies(global_matcher_node ${catkin_EXPORTED_TARGETS})
-target_link_libraries(global_matcher_node ${catkin_LIBRARIES} ${PCL_LIBRARIES})
+target_link_libraries(global_matcher_node ${catkin_LIBRARIES} ${PCL_LIBRARIES} OpenMP::OpenMP_CXX)
 
 add_executable(global_matcher_viz_test_node src/global_matcher_node.cpp)
 target_compile_definitions(global_matcher_viz_test_node PRIVATE GLOBAL_MATCHER_VIZ_TEST)
 add_dependencies(global_matcher_viz_test_node ${catkin_EXPORTED_TARGETS})
-target_link_libraries(global_matcher_viz_test_node ${catkin_LIBRARIES} ${PCL_LIBRARIES})
+target_link_libraries(global_matcher_viz_test_node ${catkin_LIBRARIES} ${PCL_LIBRARIES} OpenMP::OpenMP_CXX)
 
 add_executable(global_matcher_keyframe_test_node src/global_matcher_keyframe_test_node.cpp)
 add_dependencies(global_matcher_keyframe_test_node ${catkin_EXPORTED_TARGETS})
-target_link_libraries(global_matcher_keyframe_test_node ${catkin_LIBRARIES} ${PCL_LIBRARIES})
+target_link_libraries(global_matcher_keyframe_test_node ${catkin_LIBRARIES} ${PCL_LIBRARIES} OpenMP::OpenMP_CXX)
 
 install(TARGETS global_matcher_node global_matcher_viz_test_node global_matcher_keyframe_test_node
   RUNTIME DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION}

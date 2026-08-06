@@ -29,6 +29,8 @@ class ManagerCore {
   void update(double now_sec);
   void updateFromBackend(const MappingStatusData& backend, double now_sec);
   void markFailed(const std::string& reason, double now_sec);
+  void failBagRecording(const std::string& reason, double now_sec);
+  void setRecordBytes(unsigned long long bytes, double now_sec);
 
  private:
   EnvironmentItem makeEnvItem(const std::string& name,

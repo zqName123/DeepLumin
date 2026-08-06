@@ -394,6 +394,8 @@ struct LaserMappingCore::Impl {
     std::deque<PointCloudType::Ptr> lidar_buffer; // 激光雷达数据缓冲区
     std::deque<ImuSamplePtr> imu_buffer;         // IMU 数据缓冲区
 
+    
+
     common::MeasureGroup measures;               // 同步后的测量数据组
 
     // -------------------------------------------------------------------------
@@ -1238,7 +1240,7 @@ bool LaserMappingCore::processOnce() {
     logIkfState("after_ImuProcess", impl_->sync_ok_count, impl_->scan_count, impl_->kf.get_x());
 
     // 步骤 3: 轮速计/GNSS 辅助校正
-    applyYswVelocityAid();
+    // applyYswVelocityAid();
     if (impl_->frame_num < Impl::kObsDiagMaxIekfFrames) {
         logPDiagonal("Align", "after_ImuProcess", impl_->sync_ok_count, impl_->frame_num, impl_->kf);
     }

@@ -288,7 +288,6 @@ StopBagRecordingResponseData ManagerCore::stopBagRecording(const StopBagRecordin
   record_status_.output_valid = true;
   record_status_.message = "录包已保存";
   record_status_.duration_sec = record_start_sec_ > 0.0 ? (now_sec - record_start_sec_) : 0.0;
-  if (record_status_.bytes_written < 1024ULL * 1024ULL) record_status_.bytes_written = 1024ULL * 1024ULL;
   record_status_.stamp = now_sec;
 
   res.accepted = true;
@@ -328,6 +327,21 @@ void ManagerCore::markFailed(const std::string& reason, double now_sec) {
   status_.stamp = now_sec;
 }
 
+void ManagerCore::failBagRecording(const std::string& reason, double now_sec) {
+  std::lock_guard<std::mutex> lock(mutex_);
+  record_status_.state = RecordState::REC_FAILED;
+  record_status_.active = false;
+  record_status_.output_valid = false;
+  record_status_.message = reason;
+  record_status_.stamp = now_sec;
+}
+
+void ManagerCore::setRecordBytes(unsigned long long bytes, double now_sec) {
+  std::lock_guard<std::mutex> lock(mutex_);
+  record_status_.bytes_written = bytes;
+  record_status_.stamp = now_sec;
+}
+
 void ManagerCore::update(double now_sec) {
   std::lock_guard<std::mutex> lock(mutex_);
   if (!initialized_) return;
@@ -338,7 +352,6 @@ void ManagerCore::update(double now_sec) {
   }
   if (record_status_.active && record_start_sec_ > 0.0) {
     record_status_.duration_sec = now_sec - record_start_sec_;
-    record_status_.bytes_written += 4096;
   }
 }
 
