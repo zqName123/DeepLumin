@@ -35,6 +35,12 @@ class KeyframeDatabase {
                                        double radius_gate = 0.0) const;
   CloudPtr cropGlobalMap(const Pose& center) const;
   CloudPtr cropGlobalMap(const Pose& center, double radius) const;
+  /**
+   * @brief global_matcher 风格：按候选位姿朝向裁剪全局地图
+   *        裁剪盒定义在候选局部系：x∈[-backward,forward], y∈[-right,left], z∈[-down,up]
+   */
+  CloudPtr cropOriented(const Pose& center, double forward, double backward, double left,
+                        double right, double down, double up) const;
   CloudPtr buildKeyframeMapAround(const Pose& center, double radius, int max_keyframes) const;
 
  private:

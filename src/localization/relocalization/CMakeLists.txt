@@ -18,16 +18,18 @@ find_package(catkin REQUIRED COMPONENTS
   sensor_msgs
   std_msgs
   std_srvs
+  small_gicp
   visualization_msgs
   deeplumin_msgs
 )
 find_package(PCL ${DEEPLUMIN_PCL_VERSION} EXACT REQUIRED COMPONENTS common io filters registration kdtree)
 find_package(Eigen3 ${DEEPLUMIN_EIGEN_VERSION} EXACT REQUIRED)
+find_package(OpenMP REQUIRED)
 
 catkin_package(
   INCLUDE_DIRS include
   LIBRARIES relocalization_core
-  CATKIN_DEPENDS geometry_msgs pcl_conversions pcl_ros rosbag roscpp sensor_msgs std_msgs std_srvs visualization_msgs deeplumin_msgs
+  CATKIN_DEPENDS geometry_msgs pcl_conversions pcl_ros rosbag roscpp sensor_msgs std_msgs std_srvs small_gicp visualization_msgs deeplumin_msgs
 )
 
 include_directories(
@@ -42,13 +44,16 @@ add_library(relocalization_core
   src/core/common.cpp
   src/core/keyframe_database.cpp
   src/core/relocalization_core.cpp
+  src/descriptor/csc_descriptor.cpp
   src/descriptor/scan_context_descriptor.cpp
   src/matcher/gicp_global_matcher.cpp
+  src/matcher/vgicp_global_matcher.cpp
   src/ros/eval_visualizer.cpp
   src/ros/param_loader.cpp
 )
 add_dependencies(relocalization_core ${catkin_EXPORTED_TARGETS})
-target_link_libraries(relocalization_core ${catkin_LIBRARIES} ${PCL_LIBRARIES})
+target_link_libraries(relocalization_core ${catkin_LIBRARIES} ${PCL_LIBRARIES}
+                      OpenMP::OpenMP_CXX)
 target_include_directories(relocalization_core PUBLIC
   include
   ${catkin_INCLUDE_DIRS}

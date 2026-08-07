@@ -19,17 +19,37 @@
 
 # ---------- 模块抽象选择 ----------
 descriptor:
-  type: "scan_context"
+  type: "csc"   # scan_context csc
 matcher:
-  type: "gicp"
+  type: "vgicp"
+  # ── 以下为移植自 relocalization_framework 的 matcher 级参数（csc/vgicp 使用）──
+  # target 来源：crop=global_matcher 风格全局地图朝向裁剪 | submap=关键帧子图拼接
+  target_source: "crop"
+  crop:
+    forward: 70.0
+    backward: 50.0
+    left: 40.0
+    right: 40.0
+    down: 10.0
+    up: 10.0
+  # 初值 yaw：true=候选位姿 yaw + 描述子 yaw_diff；false=直接用候选位姿 yaw
+  use_descriptor_yaw: true
+  # 相对地面剔除：候选帧局部系 z < ground_remove_rel_z 剔除（斜坡自适应）
+  ground_remove_relative: false
+  ground_remove_rel_z: -1.0
+  # 候选空间门控：只保留 top1 周围 XY 距离 ≤ radius 的候选；radius≤0 关闭
+  candidate_gate_enable: true
+  candidate_gate_radius: 20.0
 
 # ---------- 路径配置 ----------
-keyframe_dir:    "/home/hhy/2004ros/relocalization_ws/key_point_frame"
-pose_file:       "/home/hhy/2004ros/relocalization_ws/optimized_poses_tum.txt"
-global_map_pcd:  "/home/hhy/2004ros/relocalization_ws/global_map_manual_imu.pcd"
+keyframe_dir:    "/home/hhy/2004ros/deeplumin_mapping/建图任务_20260805_061709/keyframes"
+pose_file:       "/home/hhy/2004ros/deeplumin_mapping/建图任务_20260805_061709/trajectory.csv"
+global_map_pcd:  "/home/hhy/2004ros/deeplumin_mapping/建图任务_20260805_061709/map.pcd"
 # ⚠️  与 scan_context.max_radius / preprocess.max_range 对应的库
-scan_context_db: "/home/hhy/2004ros/relocalization_ws/scan_context_submap_db_index8_remove_ceiling.bin"
+#scan_context_db: "/home/hhy/2004ros/relocalization_ws/scan_context_submap_db_index8_remove_ceiling.bin"
+scan_context_db: "/home/hhy/2004ros/relocalization_framework/csc_database_v7.bin"
 output_db:       "/home/hhy/2004ros/relocalization_ws/scan_context_submap_db_index50.bin"
+
 scan_context_submap_db: "/home/hhy/2004ros/relocalization_ws/scan_context_submap_db_50.bin"
 report_csv:      "/home/hhy/2004ros/relocalization_ws/offline_eval_report.csv"
 bag_report_csv:  "/home/hhy/2004ros/relocalization_ws/bag_eval_report.csv"
@@ -73,7 +93,7 @@ extrinsics:
 # key_point_frame 必须与 bag/在线 raw query 使用同一局部坐标约定。
 # yaw_deg 可用于快速测试 0 / 90 / -90 / 180；rotate_xy_y_negx=true 等价于额外 -90deg。
 query_frame:
-  rotate_xy_y_negx: false
+  rotate_xy_y_negx: true
   yaw_deg: 0.0
 
 # ---------- 点云预处理 ----------
@@ -102,6 +122,23 @@ scan_context:
   # Stage-1 ring_key 预过滤保留数量（建议 >= top_k * 3）
   # 0 = 关闭预过滤，对全量条目做完整 SC（调试用）
   ring_key_candidates: 100
+
+# ---------- CSC 描述子（移植自 relocalization_framework，当前 yaml 参数）----------
+# 使用方式：descriptor.type 改为 "csc"，scan_context_db 指向 csc_database_v7.bin，
+#           keyframe_dir/pose_file/global_map_pcd 切到对应数据集（v7 库为 970 帧新关键帧）。
+# 网格参数存于 .bin 头部，加载后自动覆盖此处（与框架行为一致）。
+csc:
+  num_sectors: 60
+  num_height_bins: 16
+  min_height: -1000.0
+  max_height: 15.0
+  num_channels: 4
+  max_radius: 100.0
+  min_range: 3.0
+  ground_threshold: -1000.0
+  channel_weights: [0.6, 0.5, 0.2, 0.3]
+  similarity: "l1"          # l1（论文式）| balanced（逐格归一化+距离带加权）
+  ring_key_candidates: 300
 
 # ---------- Scan Context 子图建库（build_sc_submap_database.launch）----------
 # 子图会被转换到中心关键帧局部坐标系后生成 SC；不要直接用 map 坐标系子图生成 SC。
@@ -143,6 +180,16 @@ gicp:
   z_filter_max: 10.0
   near_ceiling_filter_enable: false
   near_ceiling_radius: 3.0
+
+# ---------- VGICP（small_gicp，移植自 relocalization_framework）----------
+# 使用方式：matcher.type 改为 "vgicp"
+vgicp:
+  voxel_resolution: 0.5
+  num_neighbors: 30
+  num_threads: 8
+  # 两级配准：粗层体素=base*coarse_scale、对应距离=max_corr*coarse_scale；细层 ×fine_scale
+  coarse_scale: 10.0
+  fine_scale: 1.0
 
 
 # ---------- 离线评估可视化（配合 offline_eval_viz.launch / bag_eval_viz.launch）----------

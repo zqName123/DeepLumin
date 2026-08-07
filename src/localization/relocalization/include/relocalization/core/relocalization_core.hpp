@@ -1,5 +1,6 @@
 #pragma once
 
+#include <relocalization/descriptor/csc_descriptor.hpp>
 #include <relocalization/core/keyframe_database.hpp>
 #include <relocalization/interface/i_descriptor.hpp>
 #include <relocalization/interface/i_global_matcher.hpp>
@@ -15,6 +16,7 @@ struct RelocalizationCoreConfig {
   std::string descriptor_db;
   int top_k = 5;
   int ring_key_candidates = 50;
+  CscConfig csc;
   KeyframeDatabaseConfig database;
   GlobalMatcherConfig matcher;
 };
@@ -44,7 +46,8 @@ class RelocalizationCore {
   std::unique_ptr<IGlobalMatcher> matcher_;
 };
 
-std::unique_ptr<IRelocalizationDescriptor> createDescriptor(const std::string& type);
+std::unique_ptr<IRelocalizationDescriptor> createDescriptor(const std::string& type,
+                                                            const CscConfig& csc_config);
 std::unique_ptr<IGlobalMatcher> createGlobalMatcher(const std::string& type,
                                                     const GlobalMatcherConfig& config);
 

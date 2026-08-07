@@ -48,6 +48,21 @@ void loadCommonCoreConfig(ros::NodeHandle& pnh, relocalization::RelocalizationCo
 
   pnh.param<int>("top_k", cfg.top_k, 5);
   pnh.param<int>("scan_context/ring_key_candidates", cfg.ring_key_candidates, 50);
+  // CSC（与 relocalization_framework 当前 yaml 默认值一致；.bin 加载后覆盖网格参数）
+  pnh.param<int>("csc/num_sectors", cfg.csc.num_sectors, 60);
+  pnh.param<int>("csc/num_height_bins", cfg.csc.num_height_bins, 16);
+  pnh.param<double>("csc/min_height", cfg.csc.min_height, -1000.0);
+  pnh.param<double>("csc/max_height", cfg.csc.max_height, 15.0);
+  pnh.param<int>("csc/num_channels", cfg.csc.num_channels, 4);
+  pnh.param<double>("csc/max_radius", cfg.csc.max_radius, 100.0);
+  pnh.param<double>("csc/min_range", cfg.csc.min_range, 3.0);
+  pnh.param<double>("csc/ground_threshold", cfg.csc.ground_threshold, -1000.0);
+  pnh.param<std::string>("csc/similarity", cfg.csc.similarity, "l1");
+  pnh.param<int>("csc/ring_key_candidates", cfg.csc.ring_key_candidates, 300);
+  std::vector<double> csc_weights;
+  if (pnh.getParam("csc/channel_weights", csc_weights)) {
+    cfg.csc.channel_weights = csc_weights;
+  }
 
   pnh.param<std::string>("submap/mode", cfg.database.submap_mode, "radius");
   pnh.param<double>("submap/radius", cfg.database.submap_radius, 50.0);
@@ -72,6 +87,25 @@ void loadCommonCoreConfig(ros::NodeHandle& pnh, relocalization::RelocalizationCo
   pnh.param<double>("gicp/z_filter_max", cfg.matcher.z_filter_max, 1000.0);
   pnh.param<bool>("gicp/near_ceiling_filter_enable", cfg.matcher.near_ceiling_filter_enable, false);
   pnh.param<double>("gicp/near_ceiling_radius", cfg.matcher.near_ceiling_radius, 15.0);
+  // matcher 级（与 relocalization_framework 当前 yaml 一致）
+  pnh.param<std::string>("matcher/target_source", cfg.matcher.target_source, "crop");
+  pnh.param<double>("matcher/crop/forward", cfg.matcher.crop_forward, 70.0);
+  pnh.param<double>("matcher/crop/backward", cfg.matcher.crop_backward, 50.0);
+  pnh.param<double>("matcher/crop/left", cfg.matcher.crop_left, 40.0);
+  pnh.param<double>("matcher/crop/right", cfg.matcher.crop_right, 40.0);
+  pnh.param<double>("matcher/crop/down", cfg.matcher.crop_down, 10.0);
+  pnh.param<double>("matcher/crop/up", cfg.matcher.crop_up, 10.0);
+  pnh.param<bool>("matcher/use_descriptor_yaw", cfg.matcher.use_descriptor_yaw_correction, true);
+  pnh.param<bool>("matcher/ground_remove_relative", cfg.matcher.ground_remove_relative, false);
+  pnh.param<double>("matcher/ground_remove_rel_z", cfg.matcher.ground_remove_rel_z, -1.0);
+  pnh.param<bool>("matcher/candidate_gate_enable", cfg.matcher.candidate_gate_enable, true);
+  pnh.param<double>("matcher/candidate_gate_radius", cfg.matcher.candidate_gate_radius, 20.0);
+  // VGICP（small_gicp）
+  pnh.param<double>("vgicp/voxel_resolution", cfg.matcher.vgicp_voxel_resolution, 0.5);
+  pnh.param<int>("vgicp/num_neighbors", cfg.matcher.vgicp_num_neighbors, 30);
+  pnh.param<int>("vgicp/num_threads", cfg.matcher.vgicp_num_threads, 8);
+  pnh.param<double>("vgicp/coarse_scale", cfg.matcher.vgicp_coarse_scale, 10.0);
+  pnh.param<double>("vgicp/fine_scale", cfg.matcher.vgicp_fine_scale, 1.0);
 }
 
 }  // namespace

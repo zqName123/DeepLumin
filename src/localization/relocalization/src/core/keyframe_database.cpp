@@ -280,6 +280,24 @@ CloudPtr KeyframeDatabase::cropGlobalMap(const Pose& center, double radius) cons
   return cropped;
 }
 
+CloudPtr KeyframeDatabase::cropOriented(const Pose& center, double forward, double backward,
+                                        double left, double right, double down,
+                                        double up) const {
+  CloudPtr cropped(new CloudT);
+  if (!global_map_ || global_map_->empty()) {
+    return cropped;
+  }
+  pcl::CropBox<PointT> crop;
+  crop.setInputCloud(global_map_);
+  crop.setMin(Eigen::Vector4f(static_cast<float>(-backward), static_cast<float>(-right),
+                              static_cast<float>(-down), 1.0f));
+  crop.setMax(Eigen::Vector4f(static_cast<float>(forward), static_cast<float>(left),
+                              static_cast<float>(up), 1.0f));
+  crop.setTransform(Eigen::Affine3f(center.matrix().cast<float>().inverse()));
+  crop.filter(*cropped);
+  return cropped;
+}
+
 /**
  * @brief 将 query 附近关键帧拼接为局部 3D 地图（RViz 背景用）
  *

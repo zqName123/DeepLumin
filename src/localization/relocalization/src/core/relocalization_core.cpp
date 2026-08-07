@@ -1,14 +1,20 @@
 #include <relocalization/core/relocalization_core.hpp>
+#include <relocalization/descriptor/csc_descriptor.hpp>
 #include <relocalization/descriptor/scan_context_descriptor.hpp>
 #include <relocalization/matcher/gicp_global_matcher.hpp>
+#include <relocalization/matcher/vgicp_global_matcher.hpp>
 
 #include <ros/ros.h>
 
 namespace relocalization {
 
-std::unique_ptr<IRelocalizationDescriptor> createDescriptor(const std::string& type) {
+std::unique_ptr<IRelocalizationDescriptor> createDescriptor(const std::string& type,
+                                                            const CscConfig& csc_config) {
   if (type == "scan_context" || type.empty()) {
     return std::unique_ptr<IRelocalizationDescriptor>(new ScanContextDescriptor());
+  }
+  if (type == "csc") {
+    return std::unique_ptr<IRelocalizationDescriptor>(new CscDescriptor(csc_config));
   }
   return nullptr;
 }
@@ -17,6 +23,9 @@ std::unique_ptr<IGlobalMatcher> createGlobalMatcher(const std::string& type,
                                                     const GlobalMatcherConfig& config) {
   if (type == "gicp" || type.empty()) {
     return std::unique_ptr<IGlobalMatcher>(new GicpGlobalMatcher(config));
+  }
+  if (type == "vgicp") {
+    return std::unique_ptr<IGlobalMatcher>(new VgicpGlobalMatcher(config));
   }
   return nullptr;
 }
@@ -28,7 +37,7 @@ bool RelocalizationCore::initialize(const RelocalizationCoreConfig& config) {
     return false;
   }
 
-  descriptor_ = createDescriptor(config_.descriptor_type);
+  descriptor_ = createDescriptor(config_.descriptor_type, config_.csc);
   if (!descriptor_) {
     ROS_ERROR("[relocalization] unsupported descriptor_type: %s", config_.descriptor_type.c_str());
     return false;
@@ -37,7 +46,8 @@ bool RelocalizationCore::initialize(const RelocalizationCoreConfig& config) {
     ROS_ERROR_STREAM("[relocalization] failed to load descriptor database: " << config_.descriptor_db);
     return false;
   }
-  descriptor_->setRingKeyCandidates(config_.ring_key_candidates);
+  descriptor_->setRingKeyCandidates(config_.descriptor_type == "csc" ? config_.csc.ring_key_candidates
+                                                                      : config_.ring_key_candidates);
 
   matcher_ = createGlobalMatcher(config_.matcher_type, config_.matcher);
   if (!matcher_) {

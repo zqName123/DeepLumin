@@ -3,9 +3,9 @@
   <arg name="pcd_path" default="/home/hhy/2004ros/relocalization_ws/global_map_manual_imu.pcd" />
   <arg name="keyframe_dir" default="/home/hhy/2004ros/relocalization_ws/key_point_frame" />
   <arg name="pose_file" default="/home/hhy/2004ros/relocalization_ws/optimized_poses_tum.txt" />
-  <arg name="frame_index" default="300" />
-  <arg name="initial_xyz_noise" default="5.0" />
-  <arg name="initial_yaw_noise_deg" default="30.0" />
+  <arg name="frame_index" default="20" />
+  <arg name="initial_xyz_noise" default="10.0" />
+  <arg name="initial_yaw_noise_deg" default="50.0" />
   <arg name="publish_rate" default="1.0" />
   <arg name="max_fitness_score" default="20.0" />
   <arg name="rviz" default="true" />

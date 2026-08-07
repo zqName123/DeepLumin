@@ -23,6 +23,29 @@ struct GlobalMatcherConfig {
   double z_filter_max = 1000.0;
   bool near_ceiling_filter_enable = false;
   double near_ceiling_radius = 15.0;
+  // 以下字段从 relocalization_framework 移植（默认值与框架当前 yaml 一致）
+  // target 来源："crop"（global_matcher 风格全局地图朝向裁剪）| "submap"（关键帧子图拼接）
+  std::string target_source = "crop";
+  double crop_forward = 70.0;
+  double crop_backward = 50.0;
+  double crop_left = 40.0;
+  double crop_right = 40.0;
+  double crop_down = 10.0;
+  double crop_up = 10.0;
+  // GICP/VGICP 初值 yaw：true=候选位姿 yaw + 描述子 yaw_diff；false=直接用候选位姿 yaw
+  bool use_descriptor_yaw_correction = true;
+  // 相对地面剔除：候选帧局部系 z < ground_remove_rel_z 剔除
+  bool ground_remove_relative = false;
+  double ground_remove_rel_z = -1.0;
+  // 候选空间门控：只保留 top1 周围 XY 距离 ≤ radius 的候选；radius≤0 关闭
+  bool candidate_gate_enable = true;
+  double candidate_gate_radius = 20.0;
+  // VGICP（small_gicp）参数
+  double vgicp_voxel_resolution = 0.5;
+  int vgicp_num_neighbors = 30;
+  int vgicp_num_threads = 8;
+  double vgicp_coarse_scale = 10.0;
+  double vgicp_fine_scale = 1.0;
 };
 
 struct MatchResult {
