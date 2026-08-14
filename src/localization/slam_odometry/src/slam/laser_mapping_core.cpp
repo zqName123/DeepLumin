@@ -968,6 +968,7 @@ bool LaserMappingCore::initialize(const SlamConfig& cfg) {
     odom_.frame_id = "odom";
     local_map_.cloud.reset(new PointCloud());
     current_scan_.cloud.reset(new PointCloud());
+    effect_scan_.cloud.reset(new PointCloud());
     initialized_ = true;
     is_degenerate_ = false;
     degeneracy_factor_ = 0.0;
@@ -1240,7 +1241,7 @@ bool LaserMappingCore::processOnce() {
     logIkfState("after_ImuProcess", impl_->sync_ok_count, impl_->scan_count, impl_->kf.get_x());
 
     // 步骤 3: 轮速计/GNSS 辅助校正
-    // applyYswVelocityAid();
+    applyYswVelocityAid();
     if (impl_->frame_num < Impl::kObsDiagMaxIekfFrames) {
         logPDiagonal("Align", "after_ImuProcess", impl_->sync_ok_count, impl_->frame_num, impl_->kf);
     }
@@ -1350,6 +1351,19 @@ bool LaserMappingCore::processOnce() {
     // 如需发布世界系，由调用方（如 slam_debug_node）自行用 odom 变换。
     current_scan_.timestamp = impl_->lidar_end_time;
     current_scan_.cloud.reset(new PointCloud(*impl_->scan_down_body));
+    // 有效对应点（effect points）：仅保留本帧里程计匹配中通过有效平面对应筛选的点，
+    // 对应 ysw 的 /cloud_registered_effect_world。此处保持 body 系，由节点变换到 odom 系发布。
+    effect_scan_.timestamp = impl_->lidar_end_time;
+    effect_scan_.cloud.reset(new PointCloud());
+    effect_scan_.cloud->reserve(impl_->effect_feat_num);
+    for (const auto& cp : impl_->corr_pts) {
+        PointType pt;
+        pt.x = cp.x();
+        pt.y = cp.y();
+        pt.z = cp.z();
+        pt.intensity = cp[3];  // 点到平面对应的残差（米）
+        effect_scan_.cloud->push_back(pt);
+    }
     // 进行下采样
     // pcl::VoxelGrid<PointI> voxel_grid;
     // impl_->voxel_scan.setInputCloud(impl_->scan_undistort);
@@ -1393,6 +1407,11 @@ TimestampedPointCloud LaserMappingCore::getLocalMap() const {
 TimestampedPointCloud LaserMappingCore::getCurrentScan() const {
     std::lock_guard<std::mutex> lock(mutex_);
     return current_scan_;
+}
+
+TimestampedPointCloud LaserMappingCore::getEffectScan() const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    return effect_scan_;
 }
 
 bool LaserMappingCore::isDegenerate() const {

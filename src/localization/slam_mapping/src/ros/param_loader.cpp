@@ -2,6 +2,8 @@
 
 #include <localization/ros/ros_converters.hpp>
 
+#include <XmlRpcValue.h>
+
 namespace slam_mapping_ros {
 
 slam_mapping::SlamMappingConfig loadConfig(ros::NodeHandle& pnh) {
@@ -64,12 +66,51 @@ slam_mapping::SlamMappingConfig loadConfig(ros::NodeHandle& pnh) {
   pnh.param<double>("loop_closure/loop_pos_noise", cfg.loop_closure.loop_pos_noise, cfg.loop_closure.loop_pos_noise);
   pnh.param<double>("loop_closure/loop_score_floor", cfg.loop_closure.loop_score_floor, cfg.loop_closure.loop_score_floor);
 
+  // [Task GNSS] GNSS 后端优化参数（loop_closure/gnss/*）
+  pnh.param<bool>("loop_closure/gnss/enable", cfg.loop_closure.gnss.enable, cfg.loop_closure.gnss.enable);
+  pnh.param<int>("loop_closure/gnss/min_status", cfg.loop_closure.gnss.min_status, cfg.loop_closure.gnss.min_status);
+  pnh.param<int>("loop_closure/gnss/min_nsv", cfg.loop_closure.gnss.min_nsv, cfg.loop_closure.gnss.min_nsv);
+  pnh.param<double>("loop_closure/gnss/max_age_sec", cfg.loop_closure.gnss.max_age_sec, cfg.loop_closure.gnss.max_age_sec);
+  pnh.param<double>("loop_closure/gnss/min_spacing_m", cfg.loop_closure.gnss.min_spacing_m, cfg.loop_closure.gnss.min_spacing_m);
+  pnh.param<bool>("loop_closure/gnss/use_gps_elevation", cfg.loop_closure.gnss.use_gps_elevation, cfg.loop_closure.gnss.use_gps_elevation);
+  pnh.param<double>("loop_closure/gnss/z_override_sigma", cfg.loop_closure.gnss.z_override_sigma, cfg.loop_closure.gnss.z_override_sigma);
+  pnh.param<double>("loop_closure/gnss/sigma_fixed", cfg.loop_closure.gnss.sigma_fixed, cfg.loop_closure.gnss.sigma_fixed);
+  pnh.param<double>("loop_closure/gnss/sigma_float", cfg.loop_closure.gnss.sigma_float, cfg.loop_closure.gnss.sigma_float);
+  pnh.param<double>("loop_closure/gnss/sigma_unknown", cfg.loop_closure.gnss.sigma_unknown, cfg.loop_closure.gnss.sigma_unknown);
+  pnh.param<double>("loop_closure/gnss/sigma_floor", cfg.loop_closure.gnss.sigma_floor, cfg.loop_closure.gnss.sigma_floor);
+  pnh.param<double>("loop_closure/gnss/robust_delta", cfg.loop_closure.gnss.robust_delta, cfg.loop_closure.gnss.robust_delta);
+  pnh.param<int>("loop_closure/gnss/alignment_frames", cfg.loop_closure.gnss.alignment_frames, cfg.loop_closure.gnss.alignment_frames);
+  pnh.param<double>("loop_closure/gnss/consistency_thresh_m", cfg.loop_closure.gnss.consistency_thresh_m, cfg.loop_closure.gnss.consistency_thresh_m);
+  {
+    std::vector<double> lever_arm;
+    if (pnh.getParam("loop_closure/gnss/lever_arm", lever_arm) && lever_arm.size() == 3) {
+      cfg.loop_closure.gnss.lever_arm << lever_arm[0], lever_arm[1], lever_arm[2];
+    }
+  }
+  {
+    // status_sigma: YAML 二维数组 [[status, sigma], ...]，按车型配置的白名单 + 噪声表
+    XmlRpc::XmlRpcValue value;
+    if (pnh.getParam("loop_closure/gnss/status_sigma", value) &&
+        value.getType() == XmlRpc::XmlRpcValue::TypeArray) {
+      cfg.loop_closure.gnss.status_sigma.clear();
+      for (int i = 0; i < value.size(); ++i) {
+        if (value[i].getType() == XmlRpc::XmlRpcValue::TypeArray && value[i].size() == 2) {
+          const int status = static_cast<int>(value[i][0]);
+          const double sigma = static_cast<double>(value[i][1]);
+          cfg.loop_closure.gnss.status_sigma.emplace_back(status, sigma);
+        }
+      }
+    }
+  }
+
   pnh.param<bool>("visualization/publish_path", cfg.visualization.publish_path, cfg.visualization.publish_path);
   pnh.param<bool>("visualization/publish_keyframes", cfg.visualization.publish_keyframes, cfg.visualization.publish_keyframes);
   pnh.param<bool>("visualization/publish_local_map", cfg.visualization.publish_local_map, cfg.visualization.publish_local_map);
   pnh.param<bool>("visualization/publish_current_scan", cfg.visualization.publish_current_scan, cfg.visualization.publish_current_scan);
   pnh.param<bool>("visualization/publish_accumulated_map_preview", cfg.visualization.publish_accumulated_map_preview, cfg.visualization.publish_accumulated_map_preview);
   pnh.param<bool>("visualization/publish_loop_markers", cfg.visualization.publish_loop_markers, cfg.visualization.publish_loop_markers);
+  pnh.param<bool>("visualization/publish_gnss_markers", cfg.visualization.publish_gnss_markers, cfg.visualization.publish_gnss_markers);
+  pnh.param<bool>("visualization/publish_gnss_edges", cfg.visualization.publish_gnss_edges, cfg.visualization.publish_gnss_edges);
   pnh.param<double>("visualization/accumulated_map_voxel_leaf", cfg.visualization.accumulated_map_voxel_leaf, cfg.visualization.accumulated_map_voxel_leaf);
 
   pnh.param<std::string>("outputs/odom_topic", cfg.outputs.odom_topic, cfg.outputs.odom_topic);
@@ -81,6 +122,8 @@ slam_mapping::SlamMappingConfig loadConfig(ros::NodeHandle& pnh) {
   pnh.param<std::string>("outputs/loop_history_submap_topic", cfg.outputs.loop_history_submap_topic, cfg.outputs.loop_history_submap_topic);
   pnh.param<std::string>("outputs/keyframe_markers_topic", cfg.outputs.keyframe_markers_topic, cfg.outputs.keyframe_markers_topic);
   pnh.param<std::string>("outputs/loop_markers_topic", cfg.outputs.loop_markers_topic, cfg.outputs.loop_markers_topic);
+  pnh.param<std::string>("outputs/gnss_markers_topic", cfg.outputs.gnss_markers_topic, cfg.outputs.gnss_markers_topic);
+  pnh.param<std::string>("outputs/gnss_factor_edges_topic", cfg.outputs.gnss_factor_edges_topic, cfg.outputs.gnss_factor_edges_topic);
   pnh.param<std::string>("outputs/status_topic", cfg.outputs.status_topic, cfg.outputs.status_topic);
 
   cfg.slam_backend = localization_ros::loadSlamConfig(pnh);

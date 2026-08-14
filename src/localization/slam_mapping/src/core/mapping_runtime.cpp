@@ -248,6 +248,18 @@ bool MappingRuntime::save(const SaveRequest& req) {
                                    latest_loop_history_submap_.cloud,
                                    &result);
 
+  // GNSS 启用时，导出 ENU->map 对齐参数，供离线叠加/坐标转换验证
+  if (config_.loop_closure.gnss.enable) {
+    Eigen::Matrix3d rot = Eigen::Matrix3d::Identity();
+    Eigen::Vector3d trans = Eigen::Vector3d::Zero();
+    double lat = 0.0, lon = 0.0, alt = 0.0;
+    if (loop_backend_.gnssMapEnuTransform(&rot, &trans) &&
+        loop_backend_.gnssEnuOrigin(&lat, &lon, &alt)) {
+      map_saver_.saveGnssAlignment(status_.output_dir + "/gnss_alignment.txt",
+                                   rot, trans, lat, lon, alt);
+    }
+  }
+
   // 更新状态
   status_.saving = false;
   status_.output_valid = ok;
@@ -290,6 +302,9 @@ void MappingRuntime::reset() {
   latest_loop_current_submap_ = localization::TimestampedPointCloud();
   latest_loop_history_submap_ = localization::TimestampedPointCloud();
   loop_pairs_.clear();
+
+  // 清空 GNSS 缓冲
+  gnss_buffer_.clear();
 
   // 重置 IMU 预热状态
   first_imu_stamp_ = 0.0;
@@ -445,6 +460,57 @@ void MappingRuntime::feedGnssAttitude(const localization::GnssAttitudeData& gnss
 }
 
 /**
+ * @brief 输入 GNSS 位置观测（后端 GNSS 因子数据源）
+ *
+ * 仅做缓冲，不在此处做坐标转换或可靠性判断；
+ * 与关键帧的时间戳对齐在 handleFrame 中完成。
+ */
+void MappingRuntime::feedGnss(const GnssObservation& gnss) {
+  gnss_buffer_.push_back(gnss);
+  // 缓冲上限保护：GNSS 频率通常 <= 100Hz，5000 条足够覆盖长时间无关键帧场景
+  constexpr std::size_t kMaxGnssBufferSize = 5000;
+  while (gnss_buffer_.size() > kMaxGnssBufferSize) {
+    gnss_buffer_.pop_front();
+  }
+}
+
+/**
+ * @brief 将 GNSS 缓冲中与最新关键帧时间最接近的观测挂载到关键帧
+ *
+ * 对齐规则（与 LIO-SAM 一致）：
+ * 1. 在缓冲中找 |t_gnss - t_kf| 最小的观测；
+ * 2. 仅在时间差 <= max_age_sec 时接受，否则该关键帧不带 GNSS；
+ * 3. 被消费的观测弹出（每个观测最多被一个关键帧使用）；
+ * 4. 清理早于当前关键帧窗口的过期观测。
+ */
+void MappingRuntime::associateGnssToLatestKeyframe() {
+  MappingKeyframe* kf = keyframe_manager_.latestMutable();
+  if (!kf) return;
+
+  const double max_age = config_.loop_closure.gnss.max_age_sec;
+  auto best = gnss_buffer_.end();
+  double best_dt = max_age;
+  for (auto it = gnss_buffer_.begin(); it != gnss_buffer_.end(); ++it) {
+    const double dt = std::abs(it->timestamp - kf->timestamp);
+    if (dt <= best_dt) {
+      best_dt = dt;
+      best = it;
+    }
+  }
+
+  if (best != gnss_buffer_.end()) {
+    kf->gnss = *best;
+    gnss_buffer_.erase(best);
+  }
+
+  // 弹出不会再被未来关键帧匹配到的过期观测
+  while (!gnss_buffer_.empty() &&
+         gnss_buffer_.front().timestamp < kf->timestamp - max_age) {
+    gnss_buffer_.pop_front();
+  }
+}
+
+/**
  * @brief 单次处理流程
  *
  * @return true 处理成功
@@ -507,14 +573,22 @@ bool MappingRuntime::handleFrame(const localization::OdomResult& odom,
   // 尝试添加关键帧
   const bool keyframe_added = keyframe_manager_.add(odom, scan);
 
+  // 启用 GNSS 因子时，将时间对齐的 GNSS 观测挂载到新关键帧
+  if (keyframe_added && config_.loop_closure.gnss.enable) {
+    associateGnssToLatestKeyframe();
+  }
+
   LoopClosureResult loop_result;
 
-  // 若添加关键帧成功且回环检测启用
-  if (keyframe_added && status_.loop_enabled) {
+  // 若添加关键帧成功且回环检测或 GNSS 优化启用
+  if (keyframe_added && (status_.loop_enabled || config_.loop_closure.gnss.enable)) {
     // 调用回环检测后端
     loop_result = loop_backend_.update(&keyframe_manager_.mutableKeyframes());
     loop_pairs_ = loop_result.loop_pairs;
     status_.loop_count = loop_result.loop_count;
+    status_.gnss_factor_count = loop_result.gnss_factor_count;
+    status_.gnss_rejected_count = loop_result.gnss_rejected_count;
+    status_.gnss_aligned = loop_result.gnss_aligned;
 
     // 获取当前子地图
     if (auto current_submap = loop_backend_.latestCurrentSubmap()) {
@@ -607,6 +681,38 @@ std::vector<MappingKeyframe> MappingRuntime::keyframes() const { return keyframe
  * @brief 获取回环对列表
  */
 std::vector<std::pair<int, int>> MappingRuntime::loopPairs() const { return loop_pairs_; }
+
+/**
+ * @brief 获取已添加 GNSS 因子的位置（map 系），供可视化
+ */
+std::vector<Eigen::Vector3d> MappingRuntime::gnssFactorPositions() const {
+  return loop_backend_.gnssFactorPositions();
+}
+
+/**
+ * @brief 获取被门控拒绝的 GNSS 位置（map 系），供可视化
+ */
+std::vector<Eigen::Vector3d> MappingRuntime::gnssRejectedPositions() const {
+  return loop_backend_.gnssRejectedPositions();
+}
+
+std::vector<std::pair<int, Eigen::Vector3d>> MappingRuntime::gnssAcceptedFactors() const {
+  return loop_backend_.gnssAcceptedFactors();
+}
+
+std::vector<std::pair<int, Eigen::Vector3d>> MappingRuntime::gnssRejectedFactors() const {
+  return loop_backend_.gnssRejectedFactors();
+}
+
+bool MappingRuntime::gnssMapEnuTransform(Eigen::Matrix3d* rot,
+                                         Eigen::Vector3d* trans) const {
+  return loop_backend_.gnssMapEnuTransform(rot, trans);
+}
+
+bool MappingRuntime::gnssEnuOrigin(double* lat_deg, double* lon_deg,
+                                   double* alt) const {
+  return loop_backend_.gnssEnuOrigin(lat_deg, lon_deg, alt);
+}
 
 /**
  * @brief 获取当前里程计结果

@@ -3,9 +3,13 @@
 #include "slam_mapping/ros/ros_converters.hpp"
 
 #include <geometry_msgs/Point.h>
+#include <std_msgs/ColorRGBA.h>
 #include <pcl/common/transforms.h>
 #include <pcl/filters/voxel_grid.h>
 #include <pcl_conversions/pcl_conversions.h>
+
+#include <functional>
+#include <unordered_map>
 
 namespace slam_mapping_ros {
 
@@ -32,6 +36,13 @@ void VisualizationPublisher::initialize(ros::NodeHandle& nh,
   map_preview_pub_ = nh.advertise<sensor_msgs::PointCloud2>(topics_.map_preview_topic, 1);
   keyframe_markers_pub_ = nh.advertise<visualization_msgs::MarkerArray>(topics_.keyframe_markers_topic, 10);
   loop_markers_pub_ = nh.advertise<visualization_msgs::MarkerArray>(topics_.loop_markers_topic, 10);
+  if (cfg_.publish_gnss_markers) {
+    gnss_markers_pub_ = nh.advertise<visualization_msgs::MarkerArray>(topics_.gnss_markers_topic, 10);
+  }
+  if (cfg_.publish_gnss_edges) {
+    gnss_factor_edges_pub_ =
+        nh.advertise<visualization_msgs::MarkerArray>(topics_.gnss_factor_edges_topic, 10);
+  }
   status_pub_ = nh.advertise<deeplumin_msgs::MappingStatus>(topics_.status_topic, 10);
 }
 
@@ -205,6 +216,155 @@ void VisualizationPublisher::publishLoopMarkers(const std::vector<std::pair<int,
   array.markers.push_back(nodes);
   array.markers.push_back(edges);
   loop_markers_pub_.publish(array);
+}
+
+/**
+ * @brief 发布 GNSS 因子可视化 marker
+ *
+ * 绿色球 = 已添加的 GNSS 因子；红色球 = 被空间门控（间距/一致性）拒绝的位置。
+ * 仅在 visualize 层生效，不影响优化结果。
+ */
+void VisualizationPublisher::publishGnssMarkers(const std::vector<Eigen::Vector3d>& accepted,
+                                                const std::vector<Eigen::Vector3d>& rejected,
+                                                const std::string& frame_id) {
+  if (!cfg_.publish_gnss_markers || !gnss_markers_pub_) return;
+
+  visualization_msgs::MarkerArray msg;
+  if (accepted.empty() && rejected.empty()) {
+    visualization_msgs::Marker clear;
+    clear.action = visualization_msgs::Marker::DELETEALL;
+    msg.markers.push_back(clear);
+    gnss_markers_pub_.publish(msg);
+    return;
+  }
+
+  auto make_sphere = [&](int id, const Eigen::Vector3d& p, const std::string& ns,
+                         float r, float g, float b) {
+    visualization_msgs::Marker m;
+    m.header.frame_id = frame_id;
+    m.header.stamp = ros::Time::now();
+    m.ns = ns;
+    m.id = id;
+    m.type = visualization_msgs::Marker::SPHERE;
+    m.action = visualization_msgs::Marker::ADD;
+    m.pose.position.x = p.x();
+    m.pose.position.y = p.y();
+    m.pose.position.z = p.z();
+    m.pose.orientation.w = 1.0;
+    m.scale.x = 0.4;
+    m.scale.y = 0.4;
+    m.scale.z = 0.4;
+    m.color.r = r;
+    m.color.g = g;
+    m.color.b = b;
+    m.color.a = 1.0;
+    return m;
+  };
+
+  int id = 0;
+  for (const auto& p : accepted) {
+    msg.markers.push_back(make_sphere(id++, p, "gnss_accepted", 0.1f, 1.0f, 0.1f));
+  }
+  for (const auto& p : rejected) {
+    msg.markers.push_back(make_sphere(id++, p, "gnss_rejected", 1.0f, 0.2f, 0.2f));
+  }
+  gnss_markers_pub_.publish(msg);
+}
+
+/**
+ * @brief 发布 GNSS 球-关键帧残差连线
+ *
+ * 所有已画出的 GNSS 球（绿=已接受因子，红=被拒）都画一条到其对应关键帧当前
+ * pose_map 的线段，线长即当前残差：
+ * - 已接受边按长度着色：<1m 绿、<3m 黄、其余红；
+ * - 被拒边固定品红色（长度从几何上直接可读，用于区分两类边）。
+ */
+void VisualizationPublisher::publishGnssFactorEdges(
+    const std::vector<std::pair<int, Eigen::Vector3d>>& accepted,
+    const std::vector<std::pair<int, Eigen::Vector3d>>& rejected,
+    const std::vector<slam_mapping::MappingKeyframe>& keyframes,
+    const std::string& frame_id) {
+  if (!cfg_.publish_gnss_edges || !gnss_factor_edges_pub_) return;
+
+  visualization_msgs::MarkerArray msg;
+  if (accepted.empty() && rejected.empty()) {
+    visualization_msgs::Marker clear;
+    clear.action = visualization_msgs::Marker::DELETEALL;
+    msg.markers.push_back(clear);
+    gnss_factor_edges_pub_.publish(msg);
+    return;
+  }
+
+  std::unordered_map<int, const slam_mapping::MappingKeyframe*> id_to_kf;
+  id_to_kf.reserve(keyframes.size());
+  for (const auto& kf : keyframes) {
+    id_to_kf[kf.id] = &kf;
+  }
+
+  const auto color_by_len = [](double len) {
+    std_msgs::ColorRGBA c;
+    if (len < 1.0) {
+      c.r = 0.2f; c.g = 1.0f; c.b = 0.2f;
+    } else if (len < 3.0) {
+      c.r = 1.0f; c.g = 1.0f; c.b = 0.2f;
+    } else {
+      c.r = 1.0f; c.g = 0.2f; c.b = 0.2f;
+    }
+    c.a = 1.0f;
+    return c;
+  };
+
+  auto build_lines = [&](const std::vector<std::pair<int, Eigen::Vector3d>>& factors,
+                         const std::string& ns,
+                         const std::function<std_msgs::ColorRGBA(double)>& color_fn,
+                         double width) {
+    visualization_msgs::Marker lines;
+    lines.header.frame_id = frame_id;
+    lines.header.stamp = ros::Time::now();
+    lines.ns = ns;
+    lines.id = 0;
+    lines.type = visualization_msgs::Marker::LINE_LIST;
+    lines.action = visualization_msgs::Marker::ADD;
+    lines.pose.orientation.w = 1.0;
+    lines.scale.x = width;
+    for (const auto& factor : factors) {
+      const auto it = id_to_kf.find(factor.first);
+      if (it == id_to_kf.end()) continue;
+      const Eigen::Vector3d& kf_pos = it->second->pose_map.position;
+      const Eigen::Vector3d& gnss_pos = factor.second;
+      const double len = (kf_pos - gnss_pos).norm();
+      const auto color = color_fn(len);
+      geometry_msgs::Point p1, p2;
+      p1.x = kf_pos.x(); p1.y = kf_pos.y(); p1.z = kf_pos.z();
+      p2.x = gnss_pos.x(); p2.y = gnss_pos.y(); p2.z = gnss_pos.z();
+      lines.points.push_back(p1);
+      lines.points.push_back(p2);
+      lines.colors.push_back(color);
+      lines.colors.push_back(color);
+    }
+    return lines;
+  };
+
+  const std_msgs::ColorRGBA magenta = [] {
+    std_msgs::ColorRGBA c;
+    c.r = 1.0f; c.g = 0.0f; c.b = 1.0f; c.a = 1.0f;
+    return c;
+  }();
+
+  auto accepted_lines = build_lines(accepted, "gnss_accepted_edges", color_by_len, 0.05);
+  if (!accepted_lines.points.empty()) {
+    msg.markers.push_back(accepted_lines);
+  }
+  auto rejected_lines = build_lines(
+      rejected, "gnss_rejected_edges",
+      [&magenta](double) { return magenta; }, 0.03);
+  if (!rejected_lines.points.empty()) {
+    msg.markers.push_back(rejected_lines);
+  }
+
+  if (!msg.markers.empty()) {
+    gnss_factor_edges_pub_.publish(msg);
+  }
 }
 
 void VisualizationPublisher::publishStatus(const slam_mapping::MappingRuntimeStatus& status) {

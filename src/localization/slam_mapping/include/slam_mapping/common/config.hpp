@@ -3,6 +3,8 @@
 #include <localization/common/config.hpp>
 
 #include <string>
+#include <utility>
+#include <vector>
 
 namespace slam_mapping {
 
@@ -46,6 +48,35 @@ struct MapSaverConfig {
   std::string loop_history_submap_filename = "latest_loop_history_submap.pcd";
 };
 
+/**
+ * @brief GNSS 后端优化配置（YAML: loop_closure/gnss/*）
+ *
+ * 仅在 enable=true 时生效；关闭后不影响现有回环/建图流程。
+ * status/nsv 语义取决于设备协议，阈值需按实际 Gpchc 数据确认。
+ *
+ * status_sigma 为按车型配置的 "status -> sigma" 表（白名单 + 噪声）：
+ * - 表非空时，status 必须在表内才会被接受，σ 取表内值；
+ * - 表为空时回退到 min_status + sigma_fixed/float/unknown 分档逻辑。
+ */
+struct GnssOptimizationConfig {
+  bool enable = false;              ///< 是否启用 GNSS 因子
+  int min_status = 4;               ///< 最低 status；低于该值拒绝
+  int min_nsv = 15;                 ///< 最少卫星数；0 表示不检查
+  double max_age_sec = 0.2;         ///< GNSS 与关键帧最大时间差（秒）
+  double min_spacing_m = 5.0;       ///< 相邻 GNSS 因子最小间距（米），抑制冗余约束
+  bool use_gps_elevation = false;   ///< false 时高程不采用 GNSS，改用里程计 z
+  double z_override_sigma = 0.01;   ///< 不使用 GNSS 高程时的 z 噪声（米）
+  double sigma_fixed = 0.3;         ///< 回退档位：高等级 status 位置噪声 σ（米）
+  double sigma_float = 1.5;         ///< 回退档位：中等级 status 位置噪声 σ（米）
+  double sigma_unknown = 3.0;       ///< 回退档位：低等级 status 位置噪声 σ（米）
+  double sigma_floor = 0.2;         ///< 位置噪声下限 σ（米）
+  double robust_delta = 1.0;        ///< Huber 核阈值；<=0 关闭鲁棒核
+  int alignment_frames = 20;        ///< 用于估计 ENU<->map 对齐的关键帧对数
+  double consistency_thresh_m = 10.0;  ///< GNSS 与当前位姿一致性阈值；<=0 关闭
+  localization::Vec3d lever_arm = localization::Vec3d::Zero();  ///< 天线相对 body 平移（米）
+  std::vector<std::pair<int, double>> status_sigma;  ///< status -> σ 表（白名单 + 噪声）
+};
+
 struct LoopClosureConfig {
   bool enable = false;
   std::string type = "fastlio2_sam_lc";
@@ -65,6 +96,7 @@ struct LoopClosureConfig {
   double loop_rot_noise = 0.05;
   double loop_pos_noise = 0.5;
   double loop_score_floor = 0.05;
+  GnssOptimizationConfig gnss;      ///< GNSS 后端优化子配置
 };
 
 struct VisualizationConfig {
@@ -74,6 +106,8 @@ struct VisualizationConfig {
   bool publish_current_scan = true;
   bool publish_accumulated_map_preview = true;
   bool publish_loop_markers = true;
+  bool publish_gnss_markers = true;  ///< 是否发布 GNSS 因子/拒绝点 marker
+  bool publish_gnss_edges = true;    ///< 是否发布 GNSS 因子-关键帧残差连线
   double accumulated_map_voxel_leaf = 0.5;
 };
 
@@ -87,6 +121,8 @@ struct OutputTopicConfig {
   std::string loop_history_submap_topic = "/slam_mapping/loop_history_submap";
   std::string keyframe_markers_topic = "/slam_mapping/keyframes";
   std::string loop_markers_topic = "/slam_mapping/loop_markers";
+  std::string gnss_markers_topic = "/slam_mapping/gnss_markers";
+  std::string gnss_factor_edges_topic = "/slam_mapping/gnss_factor_edges";
   std::string status_topic = "/slam_mapping/status";
 };
 

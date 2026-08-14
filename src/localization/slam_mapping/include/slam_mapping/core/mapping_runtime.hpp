@@ -8,6 +8,7 @@
 
 #include <localization/interface/i_slam_odometry.hpp>
 
+#include <deque>
 #include <memory>
 
 namespace slam_mapping {
@@ -24,12 +25,19 @@ class MappingRuntime {
   void feedLidar(const localization::TimestampedPointCloud& cloud);
   void feedCanVelocity(const localization::CanVelocityData& can);
   void feedGnssAttitude(const localization::GnssAttitudeData& gnss);
+  void feedGnss(const GnssObservation& gnss);
 
   bool processOnce();
 
   MappingRuntimeStatus status() const;
   std::vector<MappingKeyframe> keyframes() const;
   std::vector<std::pair<int, int>> loopPairs() const;
+  std::vector<Eigen::Vector3d> gnssFactorPositions() const;
+  std::vector<Eigen::Vector3d> gnssRejectedPositions() const;
+  std::vector<std::pair<int, Eigen::Vector3d>> gnssAcceptedFactors() const;
+  std::vector<std::pair<int, Eigen::Vector3d>> gnssRejectedFactors() const;
+  bool gnssMapEnuTransform(Eigen::Matrix3d* rot, Eigen::Vector3d* trans) const;
+  bool gnssEnuOrigin(double* lat_deg, double* lon_deg, double* alt) const;
   localization::OdomResult currentOdom() const;
   localization::TimestampedPointCloud currentScan() const;
   localization::TimestampedPointCloud localMap() const;
@@ -46,6 +54,7 @@ class MappingRuntime {
   bool canFeedLidar() const;
   bool warmupReady() const;
   void updateWarmupStatusMessage();
+  void associateGnssToLatestKeyframe();
 
   SlamMappingConfig config_;
   std::shared_ptr<localization::ISlamOdometry> slam_;
@@ -59,6 +68,7 @@ class MappingRuntime {
   localization::TimestampedPointCloud latest_loop_current_submap_;
   localization::TimestampedPointCloud latest_loop_history_submap_;
   std::vector<std::pair<int, int>> loop_pairs_;
+  std::deque<GnssObservation> gnss_buffer_;  ///< GNSS 位置观测缓冲（时间对齐用）
   double first_imu_stamp_ = 0.0;
   double last_imu_stamp_ = 0.0;
   std::uint64_t imu_warmup_samples_ = 0;

@@ -2,6 +2,8 @@
 
 #include <filesystem>
 #include <fstream>
+#include <iomanip>
+#include <cmath>
 
 #include <pcl/common/transforms.h>
 #include <pcl/filters/voxel_grid.h>
@@ -94,6 +96,8 @@ bool MapSaver::saveKeyframePoses(const std::string& path,
                                  const std::vector<MappingKeyframe>& keyframes) const {
   std::ofstream ofs(path);
   if (!ofs.is_open()) return false;
+  // 高精度导出，保证时间戳/位姿可被离线工具准确解析
+  ofs << std::fixed << std::setprecision(9);
   for (const auto& kf : keyframes) {
     const auto& q = kf.pose_map.orientation;
     ofs << kf.id << ',' << kf.timestamp << ',' << kf.pose_map.position.x() << ',' << kf.pose_map.position.y() << ','
@@ -106,6 +110,7 @@ bool MapSaver::saveTrajectory(const std::string& path,
                               const std::vector<MappingKeyframe>& keyframes) const {
   std::ofstream ofs(path);
   if (!ofs.is_open()) return false;
+  ofs << std::fixed << std::setprecision(9);
   for (const auto& kf : keyframes) {
     const auto& q = kf.pose_map.orientation;
     ofs << kf.timestamp << ' ' << kf.pose_map.position.x() << ' ' << kf.pose_map.position.y() << ' '
@@ -131,6 +136,29 @@ bool MapSaver::saveLoopSubmap(const std::string& path,
     return false;
   }
   return savePcd(path, *cloud);
+}
+
+bool MapSaver::saveGnssAlignment(const std::string& path,
+                                 const Eigen::Matrix3d& rot_map_enu,
+                                 const Eigen::Vector3d& trans_map_enu,
+                                 double origin_lat_deg,
+                                 double origin_lon_deg,
+                                 double origin_alt) const {
+  std::ofstream ofs(path);
+  if (!ofs.is_open()) return false;
+  ofs << std::fixed << std::setprecision(9);
+  // 约定：map = R_map_enu * enu + t_map_enu（ENU 以首个可靠观测为原点）
+  const double yaw_deg =
+      std::atan2(rot_map_enu(1, 0), rot_map_enu(0, 0)) * 180.0 / M_PI;
+  ofs << "aligned: 1\n";
+  ofs << "yaw_deg: " << yaw_deg << "\n";
+  ofs << "tx: " << trans_map_enu.x() << "\n";
+  ofs << "ty: " << trans_map_enu.y() << "\n";
+  ofs << "tz: " << trans_map_enu.z() << "\n";
+  ofs << "origin_lat: " << origin_lat_deg << "\n";
+  ofs << "origin_lon: " << origin_lon_deg << "\n";
+  ofs << "origin_alt: " << origin_alt << "\n";
+  return true;
 }
 
 void MapSaver::transformCloud(const localization::PointCloud& in,

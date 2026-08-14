@@ -25,6 +25,7 @@ localization::TimestampedPointCloud fromRos(const sensor_msgs::PointCloud2& msg,
                                             const localization::SlamConfig& cfg);
 localization::CanVelocityData fromRos(const deeplumin_msgs::CanReceiveInfo& msg);
 localization::GnssAttitudeData fromRos(const deeplumin_msgs::Gpchc& msg);
+slam_mapping::GnssObservation fromRosGnss(const deeplumin_msgs::Gpchc& msg);
 
 nav_msgs::Odometry toRosOdom(const localization::OdomResult& odom,
                              const std::string& parent_frame,

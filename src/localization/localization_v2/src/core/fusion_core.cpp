@@ -1,0 +1,69 @@
+#include "localization_v2/core/fusion_core.hpp"
+
+namespace localization_v2 {
+
+void FusionCore::setOdomBase(const Pose3d& odom_base) {
+  if (!isFinite(odom_base.position) || !isFinite(odom_base.orientation)) {
+    return;
+  }
+  odom_base_ = odom_base;
+  odom_base_.orientation.normalize();
+  have_slam_ = true;
+}
+
+bool FusionCore::passesJumpGuard(const Pose3d& candidate_map_odom) const {
+  if (!jump_guard_.enabled || !have_map_odom_) {
+    return true;
+  }
+  return translationDiff(map_odom_, candidate_map_odom) <= jump_guard_.max_translation &&
+         std::abs(yawDiffDeg(map_odom_, candidate_map_odom)) <= jump_guard_.max_yaw_deg;
+}
+
+bool FusionCore::updateFromGlobalMatch(const GlobalMatchUpdate& update) {
+  if (!update.success || !update.has_pose) {
+    return false;
+  }
+
+  Pose3d candidate_map_odom = update.pose;
+  if (update.pose_is_map_base) {
+    // GM 输出 map->base：需要 slam 数据反推 map->odom
+    if (!have_slam_) {
+      return false;
+    }
+    candidate_map_odom = compose(update.pose, inverse(odom_base_));
+  }
+
+  if (!isFinite(candidate_map_odom.position) || !isFinite(candidate_map_odom.orientation)) {
+    return false;
+  }
+
+  if (!passesJumpGuard(candidate_map_odom)) {
+    return false;
+  }
+
+  map_odom_ = candidate_map_odom;
+  map_odom_.orientation.normalize();
+  have_map_odom_ = true;
+  return true;
+}
+
+bool FusionCore::updateMapOdomFromMapBase(const Pose3d& map_base, bool require_slam) {
+  if (!isFinite(map_base.position) || !isFinite(map_base.orientation)) {
+    return false;
+  }
+  if (require_slam && !have_slam_) {
+    return false;
+  }
+
+  // map_odom = map_base ⊕ (odom_base)⁻¹；无 slam 时 odom_base 视为单位变换
+  map_odom_ = have_slam_ ? compose(map_base, inverse(odom_base_)) : map_base;
+  map_odom_.orientation.normalize();
+  have_map_odom_ = true;
+  return true;
+}
+
+Pose3d FusionCore::fusedPose() const {
+  return compose(map_odom_, odom_base_);
+}
+
+}  // namespace localization_v2

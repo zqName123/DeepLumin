@@ -1,0 +1,103 @@
+# =============================================================================
+# slam_odometry_v2 统一配置文件（节点 + faster-lio 算法，单一文件）
+#
+# 结构说明：
+#   localization / sensors / outputs / node  —— 节点层（ROS 参数服务器加载）
+#   common / vel_gnss / preprocess / mapping / 其余顶层键 —— faster-lio 算法层
+#     （核心 InitWithoutROS 直接读取本文件；vel_gnss 同时被节点读取，
+#       作为轮速/GNSS 订阅开关，消除重复配置）
+# =============================================================================
+
+# -------------------- 节点层：坐标系与外参 --------------------
+localization:
+  frames:
+    map: "map"          # 预留（当前未使用，供 slam_mapping_v2 全局地图）
+    odom: "odom"
+    base_link: "base_link"
+    imu: "imu_link"   # 预留（当前未使用，供下游/建图节点）
+    lidar: "lidar_link" # 预留（当前未使用，供下游/建图节点）
+
+  # T_base_sensor：传感器系 -> base_link（仅用于节点输出变换；
+  # faster-lio 内部 LiDAR-IMU 外参在 mapping/extrinsic_* 中配置）
+  extrinsics:
+    base_to_imu:
+      translation: [0.0, 0.0, 0.0]
+      rotation: [1.0, 0.0, 0.0,
+                 0.0, 1.0, 0.0,
+                 0.0, 0.0, 1.0]
+    base_to_lidar:
+      translation: [0.0, 0.0, 0.0]
+      rotation: [1.0, 0.0, 0.0,
+                 0.0, 1.0, 0.0,
+                 0.0, 0.0, 1.0]
+
+# -------------------- 节点层：订阅话题 --------------------
+sensors:
+  imu_topic: "/ouster/imu"
+  lidar_topic: "/ouster/points"
+  wheel_topic: "/can_receive_info"
+  gnss_topic: "/gnss_chc_data"
+
+# -------------------- 节点层：发布话题 --------------------
+outputs:
+  # 与 slam_odometry 当前外接形式（fastlio2）默认一致
+  odom_topic: "/localization/slam_odom"
+  local_map_topic: "/localization/local_map"
+  registered_scan_topic: "/localization/cloud_registered"
+  effect_scan_topic: "/localization/cloud_registered_effect"
+
+# -------------------- 节点层：运行参数 --------------------
+node:
+  publish_tf: true
+  local_map_publish_interval: 10    # local_map 发布间隔（帧），仅在有订阅者时每 N 帧发一次（0=每帧）
+
+  startup:
+    enable_imu_warmup: false   # 与 faster_lio_ws 独立运行一致：不丢弃点云
+    imu_warmup_duration: 1.0
+    min_imu_samples: 20
+
+# =============================================================================
+# faster-lio 算法层（核心 InitWithoutROS 读取同一文件；仅保留实际生效的键，
+# 已剔除 fov_degree / det_range / cube_side_length / feature_extract_enable 等死参数）
+# =============================================================================
+
+common:
+  time_sync_en: false   # 仅当外部时间同步确实不可用时开启
+
+# 轮速/GNSS 辅助：唯一来源（核心 yaml 读取 + 节点订阅开关共用）
+vel_gnss:
+  use_vel: true    # 与 faster_lio_ws ouster64.yaml 对齐：启用 CAN 轮速约束
+  use_gnss_attitude: false
+  can_vel_diff_thresh_kmh: 2.0
+  can_timeout_sec: 0.2
+  gnss_attitude_timeout_sec: 1.0
+  attitude_diff_thresh_deg: 2.0
+  attitude_correction_gain: 0.7
+
+preprocess:
+  lidar_type: 3          # 1: Livox AVIA, 2: Velodyne, 3: Ouster, 4: Hesai, 5: Robosense, 6: Livox(PointCloud2)
+  scan_line: 64
+  blind: 3
+  time_scale: 1e-3
+
+mapping:
+  acc_cov: 0.1
+  gyr_cov: 0.1
+  b_acc_cov: 0.0001
+  b_gyr_cov: 0.0001
+  extrinsic_est_en: false
+  map_trim_radius: 150.0            # iVox 局部地图剔除半径（米）；0=不剔除
+  map_trim_interval_frames: 10      # 每 N 帧执行一次剔除（控制开销）
+  extrinsic_T: [0.0, 0.0, 0.0]
+  extrinsic_R: [0, 1, 0,
+                -1, 0, 0,
+                0, 0, 1]
+
+point_filter_num: 2
+max_iteration: 3
+filter_size_surf: 0.2
+filter_size_map: 0.2
+
+ivox_grid_resolution: 0.5
+ivox_nearby_type: 18     # 6 / 18 / 26
+esti_plane_threshold: 0.1

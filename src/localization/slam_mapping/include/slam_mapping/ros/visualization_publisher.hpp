@@ -32,6 +32,13 @@ class VisualizationPublisher {
   void publishKeyframeMarkers(const std::vector<slam_mapping::MappingKeyframe>& keyframes);
   void publishLoopMarkers(const std::vector<std::pair<int, int>>& loop_pairs,
                           const std::vector<slam_mapping::MappingKeyframe>& keyframes);
+  void publishGnssMarkers(const std::vector<Eigen::Vector3d>& accepted,
+                          const std::vector<Eigen::Vector3d>& rejected,
+                          const std::string& frame_id);
+  void publishGnssFactorEdges(const std::vector<std::pair<int, Eigen::Vector3d>>& accepted,
+                              const std::vector<std::pair<int, Eigen::Vector3d>>& rejected,
+                              const std::vector<slam_mapping::MappingKeyframe>& keyframes,
+                              const std::string& frame_id);
   void publishStatus(const slam_mapping::MappingRuntimeStatus& status);
 
  private:
@@ -47,6 +54,8 @@ class VisualizationPublisher {
   ros::Publisher map_preview_pub_;
   ros::Publisher keyframe_markers_pub_;
   ros::Publisher loop_markers_pub_;
+  ros::Publisher gnss_markers_pub_;
+  ros::Publisher gnss_factor_edges_pub_;
   ros::Publisher status_pub_;
 
   nav_msgs::Path path;

@@ -1,0 +1,32 @@
+<?xml version="1.0"?>
+<package format="2">
+  <name>slam_mapping_v2</name>
+  <version>0.1.0</version>
+  <description>
+    slam_mapping_v2: 基于消息订阅的建图节点。
+    订阅 slam_odometry_v2 发布的 odom / registered_scan，维护全局地图、
+    关键帧管理、GNSS 后端优化、回环检测与 GTSAM 图优化。
+    后端优化与可视化运行在独立线程，不阻塞建图主流程。
+    提供与 mapping_manager 兼容的 start/stop/save/reset/get_status 服务。
+    核心模块（关键帧/回环/GNSS/保存/可视化）复用 slam_mapping。
+  </description>
+  <maintainer email="deeplumin@example.com">DeepLumin Team</maintainer>
+  <license>BSD</license>
+
+  <buildtool_depend>catkin</buildtool_depend>
+
+  <depend>roscpp</depend>
+  <depend>std_msgs</depend>
+  <depend>geometry_msgs</depend>
+  <depend>sensor_msgs</depend>
+  <depend>nav_msgs</depend>
+  <depend>visualization_msgs</depend>
+  <depend>tf2_ros</depend>
+  <depend>pcl_ros</depend>
+  <depend>pcl_conversions</depend>
+  <depend>std_srvs</depend>
+  <depend>deeplumin_msgs</depend>
+
+  <export>
+  </export>
+</package>

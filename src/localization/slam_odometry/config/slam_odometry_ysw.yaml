@@ -113,11 +113,11 @@ map:
   frame_id: odom              # 全局地图的参考坐标系
                               # 地图点云将以此坐标系为参考进行发布
 
-  publish_voxel_leaf: 5.0     # 全局地图体素滤波叶子大小（单位: 米）
+  publish_voxel_leaf: 1.5     # 全局地图体素滤波叶子大小（单位: 米）
                               # 用于降采样以减少数据量
                               # 值越大，地图越稀疏，传输越快
 
-  publish_period: 5.0         # 全局地图发布周期（单位: 秒）
+  publish_period: 10.0         # 全局地图发布周期（单位: 秒）
                               # 控制地图发布的频率，避免过于频繁的网络传输
 
 # =============================================================================
@@ -133,7 +133,7 @@ slam:
   type: "faster_lio"          # SLAM 算法类型
                               # 当前支持: "faster_lio"
 
-  publish_tf: true            # 是否发布 TF 变换
+  publish_tf: false            # 是否发布 TF 变换
                               # true:  发布 map->odom->base_link 的 TF 树
                               # false: 不发布 TF，仅发布 Odometry 消息
 
@@ -189,7 +189,7 @@ slam:
     scan_rate: 10               # 激光雷达扫描频率（单位: Hz）
                                 # Ouster OS1-64 通常为 10Hz 或 20Hz
 
-    use_vel: true               # 是否使用轮速计速度
+    use_vel: false               # 是否使用轮速计速度
                                 # true:  融合轮速计速度约束
                                 # false: 仅使用 IMU 和 LiDAR
 

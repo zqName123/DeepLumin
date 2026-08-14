@@ -24,6 +24,7 @@ public:
     OdomResult getOdometry() const override;
     TimestampedPointCloud getLocalMap() const override;
     TimestampedPointCloud getCurrentScan() const override;
+    TimestampedPointCloud getEffectScan() const override;
     bool isDegenerate() const override;
     double getDegeneracyFactor() const override;
     void reset() override;

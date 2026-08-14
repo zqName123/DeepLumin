@@ -1,0 +1,27 @@
+<launch>
+  <arg name="config" default="$(find global_matcher_v2)/config/global_matcher_v2.yaml" />
+  <arg name="pcd_path" default="/home/hhy/2004ros/relocalization_ws/global_map_manual_imu.pcd" />
+  <arg name="map_dir" default="" />
+  <arg name="map_mode" default="single" />
+  <arg name="source_cloud" default="/localization/cloud_registered_effect" />
+  <arg name="initial_pose" default="/localization/fused_odom" />
+  <arg name="source_odom" default="/localization/slam_odom" />
+  <arg name="rviz" default="false" />
+
+  <node pkg="global_matcher_v2" type="global_matcher_v2_node" name="global_matcher_v2"
+        output="screen">
+    <rosparam file="$(arg config)" command="load" />
+    <param name="map/mode" value="$(arg map_mode)" />
+    <param name="map/pcd_path" value="$(arg pcd_path)" />
+    <param name="map/map_dir" value="$(arg map_dir)" />
+    <param name="topics/source_cloud" value="$(arg source_cloud)" />
+    <param name="topics/initial_pose" value="$(arg initial_pose)" />
+    <param name="topics/source_odom" value="$(arg source_odom)" />
+    <param name="runtime/source_cloud_is_odom_frame" value="true" />
+    <param name="runtime/source_cloud_frame" value="odom" />
+    <param name="result/pose_frame" value="odom" />
+  </node>
+
+  <node if="$(arg rviz)" pkg="rviz" type="rviz" name="global_matcher_v2_rviz"
+        args="-d $(find global_matcher)/rviz/global_matcher_viz.rviz" />
+</launch>

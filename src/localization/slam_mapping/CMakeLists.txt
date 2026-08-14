@@ -42,6 +42,7 @@ add_library(slam_mapping_core
   src/core/map_saver.cpp
   src/core/loop_closure_backend.cpp
   src/core/loop_closure_fastlio2_backend.cpp
+  src/core/gnss_optimizer.cpp
   src/ros/param_loader.cpp
   src/ros/ros_converters.cpp
   src/ros/visualization_publisher.cpp

@@ -19,6 +19,23 @@ enum class RuntimeState {
   FAILED,
 };
 
+/**
+ * @brief GNSS 位置观测（从 deeplumin_msgs/Gpchc 解析，用于后端 GNSS 因子）
+ *
+ * 保存原始经纬高与质量字段，由后端在因子添加前完成可靠性门控和 ENU 转换，
+ * 使运行时只负责"时间戳对齐"，因子逻辑保持解耦。
+ */
+struct GnssObservation {
+  bool valid = false;        ///< 观测是否有效（经纬度非零等基本检查）
+  double timestamp = 0.0;    ///< GNSS 观测时间戳（秒）
+  double latitude = 0.0;     ///< 纬度（度）
+  double longitude = 0.0;    ///< 经度（度）
+  double altitude = 0.0;     ///< 海拔（米）
+  int status = 0;            ///< 设备状态字（fixed/float 语义见设备协议）
+  int nsv = 0;               ///< 参与解算的卫星数
+  double position_std = 0.0; ///< 位置标准差（米）；0 表示由 status 推导
+};
+
 struct MappingKeyframe {
   int id = -1;
   double timestamp = 0.0;
@@ -30,6 +47,7 @@ struct MappingKeyframe {
   bool optimized = false;
   bool loop_closed = false;
   int loop_match_count = 0;
+  GnssObservation gnss;      ///< 与该关键帧时间对齐的 GNSS 观测（默认无效）
 };
 
 struct MappingRuntimeStatus {
@@ -56,6 +74,9 @@ struct MappingRuntimeStatus {
   double last_loop_score = -1.0;
   bool loop_updated_last_frame = false;
   std::uint64_t accumulated_point_count = 0;
+  std::uint64_t gnss_factor_count = 0;    ///< 已添加的 GNSS 因子数
+  std::uint64_t gnss_rejected_count = 0;  ///< 被可靠性门控拒绝的 GNSS 观测数
+  bool gnss_aligned = false;              ///< ENU<->map 对齐是否已完成
   // [Task B] Warmup stats are kept in runtime status for logging and service inspection.
   bool warming_up = false;
   std::uint64_t imu_warmup_samples = 0;
@@ -109,6 +130,9 @@ struct LoopClosureResult {
   int loop_count = 0;
   double latest_score = -1.0;
   std::vector<std::pair<int, int>> loop_pairs;
+  int gnss_factor_count = 0;    ///< 后端本次返回的 GNSS 因子累计数
+  int gnss_rejected_count = 0;  ///< 后端本次返回的被拒 GNSS 观测累计数
+  bool gnss_aligned = false;    ///< ENU<->map 对齐是否已完成
 };
 
 std::string toString(RuntimeState state);

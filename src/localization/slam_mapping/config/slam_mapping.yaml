@@ -127,7 +127,7 @@ slam:
 
 keyframe:
   # 与上一关键帧的平移阈值（米）；超过后允许生成新关键帧
-  distance_thresh: 1.00
+  distance_thresh: 2.00
   # 与上一关键帧的旋转阈值（弧度）；超过后允许生成新关键帧
   rotation_thresh_rad: 0.0
   # 与上一关键帧的时间阈值（秒）；当平移/旋转都不明显时，可用时间强制切关键帧
@@ -175,7 +175,7 @@ loop_closure:
   # 兼容旧配置；若设置了 max_range，则优先使用 max_range 做候选搜索半径
   search_radius: 15.0
   # 当前帧与历史候选之间最小关键帧索引差；过小会把近邻帧误当回环
-  min_index_gap: 10
+  min_index_gap: 20
   # 当前帧和历史候选之间最小时间差（秒）；时间太近的候选会被过滤
   time_thresh_sec: 20.0
   # 两次回环检查之间至少间隔多少个关键帧；值越大，回环线程负担越小，但更晚检测到回环
@@ -201,6 +201,42 @@ loop_closure:
   # 回环评分下限；用于避免特别小的 score 被当成过强约束
   loop_score_floor: 0.05
 
+  # GNSS 后端优化（在 ISAM2 位姿图中加入 GPSFactor）
+  # 本配置基于 bag(2026-07-14-11-17-21) 实测：status 33 为主状态(98.6%)，nsv 字段 95% 为 0
+  gnss:
+    # 是否启用 GNSS 因子；关闭时保持原有建图/回环行为
+    enable: true
+    # 最低 status；低于该值的观测直接拒绝
+    min_status: 33
+    # 最少卫星数；本设备驱动不填充 nsv（95% 为 0），必须设为 0 关闭检查
+    min_nsv: 0
+    # GNSS 与关键帧最大时间差（秒），超出则认为未对齐
+    max_age_sec: 0.02
+    # 相邻 GNSS 因子最小间距（米）；RTK 相邻观测高度相关，过密会过度约束
+    min_spacing_m: 6.0
+    # 是否采用 GNSS 高程；false 时 z 改用里程计当前 z（LIO-SAM useGpsElevation=false）
+    use_gps_elevation: false
+    # 不使用 GNSS 高程时的 z 噪声 σ（米）
+    z_override_sigma: 0.01
+    # status -> σ 配置表（白名单 + 噪声，米）：表内 status 被接受，σ 取表值；
+    # 表外 status 拒绝。换车型只改这张表。本车 status 33 为主状态。
+    status_sigma:
+      - [33, 0.3]
+    # 回退档位：status_sigma 为空或未命中时，按 status 相对 min_status 的等级分档
+    sigma_fixed: 0.3
+    sigma_float: 1.5
+    sigma_unknown: 3.0
+    # 位置噪声下限 σ（米）
+    sigma_floor: 1.0
+    # Huber 核阈值（白化残差单位）；<=0 关闭鲁棒核
+    robust_delta: 1.0
+    # 用于估计 ENU<->map 对齐（yaw+平移）的关键帧对数，估计完成后冻结
+    alignment_frames: 20
+    # GNSS 测量与当前位姿一致性阈值（米）；<=0 关闭
+    consistency_thresh_m: 5.0
+    # GNSS 天线相对 body 的平移（米）；默认 0 表示忽略杠杆臂
+    lever_arm: [0.0, 0.0, 0.0]
+
 visualization:
   # 是否发布优化后路径
   publish_path: true
@@ -214,6 +250,10 @@ visualization:
   publish_accumulated_map_preview: true
   # 是否发布回环边和回环节点 marker
   publish_loop_markers: true
+  # 是否发布 GNSS 因子 marker（绿=已加因子，红=被拒位置）
+  publish_gnss_markers: true
+  # 是否发布 GNSS 因子-关键帧残差连线（<1m 绿、<3m 黄、其余红）
+  publish_gnss_edges: true
   # 全局预览地图的体素滤波分辨率
   accumulated_map_voxel_leaf: 0.7
 
@@ -236,5 +276,9 @@ outputs:
   keyframe_markers_topic: "/slam_mapping/keyframes"
   # 回环 marker 话题
   loop_markers_topic: "/slam_mapping/loop_markers"
+  # GNSS 因子 marker 话题
+  gnss_markers_topic: "/slam_mapping/gnss_markers"
+  # GNSS 因子-关键帧残差连线话题
+  gnss_factor_edges_topic: "/slam_mapping/gnss_factor_edges"
   # 状态话题
   status_topic: "/slam_mapping/status"

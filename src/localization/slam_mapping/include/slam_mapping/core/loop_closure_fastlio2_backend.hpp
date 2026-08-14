@@ -1,6 +1,7 @@
 #pragma once
 
 #include "slam_mapping/core/i_loop_closure_backend.hpp"
+#include "slam_mapping/core/gnss_optimizer.hpp"
 
 #include <gtsam/nonlinear/ISAM2.h>
 #include <gtsam/nonlinear/Values.h>
@@ -21,6 +22,24 @@ class Fastlio2SamLcLoopClosureBackend : public ILoopClosureBackend {
   localization::PointCloudPtr latestCurrentSubmap() const override { return latest_current_submap_; }
   localization::PointCloudPtr latestHistorySubmap() const override { return latest_history_submap_; }
   std::pair<int, int> latestLoopPair() const override { return latest_loop_pair_; }
+  std::vector<Eigen::Vector3d> gnssFactorPositions() const override {
+    return gnss_optimizer_.acceptedPositions();
+  }
+  std::vector<Eigen::Vector3d> gnssRejectedPositions() const override {
+    return gnss_optimizer_.rejectedPositions();
+  }
+  std::vector<std::pair<int, Eigen::Vector3d>> gnssAcceptedFactors() const override {
+    return gnss_optimizer_.acceptedFactors();
+  }
+  std::vector<std::pair<int, Eigen::Vector3d>> gnssRejectedFactors() const override {
+    return gnss_optimizer_.rejectedFactors();
+  }
+  bool gnssMapEnuTransform(Eigen::Matrix3d* rot, Eigen::Vector3d* trans) const override {
+    return gnss_optimizer_.getMapEnuTransform(rot, trans);
+  }
+  bool gnssEnuOrigin(double* lat_deg, double* lon_deg, double* alt) const override {
+    return gnss_optimizer_.getEnuOrigin(lat_deg, lon_deg, alt);
+  }
 
  private:
   localization::PointCloudPtr buildSubmap(const std::vector<MappingKeyframe>& keyframes,
@@ -60,6 +79,7 @@ class Fastlio2SamLcLoopClosureBackend : public ILoopClosureBackend {
   void optimize(std::vector<MappingKeyframe>* keyframes, int latest_index);
 
   LoopClosureConfig config_;
+  GnssOptimizer gnss_optimizer_;  ///< GNSS 后端因子管理器（解耦独立模块）
   int previous_index_ = 0;
   std::shared_ptr<gtsam::ISAM2> isam2_;
   gtsam::NonlinearFactorGraph graph_;

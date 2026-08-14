@@ -35,6 +35,7 @@ OutputTopicsConfig loadOutputTopicsConfig(ros::NodeHandle& nh) {
     nh.param<std::string>("outputs/path_topic", cfg.path, cfg.path);
     nh.param<std::string>("outputs/local_map_topic", cfg.local_map, cfg.local_map);
     nh.param<std::string>("outputs/registered_scan_topic", cfg.registered_scan, cfg.registered_scan);
+    nh.param<std::string>("outputs/effect_scan_topic", cfg.effect_scan, cfg.effect_scan);
     nh.param<std::string>("outputs/global_map_topic", cfg.global_map, cfg.global_map);
     nh.param<std::string>("outputs/loop_markers_topic", cfg.loop_markers, cfg.loop_markers);
     return cfg;

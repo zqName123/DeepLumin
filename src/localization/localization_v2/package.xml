@@ -1,0 +1,30 @@
+<?xml version="1.0"?>
+<package format="2">
+  <name>localization_v2</name>
+  <version>0.1.0</version>
+  <description>
+    localization_v2: 新一代定位融合节点，基于 ysw_style_fusion 的
+    map->odom 修正思路，融合 slam_odometry_v2 局部里程计与 global_matcher
+    全局匹配结果，并预留 relocalization 重定位初始化接口。
+  </description>
+  <maintainer email="deeplumin@example.com">DeepLumin Team</maintainer>
+  <license>BSD</license>
+
+  <buildtool_depend>catkin</buildtool_depend>
+
+  <depend>roscpp</depend>
+  <depend>std_msgs</depend>
+  <depend>geometry_msgs</depend>
+  <depend>nav_msgs</depend>
+  <depend>sensor_msgs</depend>
+  <depend>tf2_ros</depend>
+  <depend>pcl_ros</depend>
+  <depend>pcl_conversions</depend>
+  <depend>deeplumin_msgs</depend>
+  <depend>libpcl-dev</depend>
+  <depend>libeigen3-dev</depend>
+
+  <export>
+    <build_type>catkin</build_type>
+  </export>
+</package>

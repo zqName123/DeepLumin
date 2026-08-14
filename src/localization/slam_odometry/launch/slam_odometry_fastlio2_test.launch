@@ -1,0 +1,35 @@
+<launch>
+  <!-- fastlio2 (faster_lio_ws FAST-LIO2) 里程计独立测试：
+       仅启动 slam_odometry + rosbag 回放，验证 /localization/slam_odom 与
+       /localization/cloud_registered 是否正常输出。 -->
+  <arg name="config" default="$(find slam_odometry)/config/slam_odometry_fastlio2_ysw.yaml" />
+  <arg name="publish_global_map" default="false" />
+  <arg name="pcd_path" default="/home/hhy/2004ros/relocalization_ws/global_map_manual_imu.pcd" />
+  <arg name="global_map_topic" default="/localization/slam_odometry/global_map" />
+  <arg name="global_map_voxel_leaf" default="2.0" />
+  <arg name="global_map_frame" default="odom" />
+
+  <arg name="bag" default="/home/hhy/2004ros/data/2026-07-14-11-17-21.bag" />
+  <arg name="play_bag" default="false" />
+  <arg name="bag_rate" default="1.0" />
+  <arg name="bag_delay" default="2.0" />
+  <arg name="clock" default="false" />
+  <arg name="rviz" default="true" />
+
+  <param name="/use_sim_time" value="$(arg clock)" />
+
+  <node pkg="slam_odometry" type="slam_odometry_node" name="slam_odometry" output="screen">
+    <rosparam command="load" file="$(arg config)" />
+    <param name="map/publish_global_map" value="$(arg publish_global_map)" />
+    <param name="map/pcd_path" value="$(arg pcd_path)" />
+    <param name="map/global_map_topic" value="$(arg global_map_topic)" />
+    <param name="map/frame_id" value="$(arg global_map_frame)" />
+    <param name="map/publish_voxel_leaf" value="$(arg global_map_voxel_leaf)" />
+  </node>
+
+  <node if="$(arg rviz)" pkg="rviz" type="rviz" name="slam_fastlio2_test_rviz"
+        args="-d /home/hhy/2004ros/faster_lio_ws/src/faster-lio/rviz_cfg/loam_livox.rviz" />
+
+  <node if="$(arg play_bag)" pkg="rosbag" type="play" name="slam_fastlio2_test_bag"
+        args="--clock --delay=$(arg bag_delay) -r $(arg bag_rate) $(arg bag)" output="screen" />
+</launch>

@@ -1,0 +1,80 @@
+<launch>
+  <arg name="slam_config" default="$(find slam_odometry)/config/slam_odometry_fastlio2_ysw.yaml" />
+  <arg name="global_matcher_config" default="$(find global_matcher)/config/global_matcher.yaml" />
+
+  <arg name="start_slam" default="true" />
+  <arg name="start_global_matcher" default="true" />
+  <arg name="rviz" default="true" />
+
+  <arg name="play_bag" default="false" />
+  <arg name="bag" default="/home/hhy/2004ros/data/2026-07-14-11-17-21.bag" />
+  <arg name="bag_rate" default="1.0" />
+  <arg name="bag_delay" default="2.0" />
+  <arg name="clock" default="false" />
+
+  <arg name="pcd_path" default="/home/hhy/2004ros/relocalization_ws/global_map_manual_imu.pcd" />
+  <!-- <arg name="pcd_path" default="/home/hhy/2004ros/ysw_loc/src/map/0730map/yuhsuwan2_loc_rot_72.pcd"/> -->
+  <param name="/use_sim_time" value="$(arg clock)" />
+
+  <node if="$(arg start_slam)" pkg="slam_odometry" type="slam_odometry_node"
+        name="slam_odometry" output="screen">
+    <rosparam file="$(arg slam_config)" command="load" />
+    <param name="slam/publish_tf" value="false" />
+    <!-- 全局地图发布已移到 ysw_style_fusion 节点 -->
+    <param name="map/publish_global_map" value="false" />
+  </node>
+
+  <node pkg="simple_odom_fusion" type="ysw_style_fusion_node"
+        name="ysw_style_fusion" output="screen">
+    <param name="frames/map" value="map" />
+    <param name="frames/odom" value="odom" />
+    <param name="frames/base_link" value="base_link" />
+
+    <param name="topics/slam_odom" value="/localization/slam_odom" />
+    <param name="topics/global_matcher_result" value="/localization/global_matcher/result" />
+    <!-- global_matcher 使用 effect 点云匹配，这里同步用 effect 点云做 current_scan_in_map 可视化 -->
+    <param name="topics/source_cloud" value="/localization/cloud_registered_effect" />
+    <param name="topics/fused_odom" value="/localization/ysw_style_odom" />
+    <param name="topics/map_to_odom" value="/localization/ysw_style_map_to_odom" />
+    <param name="topics/fused_pose" value="/localization/ysw_style_pose" />
+    <param name="topics/fused_path" value="/localization/ysw_style_path" />
+    <param name="topics/current_scan_in_map" value="/localization/ysw_style/current_scan_in_map" />
+
+    <param name="runtime/output_rate_hz" value="100.0" />
+    <param name="runtime/publish_tf" value="true" />
+    <param name="runtime/publish_map_to_odom_tf" value="true" />
+    <param name="runtime/publish_odom_to_base_tf" value="true" />
+    <param name="runtime/publish_path" value="true" />
+    <param name="global_matcher/publish_current_scan_in_map" value="true" />
+    <!-- 跳变门限开关：默认 false = 完全 ysw_loc 行为（GM 报 success 即生效，收敛保持是唯一防线）。
+         需要兜底保护时置 true，并用下面两个阈值限制单次修正量（人工 initial pose 不受限制）。 -->
+    <param name="global_matcher/enable_jump_guard" value="false" />
+    <param name="global_matcher/max_jump_translation" value="5.0" />
+    <param name="global_matcher/max_jump_yaw_deg" value="50.0" />
+
+    <param name="map/publish_global_map" value="true" />
+    <param name="map/pcd_path" value="$(arg pcd_path)" />
+    <param name="map/global_map_topic" value="/localization/ysw_style/global_map" />
+    <param name="map/publish_voxel_leaf" value="1.2" />
+    <param name="map/publish_period" value="5.0" />
+  </node>
+
+  <node if="$(arg start_global_matcher)" pkg="global_matcher" type="global_matcher_node"
+        name="global_matcher" output="screen">
+    <rosparam file="$(arg global_matcher_config)" command="load" />
+    <param name="map/pcd_path" value="$(arg pcd_path)" />
+    <!-- 全局匹配输入改为 effect 点云（仅含有效平面对应点，与 ysw_loc 一致） -->
+    <param name="topics/source_cloud" value="/localization/cloud_registered_effect" />
+    <param name="topics/initial_pose" value="/localization/ysw_style_odom" />
+    <param name="topics/source_odom" value="/localization/slam_odom" />
+    <param name="runtime/source_cloud_is_odom_frame" value="true" />
+    <param name="runtime/source_cloud_frame" value="odom" />
+    <param name="result/pose_frame" value="odom" />
+  </node>
+
+  <node if="$(arg rviz)" pkg="rviz" type="rviz" name="ysw_style_fusion_rviz"
+        args="-d $(find simple_odom_fusion)/rviz/ysw.rviz" />
+
+  <node if="$(arg play_bag)" pkg="rosbag" type="play" name="ysw_style_fusion_bag"
+        args="--clock --delay=$(arg bag_delay) -r $(arg bag_rate) $(arg bag)" output="screen" />
+</launch>

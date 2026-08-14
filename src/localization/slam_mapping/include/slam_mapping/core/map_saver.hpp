@@ -29,6 +29,12 @@ class MapSaver {
                      const std::vector<std::pair<int, int>>& loop_pairs) const;
   bool saveLoopSubmap(const std::string& path,
                       const localization::PointCloudPtr& cloud) const;
+  bool saveGnssAlignment(const std::string& path,
+                         const Eigen::Matrix3d& rot_map_enu,
+                         const Eigen::Vector3d& trans_map_enu,
+                         double origin_lat_deg,
+                         double origin_lon_deg,
+                         double origin_alt) const;
 
  private:
   void transformCloud(const localization::PointCloud& in,

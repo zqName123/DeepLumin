@@ -1,0 +1,23 @@
+<launch>
+  <!-- slam_odometry_v2：faster_lio_ws 原始算法的纯里程计节点（-O3 优化编译） -->
+  <arg name="config" default="$(find slam_odometry_v2)/config/slam_odometry_v2.yaml" />
+  <arg name="lio_config" default="$(find slam_odometry_v2)/config/slam_odometry_v2.yaml" />
+
+  <arg name="bag" default="/home/hhy/2004ros/data/2026-07-14-11-17-21.bag" />
+  <arg name="play_bag" default="false" />
+  <arg name="bag_rate" default="1.0" />
+  <arg name="bag_delay" default="2.0" />
+  <arg name="clock" default="false" />
+  <arg name="rviz" default="false" />
+
+  <node pkg="slam_odometry_v2" type="slam_odometry_v2_node" name="slam_odometry_v2" output="screen">
+    <rosparam command="load" file="$(arg config)" />
+    <param name="node/faster_lio_config_yaml" value="$(arg lio_config)" />
+  </node>
+
+  <node if="$(arg rviz)" pkg="rviz" type="rviz" name="slam_odometry_v2_rviz"
+        args="-d $(find pose_fusion)/rviz/pose_fusion_online_test.rviz" />
+
+  <node if="$(arg play_bag)" pkg="rosbag" type="play" name="slam_odometry_v2_bag"
+        args="--clock --delay=$(arg bag_delay) -r $(arg bag_rate) $(arg bag)" output="screen" />
+</launch>

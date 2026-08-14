@@ -22,6 +22,7 @@
 #include <localization/ros/global_map_viz.hpp>          // 全局地图可视化
 #include <localization/ros/sensor_topics.hpp>           // 传感器话题配置
 #include <localization/slam/faster_lio_impl.hpp>        // Faster-LIO 实现
+#include <localization/slam/fastlio2_ws_impl.hpp>     // FAST-LIO2 (faster_lio_ws) 实现
 
 // ROS 标准消息头文件
 #include <nav_msgs/Odometry.h>                          // 里程计消息
@@ -193,8 +194,8 @@ public:
         // -------------------------------------------------------------------------
         // 步骤 4: 创建并初始化 SLAM 实例
         // -------------------------------------------------------------------------
-        // 检查 SLAM 类型，当前仅支持 faster_lio
-        if (slam_config_.type != "faster_lio") {
+        // 检查 SLAM 类型，当前支持 faster_lio / fastlio2
+        if (slam_config_.type != "faster_lio" && slam_config_.type != "fastlio2") {
             ROS_WARN("[slam_odometry] unsupported slam/type '%s', using faster_lio",
                      slam_config_.type.c_str());
         }
@@ -242,17 +243,19 @@ public:
         // 配准后的扫描点云发布
         registered_scan_pub_ =
             nh_.advertise<sensor_msgs::PointCloud2>(output_topics_.registered_scan, 10);
+        // 有效对应点（effect points）发布
+        effect_scan_pub_ = nh_.advertise<sensor_msgs::PointCloud2>(output_topics_.effect_scan, 10);
         // 全局地图可视化（从 PCD 文件加载）
         global_map_viz_.setup(nh_, pnh_, output_topics_.global_map, frames_.map, "slam_odometry");
 
         // -------------------------------------------------------------------------
         // 步骤 7: 输出初始化完成日志
         // -------------------------------------------------------------------------
-        ROS_INFO("[slam_odometry] imu=%s lidar=%s can=%s gnss=%s odom=%s local_map=%s registered_scan=%s",
+        ROS_INFO("[slam_odometry] imu=%s lidar=%s can=%s gnss=%s odom=%s local_map=%s registered_scan=%s effect_scan=%s",
                  sensor_topics_.imu.c_str(), sensor_topics_.lidar.c_str(),
                  sensor_topics_.wheel.c_str(), sensor_topics_.gnss.c_str(),
                  output_topics_.slam.c_str(), output_topics_.local_map.c_str(),
-                 output_topics_.registered_scan.c_str());
+                 output_topics_.registered_scan.c_str(), output_topics_.effect_scan.c_str());
         ROS_INFO("[slam_odometry] use_vel=%s use_gnss_attitude=%s can_diff_thresh=%.3fkm/h can_timeout=%.3fs",
                  slam_config_.use_vel ? "true" : "false",
                  slam_config_.use_gnss_attitude ? "true" : "false",
@@ -296,6 +299,7 @@ public:
         // 获取局部地图和当前扫描
         const auto local_map = slam_->getLocalMap();
         const auto current_scan = slam_->getCurrentScan();
+        const auto effect_scan = slam_->getEffectScan();
 
         // -------------------------------------------------------------------------
         // 发布里程计结果
@@ -320,40 +324,55 @@ public:
         }
 
         // -------------------------------------------------------------------------
-        // 发布配准后的扫描点云（转换到世界坐标系）
+        // 发布配准后的扫描点云 / 有效对应点云（转换到 odom 坐标系）
         // -------------------------------------------------------------------------
-        if (current_scan.cloud && !current_scan.cloud->empty() && odom.valid) {
-            localization::TimestampedPointCloud scan_world;
-            scan_world.timestamp = current_scan.timestamp;
-            scan_world.frame_id = frames_.odom;
-            scan_world.cloud.reset(new localization::PointCloud());
-            scan_world.cloud->reserve(current_scan.cloud->size());
-            
-            // 计算 odom -> base_link 的变换矩阵
-            const Eigen::Matrix4d t_odom_base = odomToMatrix(odom);
-            // 计算 base_link -> lidar 的变换矩阵
-            const Eigen::Matrix4d t_base_lidar = sensorExtrinsicToMatrix(extrinsics_.base_to_lidar);
-            // 计算 odom -> lidar 的完整变换
-            const Eigen::Matrix4d t_odom_lidar = t_odom_base * t_base_lidar;
-            
-            // 提取旋转和平移分量
-            const Eigen::Matrix3d R = t_odom_lidar.block<3, 3>(0, 0);
-            const Eigen::Vector3d t = t_odom_lidar.block<3, 1>(0, 3);
-            
-            // 将点云从 lidar 坐标系转换到 odom 坐标系
-            for (const auto& pt : current_scan.cloud->points) {
-                const Eigen::Vector3d pw = R * Eigen::Vector3d(pt.x, pt.y, pt.z) + t;
-                localization::PointType out = pt;
-                out.x = static_cast<float>(pw.x());
-                out.y = static_cast<float>(pw.y());
-                out.z = static_cast<float>(pw.z());
-                scan_world.cloud->push_back(out);
+        if (odom.valid) {
+            if (current_scan.cloud && !current_scan.cloud->empty()) {
+                publishScanInOdom(odom, current_scan, registered_scan_pub_);
             }
-            registered_scan_pub_.publish(localization_ros::toRosPointCloud(scan_world));
+            if (effect_scan.cloud && !effect_scan.cloud->empty()) {
+                publishScanInOdom(odom, effect_scan, effect_scan_pub_);
+            }
         }
     }
 
 private:
+    /**
+     * @brief 将 body/lidar 系点云变换到 odom 系并发布
+     *
+     * 与 /localization/cloud_registered 使用同一变换链：
+     * T_odom_lidar = T_odom_base * T_base_lidar
+     */
+    void publishScanInOdom(const localization::OdomResult& odom,
+                           const localization::TimestampedPointCloud& scan,
+                           const ros::Publisher& pub) {
+        if (!scan.cloud || scan.cloud->empty()) {
+            return;
+        }
+        localization::TimestampedPointCloud out;
+        out.timestamp = scan.timestamp;
+        out.frame_id = frames_.odom;
+        out.cloud.reset(new localization::PointCloud());
+        out.cloud->reserve(scan.cloud->size());
+
+        // 计算 odom -> lidar 完整变换
+        const Eigen::Matrix4d t_odom_lidar =
+            odomToMatrix(odom) * sensorExtrinsicToMatrix(extrinsics_.base_to_lidar);
+        const Eigen::Matrix3d R = t_odom_lidar.block<3, 3>(0, 0);
+        const Eigen::Vector3d t = t_odom_lidar.block<3, 1>(0, 3);
+
+        // 将点云从 lidar 坐标系转换到 odom 坐标系
+        for (const auto& pt : scan.cloud->points) {
+            const Eigen::Vector3d pw = R * Eigen::Vector3d(pt.x, pt.y, pt.z) + t;
+            localization::PointType out_pt = pt;
+            out_pt.x = static_cast<float>(pw.x());
+            out_pt.y = static_cast<float>(pw.y());
+            out_pt.z = static_cast<float>(pw.z());
+            out.cloud->push_back(out_pt);
+        }
+        pub.publish(localization_ros::toRosPointCloud(out));
+    }
+
     /**
      * @brief 更新 IMU 预热状态
      * 
@@ -536,10 +555,16 @@ private:
      * 3. 更新 IMU 预热状态
      */
     void onImu(const sensor_msgs::Imu::ConstPtr& msg) {
-        if (slam_) {
-            slam_->feedImu(localization_ros::fromRos(*msg));
-            updateImuWarmup(msg->header.stamp.toSec());
+        if (!slam_) {
+            return;
         }
+        if (slam_->preferRawFeed()) {
+            // 原始消息直通：由 SLAM 实现自身的预处理配置处理（如 faster-lio ouster64.yaml）
+            slam_->feedImuRaw(*msg);
+        } else {
+            slam_->feedImu(localization_ros::fromRos(*msg));
+        }
+        updateImuWarmup(msg->header.stamp.toSec());
     }
 
     /**
@@ -571,6 +596,13 @@ private:
             return;
         }
         
+        if (slam_->preferRawFeed()) {
+            // 原始消息直通：与 faster_lio_ws 独立运行一致，
+            // 由 ouster64.yaml 中的预处理配置处理，跳过节点侧二次预处理。
+            slam_->feedLidarRaw(*msg);
+            return;
+        }
+
         // 检测点云时间戳模式
         noPointTimeMode(*msg);
         // 输入点云到 SLAM 算法
@@ -688,6 +720,7 @@ private:
     ros::Publisher odom_pub_;               // 里程计结果发布者
     ros::Publisher local_map_pub_;          // 局部地图发布者
     ros::Publisher registered_scan_pub_;    // 配准扫描点云发布者
+    ros::Publisher effect_scan_pub_;        // 有效对应点云发布者
     tf::TransformBroadcaster tf_broadcaster_; // TF 变换广播器
 };
 
@@ -713,7 +746,10 @@ int main(int argc, char** argv) {
     // 初始化 ROS 节点
     ros::init(argc, argv, "slam_odometry");
     ros::NodeHandle nh;
-    
+
+    // 注册 fastlio2（FAST-LIO2 / faster_lio_ws）工厂类型
+    localization::registerFastLio2Plugin();
+
     // 创建 SLAM 里程计节点
     SlamOdometryNode node(nh);
     

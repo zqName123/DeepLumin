@@ -23,7 +23,14 @@ defaults:
   bag_topics: /localization/points,/ouster/imu,/mapping/status,/mapping/odom,/mapping/map_points,/mapping/loop_markers
 
 backend:
+  # enabled: true
+  # start_service: /slam_mapping/start
+  # stop_service: /slam_mapping/stop
+  # get_status_service: /slam_mapping/get_status
+
+
   enabled: true
-  start_service: /slam_mapping/start
-  stop_service: /slam_mapping/stop
-  get_status_service: /slam_mapping/get_status
+  start_service: /slam_mapping_v2/start
+  stop_service: /slam_mapping_v2/stop
+  get_status_service: /slam_mapping_v2/get_status
+  status_topic: /slam_mapping_v2/status

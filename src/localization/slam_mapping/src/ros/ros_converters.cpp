@@ -2,6 +2,8 @@
 
 #include <localization/ros/ros_converters.hpp>
 
+#include <cmath>
+
 namespace slam_mapping_ros {
 
 localization::ImuData fromRos(const sensor_msgs::Imu& msg) { return localization_ros::fromRos(msg); }
@@ -24,6 +26,23 @@ localization::GnssAttitudeData fromRos(const deeplumin_msgs::Gpchc& msg) {
   out.pitch_deg = msg.pitch;
   out.roll_deg = msg.roll;
   out.valid = true;
+  return out;
+}
+
+/**
+ * @brief 将 Gpchc 消息转换为后端 GNSS 位置观测
+ *
+ * 保留原始经纬高/质量字段；ENU 转换、可靠性门控由 GnssOptimizer 负责。
+ */
+slam_mapping::GnssObservation fromRosGnss(const deeplumin_msgs::Gpchc& msg) {
+  slam_mapping::GnssObservation out;
+  out.timestamp = msg.header.stamp.toSec();
+  out.latitude = msg.latitude;
+  out.longitude = msg.longitude;
+  out.altitude = msg.altitude;
+  out.status = msg.status;
+  out.nsv = msg.nsv1 + msg.nsv2;  // 各星座卫星数合计
+  out.valid = (std::abs(out.latitude) > 1e-9 && std::abs(out.longitude) > 1e-9);
   return out;
 }
 

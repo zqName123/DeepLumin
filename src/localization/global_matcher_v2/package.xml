@@ -1,0 +1,32 @@
+<?xml version="1.0"?>
+<package format="2">
+  <name>global_matcher_v2</name>
+  <version>0.1.0</version>
+  <description>
+    global_matcher_v2: 新一代全局点云匹配定位节点。
+    - 支持单图全量加载 / 多图分片实时加载（地图管理器，预构建协方差/KDTree/体素地图）
+    - 匹配器统一基于 small_gicp（icp / gicp / vgicp，含鲁棒核），
+      并提供 fast_gicp 粗配准 + vgicp 精细配准的混合分支
+  </description>
+  <maintainer email="deeplumin@example.com">DeepLumin Team</maintainer>
+  <license>BSD</license>
+
+  <buildtool_depend>catkin</buildtool_depend>
+
+  <depend>roscpp</depend>
+  <depend>std_msgs</depend>
+  <depend>geometry_msgs</depend>
+  <depend>sensor_msgs</depend>
+  <depend>nav_msgs</depend>
+  <depend>pcl_ros</depend>
+  <depend>pcl_conversions</depend>
+  <depend>deeplumin_msgs</depend>
+  <depend>small_gicp</depend>
+  <depend>fast_gicp</depend>
+  <depend>libpcl-dev</depend>
+  <depend>libeigen3-dev</depend>
+
+  <export>
+    <build_type>catkin</build_type>
+  </export>
+</package>

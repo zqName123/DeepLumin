@@ -16,12 +16,12 @@ topics:
   gm_source_cloud_odom: /localization/simple_fusion/gm_source_cloud_odom
 
 runtime:
-  output_rate_hz: 100.0
+  output_rate_hz: 10.0
   publish_tf: true
   publish_map_to_odom_tf: true
   publish_odom_to_base_tf: true
   publish_path: true
-  max_path_size: 5000
+  max_path_size: 50000
 
 sync:
   max_queue_size: 300
@@ -29,7 +29,7 @@ sync:
   max_pair_dt: 0.20
 
 fusion:
-  max_delta_translation: 8.0
+  max_delta_translation: 10.0
   max_delta_rotation_rad: 1.2
   dr_prediction_weight: 1.0
   use_slam_increment: true

@@ -96,6 +96,7 @@ localization::SlamConfig loadSlamConfig(ros::NodeHandle& nh) {
     localization::SlamConfig cfg;
     nh.param<std::string>("slam/type", cfg.type, "faster_lio");
     nh.param<double>("slam/faster_lio/scan_rate", cfg.scan_rate, 10.0);
+    nh.param<std::string>("slam/faster_lio/config_yaml", cfg.faster_lio_config_yaml, "");
 
     nh.param<int>("slam/faster_lio/preprocess/lidar_type", cfg.lidar_type, 3);
     nh.param<int>("slam/faster_lio/preprocess/scan_line", cfg.scan_line, 64);

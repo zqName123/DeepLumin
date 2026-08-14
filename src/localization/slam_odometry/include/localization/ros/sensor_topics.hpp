@@ -34,6 +34,7 @@ struct OutputTopicsConfig {
     std::string path = "/localization/path";
     std::string local_map = "/localization/local_map";
     std::string registered_scan = "/localization/cloud_registered";
+    std::string effect_scan = "/localization/cloud_registered_effect";
     std::string global_map = "/localization/global_map";
     std::string loop_markers = "/localization/loop_markers";
 };

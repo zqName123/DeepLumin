@@ -1,0 +1,108 @@
+# =============================================================================
+# slam_mapping_v2 配置（仅 v2 自有键）
+# 订阅 slam_odometry_v2 的 odom / registered_scan，消息驱动建图。
+# =============================================================================
+
+runtime:
+  auto_start: true
+  task_name: "manual_mapping"
+  output_root: "/home/hhy/2004ros/deeplumin_mapping"
+  publish_tf: true           # 发布 map→odom（有关键帧后即发布）
+  process_rate_hz: 100.0
+
+frames:
+  map: "map"
+  odom: "odom"
+  base_link: "base_link"
+
+input:
+  odom_topic: "/localization/slam_odom"
+  scan_topic: "/localization/cloud_registered"
+  gnss_topic: "/gnss_chc_data"
+
+output:
+  status_topic: "/slam_mapping_v2/status"
+  path_topic: "/slam_mapping_v2/path"
+  map_topic: "/slam_mapping_v2/map"
+  loop_markers_topic: "/slam_mapping_v2/loop_markers"
+  keyframe_markers_topic: "/slam_mapping_v2/keyframes"
+  publish_odom: false            # 转发 odom（冗余，默认关）
+  publish_current_scan: false    # 转发 registered_scan（冗余，默认关）
+  publish_debug_markers: true   # 回环/关键帧 marker（调试）
+
+services:
+  start: "/slam_mapping_v2/start"
+  stop: "/slam_mapping_v2/stop"
+  save: "/slam_mapping_v2/save"
+  reset: "/slam_mapping_v2/reset"
+  get_status: "/slam_mapping_v2/get_status"
+
+threading:
+  backend_interval_sec: 0.1
+  viz_interval_sec: 0.5
+  max_input_queue: 20
+  time_sync_tolerance_sec: 0.1
+
+keyframe:
+  distance_thresh: 2.0
+  rotation_thresh_rad: 0.25
+  time_thresh_sec: 10
+  min_points: 50
+  min_frame_gap: 20
+
+loop_closure:
+  enable: false
+  min_index_gap: 50
+  time_thresh_sec: 20.0
+  loop_kf_gap: 100
+  min_id_interval: 20
+  closest_id_th: 50
+  max_range: 20.0
+  submap_search_num: 25
+  submap_resolution: 0.3
+  icp_fitness_thresh: 0.3
+  loop_noise_scale: 1.0
+  loop_rot_noise: 0.05
+  loop_pos_noise: 0.5
+  loop_score_floor: 0.05
+  odom_rot_noise: 1e-6
+  odom_pos_noise: 1e-4
+  gnss:
+    enable: false
+    min_status: 33
+    min_nsv: 0
+    max_age_sec: 0.02
+    min_spacing_m: 6.0
+    use_gps_elevation: false
+    z_override_sigma: 0.01
+    sigma_fixed: 0.3
+    sigma_float: 1.5
+    sigma_unknown: 3.0
+    sigma_floor: 0.2
+    robust_delta: 1.0
+    alignment_frames: 20
+    consistency_thresh_m: 10.0
+    lever_arm: [0.0, 0.0, 0.0]
+    status_sigma: []
+
+map_saver:
+  default_resolution: 0.2
+  save_on_stop: true
+  save_keyframes: true
+  save_keyframe_poses: true
+  save_trajectory: true
+  save_loop_results: true
+  map_filename: "map.pcd"
+  trajectory_filename: "trajectory.csv"
+  keyframe_pose_filename: "keyframes.csv"
+  keyframe_dir_name: "keyframes"
+  loop_result_dir_name: "loop_results"
+  loop_pairs_filename: "loop_pairs.csv"
+  loop_current_submap_filename: "latest_loop_current_submap.pcd"
+  loop_history_submap_filename: "latest_loop_history_submap.pcd"
+
+map:
+  voxel_resolution: 0.5     # iVox 体素分辨率
+  filter_size_map: 0.2      # 插入去重距离
+  publish_voxel_leaf: 0.5   # 发布地图降采样
+  publish_global_map: true

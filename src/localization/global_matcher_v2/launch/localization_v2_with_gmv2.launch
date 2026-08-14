@@ -1,0 +1,29 @@
+<!--
+  用 global_matcher_v2 替换 localization_v2 链路中的 global_matcher：
+  - 关闭 v1 global_matcher（start_global_matcher:=false）
+  - 启动 global_matcher_v2，话题映射与 v1 在 localization_v2.launch 中的一致
+-->
+<launch>
+  <arg name="map_mode" default="single" />
+  <arg name="pcd_path" default="/home/hhy/2004ros/relocalization_ws/global_map_manual_imu.pcd" />
+  <arg name="map_dir" default="" />
+
+  <include file="$(find localization_v2)/launch/localization_v2.launch">
+    <arg name="start_global_matcher" value="false" />
+    <arg name="pcd_path" value="$(arg pcd_path)" />
+  </include>
+
+  <node pkg="global_matcher_v2" type="global_matcher_v2_node" name="global_matcher_v2"
+        output="screen">
+    <rosparam file="$(find global_matcher_v2)/config/global_matcher_v2.yaml" command="load" />
+    <param name="map/mode" value="$(arg map_mode)" />
+    <param name="map/pcd_path" value="$(arg pcd_path)" />
+    <param name="map/map_dir" value="$(arg map_dir)" />
+    <param name="topics/source_cloud" value="/localization/cloud_registered_effect" />
+    <param name="topics/initial_pose" value="/localization_v2/odom" />
+    <param name="topics/source_odom" value="/localization/slam_odom" />
+    <param name="runtime/source_cloud_is_odom_frame" value="true" />
+    <param name="runtime/source_cloud_frame" value="odom" />
+    <param name="result/pose_frame" value="odom" />
+  </node>
+</launch>

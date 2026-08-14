@@ -1,0 +1,141 @@
+# =============================================================================
+# global_matcher_v2 配置文件
+#
+# 相比 v1 的清理：
+# - 删除 map/segments / default_map_id / viz_test_mode / 注释掉的重复 vgicp 段；
+# - vgicp / fast_gicp / small_gicp 参数统一收敛到 matcher.* 分组；
+# - 调试话题全部收敛到 publish.* 开关（默认关闭，减少话题量与带宽）。
+# =============================================================================
+
+# -------------------- 坐标系与外参 --------------------
+frames:
+  map: map
+  odom: odom
+  base_link: base_link
+  lidar: lidar_link
+
+# source_cloud_frame=lidar 时使用：sensor 坐标 -> base_link
+extrinsics:
+  base_to_lidar:
+    translation: [0.0, 0.0, 0.0]
+    rotation: [1.0, 0.0, 0.0,
+               0.0, 1.0, 0.0,
+               0.0, 0.0, 1.0]
+
+# -------------------- 话题 --------------------
+topics:
+  source_cloud: /localization/cloud_registered_effect
+  initial_pose: /localization/fused_odom          # 跟踪初值（融合里程计）
+  source_odom: /localization/slam_odom
+  bootstrap_initial_pose: /localization/manager/initial_pose
+  manual_initial_pose: /initialpose
+  result: /localization/global_matcher/result
+  status: /localization/global_matcher/status
+  global_map: /localization/global_matcher/global_map
+  # 调试话题（配合 publish.* 开关）
+  source_initial_scan: /localization/global_matcher/source_scan_initial
+  aligned_scan: /localization/global_matcher/aligned_scan
+  target_submap: /localization/global_matcher/target_submap
+  initial_guess: /localization/global_matcher/initial_guess
+  path: /localization/global_matcher/path
+  load_map_command: /localization/global_matcher/load_map_command
+  set_map_segment_command: /localization/global_matcher/set_map_segment_command
+
+# -------------------- 地图管理 --------------------
+map:
+  # single  : 一次性加载整图（pcd_path），然后裁剪
+  # chunked : 分片实时加载（map_dir），按车辆位置加载周边分片后裁剪；
+  #           分片由 build_chunked_maps_from_keyframes.py 生成
+  mode: single
+  pcd_path: /home/hhy/2004ros/relocalization_ws/global_map_manual_imu.pcd
+  map_dir: ""                 # chunked 模式：分片目录（含 chunks.txt / index.txt / N.pcd）
+  chunk_size: 100.0           # 分片边长（须与脚本一致）
+  load_radius_chunks: 1       # 加载当前分片周围 (2r+1)^2 个分片
+  load_voxel_leaf: 0.02        # 分片加载时体素降采样
+  max_loaded_chunks: 64       # 内存中最多保留分片数（LRU 淘汰）
+  cov_num_neighbors: 20       # 分片协方差估计近邻数（加载时一次性计算）
+  cov_num_threads: 2
+  # VGICP 预构建体素地图（仅 matcher.type 为 vgicp / fast_gicp_vgicp 时构建）
+  vgicp_voxel_resolution: 0.5
+  vgicp_coarse_scale: 10.0
+  vgicp_fine_scale: 1.0
+  global_map_publish_voxel_leaf: 5.0   # 可视化用全局地图降采样
+  global_map_publish_period: 0.0       # 全局地图重发周期（秒）
+
+# -------------------- 运行时 --------------------
+runtime:
+  auto_match: true
+  source_cloud_is_odom_frame: true      # true: source 点云位于 odom 系
+  source_cloud_frame: odom              # auto 使用点云 header；也可显式 lidar/base_link/odom
+  match_rate: 10.0
+  max_cloud_age: 1.0
+  use_receive_time_for_cloud_age: true  # bag 测试时按回调接收时间判断点云时效
+  use_tracking_initial_pose: true
+  use_bootstrap_initial_pose: true
+  use_manual_initial_pose: true
+  use_default_initial_pose: true
+  allow_identity_bootstrap: true
+  default_initial_pose:
+    translation: [0.0, 0.0, 0.0]
+    rpy_deg: [0.0, 0.0, 0.0]
+
+# -------------------- 可视化裁剪盒（仅 publish.target_submap 用） --------------------
+crop:
+  forward: 70.0
+  backward: 7.0
+  left: 35.0
+  right: 35.0
+  down: 35.0
+  up: 35.0
+
+# -------------------- 匹配器 --------------------
+matcher:
+  # icp | gicp | vgicp（small_gicp）| fast_gicp（v1 行为）| fast_gicp_vgicp（fast_gicp 粗 + vgicp 细）
+  type: gicp
+  use_crop: false
+  source_voxel_leaf: 0.08
+  target_voxel_leaf: 0.08
+  coarse_scale: 8.0
+  fine_scale: 1.0
+  max_iterations: 50
+  transformation_epsilon: 0.01
+  max_correspondence_distance: 2.0
+  # 0 = 使用 max_correspondence_distance * scale
+  coarse_max_correspondence_distance: 0.0
+  fine_max_correspondence_distance: 0
+  # 鲁棒核：none | huber | cauchy（仅 small_gicp 的 gicp/vgicp/icp 生效）
+  robust_kernel: none
+  robust_kernel_scale: 5.0
+  num_threads: 4               # small_gicp 线程数
+  cov_num_neighbors: 20         # source 协方差估计近邻数
+  cov_num_threads: 4
+  fast_gicp_num_threads: 4
+  fast_gicp_correspondence_randomness: 20
+  vgicp_voxel_resolution: 0.5   # 与 map.vgicp_* 保持一致（记录用）
+  vgicp_coarse_scale: 10.0
+  vgicp_fine_scale: 1.0
+
+# -------------------- 质量门控 --------------------
+gate:
+  min_source_points: 50
+  min_target_points: 100
+  max_fitness_score: 100.0      # 仅 fast_gicp 类型生效（PCL fitness 语义）
+  min_inlier_ratio: 0.3
+  max_inlier_rmse: 0.4
+  inlier_distance: 0.5
+  max_delta_translation: 20.0
+  max_delta_yaw_deg: 20.0
+
+# -------------------- 结果 --------------------
+result:
+  pose_frame: odom              # odom: 输出 map->odom；base: 输出 map->base_link
+
+# -------------------- 发布开关（减少话题量） --------------------
+publish:
+  global_map: true              # latch，仅有订阅者时发布
+  target_submap: true
+  aligned_scan: false
+  source_initial_scan: false
+  initial_guess: false
+  path: false
+  status: true

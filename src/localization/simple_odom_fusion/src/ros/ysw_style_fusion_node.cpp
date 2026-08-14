@@ -18,6 +18,7 @@
 #include "simple_odom_fusion/core/math_utils.hpp"
 
 #include <algorithm>
+#include <limits>
 #include <string>
 #include <vector>
 
@@ -27,6 +28,8 @@
 #include <nav_msgs/Odometry.h>
 #include <nav_msgs/Path.h>
 #include <pcl/common/transforms.h>
+#include <pcl/filters/voxel_grid.h>
+#include <pcl/io/pcd_io.h>
 #include <pcl/point_cloud.h>
 #include <pcl/point_types.h>
 #include <pcl_conversions/pcl_conversions.h>
@@ -37,6 +40,8 @@
 namespace sof = simple_odom_fusion;
 
 namespace {
+
+constexpr double kPi = 3.14159265358979323846;
 
 /**
  * @brief 将ROS的geometry_msgs::Pose转换为内部Pose3d结构
@@ -59,6 +64,21 @@ sof::Pose3d poseFromRos(const geometry_msgs::Pose& msg) {
     pose.orientation.normalize();
   }
   return pose;
+}
+
+/**
+ * @brief 计算两个位姿之间绕 z 轴的偏航角差（度，取最小角差）
+ */
+double yawDiffDeg(const sof::Pose3d& a, const sof::Pose3d& b) {
+  const sof::Quatd rel = a.orientation.normalized().conjugate() * b.orientation.normalized();
+  const Eigen::Matrix3d R = rel.toRotationMatrix();
+  double yaw = std::atan2(R(1, 0), R(0, 0));
+  yaw = std::fmod(yaw + kPi, 2.0 * kPi);
+  if (yaw < 0.0) {
+    yaw += 2.0 * kPi;
+  }
+  yaw -= kPi;
+  return yaw * 180.0 / kPi;
 }
 
 /**
@@ -171,7 +191,7 @@ class YswStyleFusionNode {
     // 订阅SLAM局部里程计（高频输入，核心数据源）
     slam_sub_ = nh_.subscribe(slam_odom_topic_, 100, &YswStyleFusionNode::onSlamOdom, this);
     // 订阅全局定位结果（低频输入，用于修正漂移）
-    gm_sub_ = nh_.subscribe(global_matcher_result_topic_, 20, &YswStyleFusionNode::onGlobalMatch, this);
+    gm_sub_ = nh_.subscribe(global_matcher_result_topic_, 1, &YswStyleFusionNode::onGlobalMatch, this);
     // 订阅初始位姿（用于人工重置机器人位置）
     initial_pose_sub_ = nh_.subscribe(initial_pose_topic_, 5, &YswStyleFusionNode::onInitialPose, this);
     // 订阅源点云（用于转发给全局定位模块）
@@ -186,11 +206,14 @@ class YswStyleFusionNode {
     fused_pose_pub_ = nh_.advertise<geometry_msgs::PoseWithCovarianceStamped>(fused_pose_topic_, 20);
     // 发布历史轨迹（用于RViz可视化）
     path_pub_ = nh_.advertise<nav_msgs::Path>(fused_path_topic_, 5);
-    // 发布转换到odom坐标系的源点云（供全局定位模块使用）
-    gm_cloud_pub_ = nh_.advertise<sensor_msgs::PointCloud2>(gm_source_cloud_odom_topic_, 2);
+    // 发布当前帧点云（经融合后的map->odom变换到map系，供可视化核对匹配精度）
+    current_scan_map_pub_ = nh_.advertise<sensor_msgs::PointCloud2>(current_scan_in_map_topic_, 2);
 
     // 初始化轨迹消息的坐标系
     path_.header.frame_id = map_frame_;
+
+    // 全局地图可视化发布（由本节点负责，frame_id=map）
+    setupGlobalMapPublisher();
 
     // ========== 定时器初始化 ==========
     // 创建固定频率的输出定时器，确保即使SLAM数据有波动也能稳定输出
@@ -198,9 +221,9 @@ class YswStyleFusionNode {
                              &YswStyleFusionNode::onTimer, this);
 
     // 打印启动信息，便于调试确认参数加载正确
-    ROS_INFO("[ysw_style_fusion] slam=%s gm=%s fused=%s map_to_odom=%s gm_cloud=%s",
+    ROS_INFO("[ysw_style_fusion] slam=%s gm=%s fused=%s map_to_odom=%s scan_in_map=%s",
              slam_odom_topic_.c_str(), global_matcher_result_topic_.c_str(), fused_odom_topic_.c_str(),
-             map_to_odom_topic_.c_str(), gm_source_cloud_odom_topic_.c_str());
+             map_to_odom_topic_.c_str(), current_scan_in_map_topic_.c_str());
   }
 
  private:
@@ -231,8 +254,8 @@ class YswStyleFusionNode {
     pnh_.param<std::string>("topics/map_to_odom", map_to_odom_topic_, map_to_odom_topic_);
     pnh_.param<std::string>("topics/fused_pose", fused_pose_topic_, fused_pose_topic_);
     pnh_.param<std::string>("topics/fused_path", fused_path_topic_, fused_path_topic_);
-    pnh_.param<std::string>("topics/gm_source_cloud_odom", gm_source_cloud_odom_topic_,
-                            gm_source_cloud_odom_topic_);
+    pnh_.param<std::string>("topics/current_scan_in_map", current_scan_in_map_topic_,
+                            current_scan_in_map_topic_);
 
     // --- 运行时参数配置 ---
     pnh_.param<double>("runtime/output_rate_hz", output_rate_hz_, output_rate_hz_);
@@ -243,10 +266,17 @@ class YswStyleFusionNode {
     publish_path_ = loadBool(pnh_, "runtime/publish_path", publish_path_);
 
     // --- 全局定位模块配置 ---
-    publish_gm_source_cloud_ = loadBool(pnh_, "global_matcher/publish_source_cloud_odom", publish_gm_source_cloud_);
+    publish_current_scan_in_map_ =
+        loadBool(pnh_, "global_matcher/publish_current_scan_in_map", publish_current_scan_in_map_);
+    enable_jump_guard_ = loadBool(pnh_, "global_matcher/enable_jump_guard", enable_jump_guard_);
+    pnh_.param<double>("global_matcher/max_jump_translation", max_jump_translation_,
+                       max_jump_translation_);
+    pnh_.param<double>("global_matcher/max_jump_yaw_deg", max_jump_yaw_deg_, max_jump_yaw_deg_);
 
     // --- 初始化配置 ---
     allow_initialpose_ = loadBool(pnh_, "initialization/allow_initialpose", allow_initialpose_);
+    pnh_.param<double>("initialization/init_pose_z_search_radius", init_pose_z_search_radius_,
+                       init_pose_z_search_radius_);
   }
 
   /**
@@ -255,20 +285,18 @@ class YswStyleFusionNode {
    *
    * @details
    * 处理流程：
-   * 1. 记录时间戳（若消息时间戳为0则使用当前时间）
-   * 2. 提取并保存odom->base_link位姿到odom_base_
+   * 1. 提取并保存odom->base_link位姿到odom_base_
    * 3. 保存速度信息（twist），用于输出中保留速度数据
    * 4. 标记have_slam_为true，表示已收到SLAM数据
-   * 5. 触发点云转发（若配置了）
+   * 5. 触发当前点云在map系的发布（若配置了）
    * 6. 触发融合输出发布
    */
   void onSlamOdom(const nav_msgs::Odometry::ConstPtr& msg) {
-    latest_slam_stamp_ = msg->header.stamp.isZero() ? ros::Time::now() : msg->header.stamp;
     odom_base_ = poseFromRos(msg->pose.pose);
     latest_twist_ = msg->twist;
     have_slam_ = true;
-    publishMatcherCloud(latest_slam_stamp_);
-    publishOutput(latest_slam_stamp_);
+    publishCurrentScanInMap();
+    publishOutput();
   }
 
   /**
@@ -299,9 +327,28 @@ class YswStyleFusionNode {
       return;
     }
 
-    // 提取全局定位位姿并计算map->odom修正量
-    map_odom_ = poseFromRos(msg->pose.pose);
-    publishMapToOdom(msg->header.stamp.isZero() ? ros::Time::now() : msg->header.stamp);
+    // 提取全局定位位姿
+    const sof::Pose3d candidate = poseFromRos(msg->pose.pose);
+
+    // 跳变门限（可选，默认关闭）：仅当 global_matcher/enable_jump_guard=true 时生效。
+    // 默认关闭即完全 ysw_loc 行为：GM 报 success 就生效，未收敛保持上一帧是唯一防线。
+    // 开启时，候选结果相对上一帧 map->odom 跳变过大则拒绝并保留上一帧（人工 initial pose 不受限）。
+    if (enable_jump_guard_) {
+      const double delta_trans = (candidate.position - map_odom_.position).norm();
+      const double delta_yaw_deg = yawDiffDeg(map_odom_, candidate);
+      if (delta_trans > max_jump_translation_ || delta_yaw_deg > max_jump_yaw_deg_) {
+        ROS_WARN_THROTTLE(1.0,
+                          "[ysw_style_fusion] reject global matcher result: jump too large "
+                          "trans=%.3fm yaw=%.2fdeg (limit %.3fm/%.2fdeg), keep previous map->odom",
+                          delta_trans, delta_yaw_deg, max_jump_translation_, max_jump_yaw_deg_);
+        return;
+      }
+    }
+
+    // 通过门限，更新 map->odom 修正量
+    map_odom_ = candidate;
+    have_map_odom_ = true;
+    publishMapToOdom();
     ROS_INFO("[ysw_style_fusion] updated map->odom from global matcher map_id=%s child=%s fitness=%.4f inlier=%.3f",
              msg->map_id.c_str(), msg->child_frame_id.c_str(), msg->fitness_score, msg->inlier_ratio);
   }
@@ -324,14 +371,71 @@ class YswStyleFusionNode {
    * - SLAM发生严重漂移需要人工纠正时
    * - 重定位（relocalization）后确认正确位置
    */
+  /**
+   * @brief 计算人工初始位姿的z高度（与ysw_loc一致）
+   * @param position 初始位姿在map系的x/y位置
+   * @param z_out 输出z高度（取位姿附近地图点云的z范围中值）
+   * @return 是否成功（需要已加载全局地图且搜索半径内有地图点）
+   */
+  bool computeInitPoseZ(const sof::Vec3d& position, double* z_out) const {
+    if (!global_map_cloud_ || global_map_cloud_->empty()) {
+      return false;
+    }
+    const double r2 = init_pose_z_search_radius_ * init_pose_z_search_radius_;
+    const double x = position.x();
+    const double y = position.y();
+    bool found = false;
+    double z_min = std::numeric_limits<double>::max();
+    double z_max = std::numeric_limits<double>::lowest();
+    for (const auto& p : global_map_cloud_->points) {
+      const double dx = p.x - x;
+      const double dy = p.y - y;
+      if (dx * dx + dy * dy <= r2) {
+        found = true;
+        z_min = std::min(z_min, static_cast<double>(p.z));
+        z_max = std::max(z_max, static_cast<double>(p.z));
+      }
+    }
+    if (!found) {
+      return false;
+    }
+    *z_out = 0.5 * (z_min + z_max);
+    return true;
+  }
+
   void onInitialPose(const geometry_msgs::PoseWithCovarianceStamped::ConstPtr& msg) {
     if (!allow_initialpose_) {
       return;
     }
-    const sof::Pose3d map_base = poseFromRos(msg->pose.pose);
+    const sof::Pose3d pose = poseFromRos(msg->pose.pose);
+    // 与ysw_loc对齐：RViz 2D Pose Estimate 的位姿位于RViz固定坐标系（map）下。
+    // 为兼容固定坐标系被设为odom/base_link的情况，按消息header.frame_id统一转换到map系，
+    // 避免把odom系坐标误当map系使用导致map->odom跳变（原点漂移）。
+    sof::Pose3d map_base = pose;
+    const std::string pose_frame = msg->header.frame_id;
+    if (!pose_frame.empty() && pose_frame != map_frame_) {
+      if (pose_frame == odom_frame_) {
+        // odom系位姿：map_base = map_odom ⊕ pose(odom->base)
+        map_base = sof::compose(map_odom_, pose);
+      } else if (pose_frame == base_frame_) {
+        // base系位姿：位置即当前机器人位置
+        map_base = sof::compose(map_odom_, odom_base_);
+      } else {
+        ROS_WARN_THROTTLE(2.0, "[ysw_style_fusion] unknown initial pose frame '%s', assume %s",
+                          pose_frame.c_str(), map_frame_.c_str());
+      }
+    }
+    // 与ysw_loc一致：初始位姿的z取人工位姿附近地图点云高度的中值 (max_z+min_z)/2
+    double init_z = 0.0;
+    if (computeInitPoseZ(map_base.position, &init_z)) {
+      map_base.position.z() = init_z;
+    }
     map_odom_ = have_slam_ ? sof::compose(map_base, sof::inverse(odom_base_)) : map_base;
-    publishMapToOdom(msg->header.stamp.isZero() ? ros::Time::now() : msg->header.stamp);
-    ROS_INFO("[ysw_style_fusion] reset map->odom from initial pose");
+    // 人工初值不受跳变门限限制，并作为后续 GM 结果的参考基准
+    have_map_odom_ = true;
+    publishMapToOdom();
+    ROS_INFO("[ysw_style_fusion] reset map->odom from initial pose frame=%s z=%.3f", pose_frame.c_str(),
+             map_base.position.z());
   }
 
   /**
@@ -339,7 +443,7 @@ class YswStyleFusionNode {
    * @param msg SLAM模块输出的源点云（通常在odom坐标系下）
    *
    * @details
-   * 仅做缓存，不做实时处理。实际的坐标系转换和发布在publishMatcherCloud中完成。
+   * 仅做缓存，不做实时处理。实际的坐标系变换和发布在publishCurrentScanInMap中完成。
    * 这种设计避免了在点云回调中进行耗时操作，保证SLAM数据处理的实时性。
    */
   void onSourceCloud(const sensor_msgs::PointCloud2::ConstPtr& msg) {
@@ -358,7 +462,7 @@ class YswStyleFusionNode {
    *
    * 处理流程：
    * - 若尚未收到SLAM数据：发布单位map->odom，并警告等待SLAM
-   * - 若已有SLAM数据：使用最新SLAM时间戳发布输出
+   * - 若已有SLAM数据：以当前 ROS 时间发布输出（避免TF被判定为过期数据）
    */
   void onTimer(const ros::TimerEvent&) {
     if (!have_slam_) {
@@ -366,9 +470,8 @@ class YswStyleFusionNode {
       ROS_WARN_THROTTLE(2.0, "[ysw_style_fusion] waiting for slam odom: %s", slam_odom_topic_.c_str());
       return;
     }
-    const ros::Time stamp = latest_slam_stamp_.isZero() ? ros::Time::now() : latest_slam_stamp_;
-    publishMatcherCloud(stamp);
-    publishOutput(stamp);
+    publishCurrentScanInMap();
+    publishOutput();
   }
 
   /**
@@ -387,8 +490,84 @@ class YswStyleFusionNode {
   }
 
   /**
+   * @brief 加载并发布全局地图（由本节点统一发布，frame_id=map）
+   *
+   * @details
+   * 从PCD加载全局地图，做体素降采样后以latch方式发布到global_map_topic_，
+   * 并定时重发，供RViz等订阅者显示。坐标系固定为map_frame_（map）。
+   */
+  void setupGlobalMapPublisher() {
+    pnh_.param<bool>("map/publish_global_map", publish_global_map_, publish_global_map_);
+    pnh_.param<std::string>("map/pcd_path", global_map_pcd_path_, global_map_pcd_path_);
+    pnh_.param<std::string>("map/global_map_topic", global_map_topic_, global_map_topic_);
+    pnh_.param<double>("map/publish_voxel_leaf", global_map_voxel_leaf_, global_map_voxel_leaf_);
+    pnh_.param<double>("map/publish_period", global_map_publish_period_, global_map_publish_period_);
+
+    if (!publish_global_map_) {
+      return;
+    }
+    if (global_map_pcd_path_.empty()) {
+      ROS_WARN("[ysw_style_fusion] map/publish_global_map is true but map/pcd_path is empty");
+      return;
+    }
+
+    pcl::PointCloud<pcl::PointXYZI>::Ptr raw(new pcl::PointCloud<pcl::PointXYZI>());
+    if (pcl::io::loadPCDFile<pcl::PointXYZI>(global_map_pcd_path_, *raw) != 0 || raw->empty()) {
+      ROS_ERROR("[ysw_style_fusion] failed to load global map: %s", global_map_pcd_path_.c_str());
+      return;
+    }
+
+    std::vector<int> valid_indices;
+    pcl::removeNaNFromPointCloud(*raw, *raw, valid_indices);
+
+    global_map_cloud_.reset(new pcl::PointCloud<pcl::PointXYZI>());
+    if (global_map_voxel_leaf_ > 0.0) {
+      pcl::VoxelGrid<pcl::PointXYZI> voxel;
+      voxel.setInputCloud(raw);
+      const float leaf = static_cast<float>(global_map_voxel_leaf_);
+      voxel.setLeafSize(leaf, leaf, leaf);
+      voxel.filter(*global_map_cloud_);
+    } else {
+      *global_map_cloud_ = *raw;
+    }
+    if (global_map_cloud_->empty()) {
+      ROS_ERROR("[ysw_style_fusion] global map is empty after downsample: %s", global_map_pcd_path_.c_str());
+      return;
+    }
+
+    global_map_pub_ = nh_.advertise<sensor_msgs::PointCloud2>(global_map_topic_, 1, true);
+    publishGlobalMap();
+    if (global_map_publish_period_ >= 0.5) {
+      global_map_timer_ = nh_.createTimer(ros::Duration(global_map_publish_period_),
+                                          &YswStyleFusionNode::onGlobalMapTimer, this);
+    }
+    ROS_INFO("[ysw_style_fusion] global map loaded path=%s raw_points=%zu viz_points=%zu topic=%s frame=%s voxel=%.3f period=%.3fs",
+             global_map_pcd_path_.c_str(), raw->size(), global_map_cloud_->size(),
+             global_map_topic_.c_str(), map_frame_.c_str(), global_map_voxel_leaf_,
+             global_map_publish_period_);
+  }
+
+  /**
+   * @brief 定时重发全局地图
+   */
+  void onGlobalMapTimer(const ros::TimerEvent&) { publishGlobalMap(); }
+
+  /**
+   * @brief 发布全局地图（frame_id=map，latch）
+   */
+  void publishGlobalMap() {
+    if (!publish_global_map_ || !global_map_cloud_ || global_map_cloud_->empty() || !global_map_pub_) {
+      return;
+    }
+    sensor_msgs::PointCloud2 msg;
+    pcl::toROSMsg(*global_map_cloud_, msg);
+    msg.header.stamp = ros::Time::now();
+    msg.header.frame_id = map_frame_;
+    global_map_pub_.publish(msg);
+  }
+
+  /**
    * @brief 发布map->odom修正量作为Odometry消息
-   * @param stamp 消息时间戳
    *
    * @details
    * 将内部存储的map_odom_位姿发布为nav_msgs/Odometry格式。
@@ -397,9 +576,12 @@ class YswStyleFusionNode {
    * - 记录bag时保存修正量历史
    * - 调试时分析修正量的变化趋势
    */
-  void publishMapToOdom(const ros::Time& stamp) {
+  void publishMapToOdom() {
     nav_msgs::Odometry odom;
-    odom.header.stamp = stamp;
+    // 输出统一使用当前 ROS 时间：模拟时间下等于 bag 时间，
+    // 墙钟模式下等于当前墙钟，避免把上游 measurement 时间戳转发出去
+    // 导致 TF 消费者判定为过期数据（TF_OLD_DATA）。
+    odom.header.stamp = ros::Time::now();
     odom.header.frame_id = map_frame_;
     odom.child_frame_id = odom_frame_;
     fillPose(map_odom_, &odom.pose.pose);
@@ -408,7 +590,6 @@ class YswStyleFusionNode {
 
   /**
    * @brief 核心输出函数：发布融合后的位姿、轨迹、TF等
-   * @param stamp 输出消息的时间戳
    *
    * @details
    * 融合公式：map_base = map_odom_ ⊕ odom_base_
@@ -421,13 +602,13 @@ class YswStyleFusionNode {
    * 4. path: 历史轨迹（可选，用于RViz可视化）
    * 5. TF变换: map->odom 和/或 odom->base_link（可选）
    */
-  void publishOutput(const ros::Time& stamp) {
+  void publishOutput() {
     // 核心融合计算：map->base_link = map->odom ⊕ odom->base_link
     const sof::Pose3d map_base = sof::compose(map_odom_, odom_base_);
 
     // --- 发布融合里程计 ---
     nav_msgs::Odometry odom;
-    odom.header.stamp = stamp;
+    odom.header.stamp = ros::Time::now();
     odom.header.frame_id = map_frame_;      // 父坐标系：map
     odom.child_frame_id = base_frame_;      // 子坐标系：base_link
     fillPose(map_base, &odom.pose.pose);
@@ -441,14 +622,14 @@ class YswStyleFusionNode {
     fused_pose_pub_.publish(pose);
 
     // --- 发布map->odom修正量 ---
-    publishMapToOdom(stamp);
+    publishMapToOdom();
 
     // --- 发布历史轨迹（可选） ---
     if (publish_path_) {
       geometry_msgs::PoseStamped path_pose;
       path_pose.header = odom.header;
       path_pose.pose = odom.pose.pose;
-      path_.header.stamp = stamp;
+      path_.header.stamp = odom.header.stamp;
       path_.poses.push_back(path_pose);
       // 轨迹长度限制：超过max_path_size_时移除最旧的点（滑动窗口）
       while (static_cast<int>(path_.poses.size()) > max_path_size_) {
@@ -462,11 +643,11 @@ class YswStyleFusionNode {
       std::vector<geometry_msgs::TransformStamped> transforms;
       // map->odom变换（全局修正量）
       if (publish_map_to_odom_tf_) {
-        transforms.push_back(toTf(map_odom_, map_frame_, odom_frame_, stamp));
+        transforms.push_back(toTf(map_odom_, map_frame_, odom_frame_, odom.header.stamp));
       }
       // odom->base_link变换（局部里程计）
       if (publish_odom_to_base_tf_) {
-        transforms.push_back(toTf(odom_base_, odom_frame_, base_frame_, stamp));
+        transforms.push_back(toTf(odom_base_, odom_frame_, base_frame_, odom.header.stamp));
       }
       if (!transforms.empty()) {
         tf_broadcaster_.sendTransform(transforms);
@@ -475,23 +656,21 @@ class YswStyleFusionNode {
   }
 
   /**
-   * @brief 将源点云转发到全局定位模块（坐标系转换后发布）
-   * @param stamp 输出消息的时间戳
+   * @brief 发布当前帧点云在全局地图（map系）中的位置（可视化/精度核对）
    *
    * @details
    * 功能说明：
-   * - 接收SLAM输出的点云（通常在某个局部坐标系下）
-   * - 将点云转发给全局定位模块，供其进行地图匹配
-   * - 目前实现直接将原始点云发布到odom_frame_坐标系
-   *   （注：当前实现未做实际的坐标变换，仅修改header.frame_id）
+   * - 接收SLAM输出的当前帧点云（odom系）
+   * - 用融合后的map->odom（来自全局定位修正）变换到map系后发布
+   * - 对应ysw_loc的/cur_scan_in_map，可在RViz中与全局地图叠加查看匹配精度
    *
    * 使用条件：
-   * - publish_gm_source_cloud_为true
+   * - publish_current_scan_in_map_为true
    * - 已缓存点云数据
    * - 已收到SLAM数据
    */
-  void publishMatcherCloud(const ros::Time& stamp) {
-    if (!publish_gm_source_cloud_ || !latest_cloud_ || !have_slam_) {
+  void publishCurrentScanInMap() {
+    if (!publish_current_scan_in_map_ || !latest_cloud_ || !have_slam_) {
       return;
     }
 
@@ -502,12 +681,18 @@ class YswStyleFusionNode {
       return;
     }
 
-    // 转换回ROS消息并设置坐标系为odom
+    // 用融合后的map->odom把当前帧点云变换到map系
+    pcl::PointCloud<pcl::PointXYZI> out;
+    pcl::transformPointCloud(in, out, toMatrix4f(map_odom_));
+
+    // 转换回ROS消息并设置坐标系为map
     sensor_msgs::PointCloud2 msg;
-    pcl::toROSMsg(in, msg);
-    msg.header.stamp = latest_cloud_->header.stamp.isZero() ? stamp : latest_cloud_->header.stamp;
-    msg.header.frame_id = odom_frame_;
-    gm_cloud_pub_.publish(msg);
+    pcl::toROSMsg(out, msg);
+    // 输出统一使用当前 ROS 时间：模拟时间下等于 bag 时间，
+    // 墙钟模式下等于当前墙钟，避免RViz消息过滤按旧测量时间戳丢弃。
+    msg.header.stamp = ros::Time::now();
+    msg.header.frame_id = map_frame_;
+    current_scan_map_pub_.publish(msg);
   }
 
   // ========== ROS通信成员 ==========
@@ -519,6 +704,7 @@ class YswStyleFusionNode {
   sensor_msgs::PointCloud2::ConstPtr latest_cloud_;  ///< 最新接收的源点云
   nav_msgs::Path path_;                              ///< 历史轨迹
   geometry_msgs::TwistWithCovariance latest_twist_;  ///< 最新速度信息
+  pcl::PointCloud<pcl::PointXYZI>::Ptr global_map_cloud_;  ///< 降采样后的全局地图点云
 
   // ========== 坐标系与话题名称（带默认值） ==========
   std::string map_frame_ = "map";                                    ///< 全局地图坐标系
@@ -532,21 +718,30 @@ class YswStyleFusionNode {
   std::string map_to_odom_topic_ = "/localization/ysw_style_map_to_odom";  ///< map->odom输出话题
   std::string fused_pose_topic_ = "/localization/ysw_style_pose";    ///< 融合位姿输出话题
   std::string fused_path_topic_ = "/localization/ysw_style_path";    ///< 融合轨迹输出话题
-  std::string gm_source_cloud_odom_topic_ = "/localization/ysw_style/gm_source_cloud_odom";  ///< 全局定位点云输出话题
+  std::string current_scan_in_map_topic_ = "/localization/ysw_style/current_scan_in_map";  ///< 当前点云在map系输出话题
+  std::string global_map_topic_ = "/localization/ysw_style/global_map";                    ///< 全局地图可视化话题
+  std::string global_map_pcd_path_ = "/home/hhy/2004ros/relocalization_ws/global_map_manual_imu.pcd";  ///< 全局地图PCD路径
 
   // ========== 运行时参数 ==========
   double output_rate_hz_ = 100.0;     ///< 定时器输出频率（Hz）
-  int max_path_size_ = 5000;          ///< 轨迹最大保存点数（滑动窗口）
+  int max_path_size_ = 50000;          ///< 轨迹最大保存点数（滑动窗口）
   bool publish_tf_ = true;            ///< 是否发布TF变换
   bool publish_map_to_odom_tf_ = true;   ///< 是否发布map->odom的TF
   bool publish_odom_to_base_tf_ = true;  ///< 是否发布odom->base_link的TF
   bool publish_path_ = true;          ///< 是否发布历史轨迹
-  bool publish_gm_source_cloud_ = true;  ///< 是否转发点云给全局定位模块
+  bool publish_current_scan_in_map_ = true;  ///< 是否发布当前点云在map系的可视化
+  bool publish_global_map_ = true;           ///< 是否发布全局地图可视化
+  double init_pose_z_search_radius_ = 5.0;   ///< 初始位姿z高度搜索半径（米）
+  double global_map_voxel_leaf_ = 0.0;       ///< 全局地图体素降采样大小（米），0=全分辨率（与ysw_loc可视化一致）
+  double global_map_publish_period_ = 0.0;   ///< 全局地图重发周期（秒），0=仅latch发布一次
   bool allow_initialpose_ = true;     ///< 是否允许通过initial_pose重置位姿
+  bool enable_jump_guard_ = false;    ///< 是否启用跳变门限（默认关=完全 ysw_loc 行为）
+  double max_jump_translation_ = 2.0; ///< GM结果相对上一帧 map->odom 的最大平移跳变（米）
+  double max_jump_yaw_deg_ = 10.0;    ///< GM结果相对上一帧 map->odom 的最大偏航跳变（度）
 
   // ========== 状态变量 ==========
   bool have_slam_ = false;            ///< 是否已收到SLAM数据
-  ros::Time latest_slam_stamp_;       ///< 最新SLAM数据的时间戳
+  bool have_map_odom_ = false;        ///< 是否已有可用的 map->odom（人工初值/已接受的 GM 结果）
   sof::Pose3d odom_base_;             ///< 当前odom->base_link位姿（来自SLAM）
   sof::Pose3d map_odom_;              ///< 当前map->odom修正量（来自全局定位或初始位姿）
 
@@ -559,7 +754,9 @@ class YswStyleFusionNode {
   ros::Publisher map_to_odom_pub_;    ///< map->odom发布器
   ros::Publisher fused_pose_pub_;     ///< 融合位姿发布器
   ros::Publisher path_pub_;           ///< 轨迹发布器
-  ros::Publisher gm_cloud_pub_;       ///< 全局定位点云发布器
+  ros::Publisher current_scan_map_pub_; ///< 当前点云在map系发布器
+  ros::Publisher global_map_pub_;        ///< 全局地图发布器（latch）
+  ros::Timer global_map_timer_;          ///< 全局地图重发定时器
   ros::Timer timer_;                  ///< 固定频率输出定时器
 };
 

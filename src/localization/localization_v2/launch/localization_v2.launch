@@ -1,0 +1,134 @@
+<!--
+  localization_v2 定位链路启动文件
+
+  节点组成：
+    slam_odometry_v2 : 局部里程计（odom->base_link）
+    global_matcher   : 全局点云匹配（输出 map->odom）
+    localization_v2  : 融合节点（本包）
+    global_relocalization : 可选，重定位初值来源（默认不启动，作为后续接口预留）
+
+  典型运行：
+    roslaunch localization_v2 localization_v2.launch
+    roslaunch localization_v2 localization_v2.launch start_relocalization:=true
+-->
+<launch>
+  <arg name="slam_config" default="$(find slam_odometry_v2)/config/slam_odometry_v2.yaml" />
+  <arg name="global_matcher_config" default="$(find global_matcher)/config/global_matcher.yaml" />
+  <arg name="relocalization_config" default="$(find relocalization)/config/relocalization.yaml" />
+
+  <arg name="start_slam" default="true" />
+  <arg name="start_global_matcher" default="true" />
+  <arg name="start_relocalization" default="false" />
+  <arg name="rviz" default="true" />
+
+  <arg name="play_bag" default="false" />
+  <arg name="bag" default="/home/hhy/2004ros/data/2026-07-14-11-17-21.bag" />
+  <arg name="bag_rate" default="1.0" />
+  <arg name="bag_delay" default="2.0" />
+  <arg name="clock" default="false" />
+
+  <arg name="pcd_path" default="/home/hhy/2004ros/relocalization_ws/global_map_manual_imu.pcd" />
+  <param name="/use_sim_time" value="$(arg clock)" />
+
+  <!-- 1. slam_odometry_v2：局部里程计 -->
+  <node if="$(arg start_slam)" pkg="slam_odometry_v2" type="slam_odometry_v2_node"
+        name="slam_odometry_v2" output="screen">
+    <rosparam file="$(arg slam_config)" command="load" />
+    <param name="node/faster_lio_config_yaml" value="$(arg slam_config)" />
+    <param name="node/publish_tf" value="false" />
+  </node>
+
+  <!-- 2. localization_v2：融合节点 -->
+  <node pkg="localization_v2" type="localization_v2_node" name="localization_v2" output="screen">
+    <param name="frames/map" value="map" />
+    <param name="frames/odom" value="odom" />
+    <param name="frames/base_link" value="base_link" />
+
+    <param name="topics/slam_odom" value="/localization/slam_odom" />
+    <param name="topics/global_matcher_result" value="/localization/global_matcher/result" />
+    <param name="topics/initial_pose" value="/initialpose" />
+    <param name="topics/source_cloud" value="/localization/cloud_registered_effect" />
+    <param name="topics/fused_odom" value="/localization_v2/odom" />
+    <param name="topics/map_to_odom" value="/localization_v2/map_to_odom" />
+    <param name="topics/fused_path" value="/localization_v2/path" />
+    <param name="topics/status" value="/localization_v2/status" />
+    <param name="topics/current_scan_in_map" value="/localization_v2/current_scan_in_map" />
+
+    <param name="runtime/output_rate_hz" value="100.0" />
+    <param name="runtime/publish_tf" value="true" />
+    <param name="runtime/publish_map_to_odom_tf" value="true" />
+    <param name="runtime/publish_odom_to_base_tf" value="true" />
+    <param name="runtime/publish_path" value="true" />
+    <param name="runtime/publish_current_scan_in_map" value="true" />
+
+    <param name="global_matcher/result_pose_frame" value="odom" />
+    <param name="global_matcher/enable_jump_guard" value="false" />
+    <param name="global_matcher/max_jump_translation" value="5.0" />
+    <param name="global_matcher/max_jump_yaw_deg" value="50.0" />
+
+    <param name="initialization/require_initial_pose" value="false" />
+    <param name="initialization/use_relocalization_init" value="true" />
+    <param name="initialization/use_manual_initialpose" value="true" />
+    <param name="initialization/use_global_matcher_init" value="true" />
+
+    <param name="relocalization/result_topic" value="/localization/relocalization/result" />
+    <param name="relocalization/command_topic" value="/localization_v2/relocalization/command" />
+    <param name="relocalization/enabled" value="true" />
+    <param name="relocalization/auto_start" value="true" />
+    <param name="relocalization/stop_on_success" value="true" />
+    <param name="relocalization/stop_on_manual_pose" value="true" />
+    <param name="relocalization/stop_on_global_match" value="true" />
+    <param name="relocalization/require_accepted" value="false" />
+
+    <param name="initial_pose/z_completion_enabled" value="true" />
+    <param name="initial_pose/z_search_radius" value="5.0" />
+    <param name="initial_pose/map_pcd_path" value="$(arg pcd_path)" />
+  </node>
+
+  <!-- 3. global_matcher：全局匹配（结果 = map->odom） -->
+  <!-- <node if="$(arg start_global_matcher)" pkg="global_matcher" type="global_matcher_node"
+        name="global_matcher" output="screen">
+    <rosparam file="$(arg global_matcher_config)" command="load" />
+    <param name="map/pcd_path" value="$(arg pcd_path)" />
+    <param name="topics/source_cloud" value="/localization/cloud_registered_effect" />
+    <param name="topics/initial_pose" value="/localization_v2/odom" />
+    <param name="topics/source_odom" value="/localization/slam_odom" />
+    <param name="runtime/source_cloud_is_odom_frame" value="true" />
+    <param name="runtime/source_cloud_frame" value="odom" />
+    <param name="result/pose_frame" value="odom" />
+  </node> -->
+  <arg name="map_mode" default="single" />
+  <!-- <arg name="pcd_path" default="/home/hhy/2004ros/relocalization_ws/global_map_manual_imu.pcd" /> -->
+  <arg name="map_dir" default="" />
+
+  <node pkg="global_matcher_v2" type="global_matcher_v2_node" name="global_matcher_v2"
+        output="screen">
+    <rosparam file="$(find global_matcher_v2)/config/global_matcher_v2.yaml" command="load" />
+    <param name="map/mode" value="$(arg map_mode)" />
+    <param name="map/pcd_path" value="$(arg pcd_path)" />
+    <param name="map/map_dir" value="$(arg map_dir)" />
+    <param name="topics/source_cloud" value="/localization/cloud_registered_effect" />
+    <param name="topics/initial_pose" value="/localization_v2/odom" />
+    <param name="topics/source_odom" value="/localization/slam_odom" />
+    <param name="runtime/source_cloud_is_odom_frame" value="true" />
+    <param name="runtime/source_cloud_frame" value="odom" />
+    <param name="result/pose_frame" value="odom" />
+  </node>
+
+
+  <!-- 4. 可选：重定位初值来源（接口预留，默认不启动）
+       注意：在线运行需按实际雷达/坐标系约定校准 relocalization.yaml 中的
+       lidar_topic / query_cloud_frame / query_frame 等参数。 -->
+  <node if="$(arg start_relocalization)" pkg="relocalization" type="global_relocalization_node"
+        name="global_relocalization" output="screen">
+    <rosparam file="$(arg relocalization_config)" command="load" />
+    <param name="lidar_topic" value="/localization/cloud_registered_effect" />
+    <param name="query_cloud_frame" value="odom" />
+  </node>
+
+  <node if="$(arg rviz)" pkg="rviz" type="rviz" name="localization_v2_rviz"
+        args="-d $(find localization_v2)/rviz/localization_v2.rviz" />
+
+  <node if="$(arg play_bag)" pkg="rosbag" type="play" name="localization_v2_bag"
+        args="--clock --delay=$(arg bag_delay) -r $(arg bag_rate) $(arg bag)" output="screen" />
+</launch>

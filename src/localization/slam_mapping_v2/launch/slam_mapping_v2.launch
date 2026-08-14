@@ -1,0 +1,30 @@
+<launch>
+  <!-- slam_mapping_v2：订阅 slam_odometry_v2 消息的多线程建图节点 -->
+  <arg name="config" default="$(find slam_mapping_v2)/config/slam_mapping_v2.yaml" />
+  <arg name="slam_config" default="$(find slam_odometry_v2)/config/slam_odometry_v2.yaml" />
+  <arg name="lio_config" default="$(find slam_odometry_v2)/config/slam_odometry_v2.yaml" />
+
+  <arg name="start_slam" default="true" />
+  <arg name="rviz" default="true" />
+
+  <group if="$(arg start_slam)">
+    <node pkg="slam_odometry_v2" type="slam_odometry_v2_node" name="slam_odometry_v2" output="screen">
+      <rosparam command="load" file="$(arg slam_config)" />
+      <param name="node/faster_lio_config_yaml" value="$(arg lio_config)" />
+    </node>
+  </group>
+
+  <node pkg="slam_mapping_v2" type="slam_mapping_v2_node" name="slam_mapping_v2" output="screen">
+    <rosparam command="load" file="$(arg config)" />
+  </node>
+
+  <node if="$(arg rviz)" pkg="rviz" type="rviz" name="mapping_rviz" 
+    args="-d $(find slam_mapping_v2)/rviz/mapping.rviz" />
+
+  <!-- 若使用 mapping_manager 启动/停止/保存，将其 backend 服务指向 v2：
+       mapping_manager.yaml 中 backend:
+         start_service: /slam_mapping_v2/start
+         stop_service:  /slam_mapping_v2/stop
+         get_status_service: /slam_mapping_v2/get_status
+       status_topic: /slam_mapping_v2/status -->
+</launch>

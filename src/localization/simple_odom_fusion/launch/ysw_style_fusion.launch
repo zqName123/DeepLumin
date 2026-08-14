@@ -1,26 +1,29 @@
 <launch>
   <arg name="slam_config" default="$(find slam_odometry)/config/slam_odometry_ysw.yaml" />
   <arg name="global_matcher_config" default="$(find global_matcher)/config/global_matcher.yaml" />
+  <arg name="lio_config" default="$(find slam_odometry_v2)/config/slam_odometry_v2.yaml" />
 
   <arg name="start_slam" default="true" />
   <arg name="start_global_matcher" default="true" />
   <arg name="rviz" default="true" />
 
-  <arg name="play_bag" default="true" />
+  <arg name="play_bag" default="false" />
   <arg name="bag" default="/home/hhy/2004ros/data/2026-07-14-11-17-21.bag" />
   <arg name="bag_rate" default="1.0" />
   <arg name="bag_delay" default="2.0" />
-  <arg name="clock" default="true" />
+  <arg name="clock" default="false" />
 
   <arg name="pcd_path" default="/home/hhy/2004ros/relocalization_ws/global_map_manual_imu.pcd" />
 
   <param name="/use_sim_time" value="$(arg clock)" />
 
-  <node if="$(arg start_slam)" pkg="slam_odometry" type="slam_odometry_node"
+  <node if="$(arg start_slam)" pkg="slam_odometry_v2" type="slam_odometry_v2_node"
         name="slam_odometry" output="screen">
     <rosparam file="$(arg slam_config)" command="load" />
+    <param name="node/faster_lio_config_yaml" value="$(arg lio_config)" />
     <param name="slam/publish_tf" value="false" />
-    <param name="map/pcd_path" value="$(arg pcd_path)" />
+    <!-- 全局地图发布已移到 ysw_style_fusion 节点 -->
+    <param name="map/publish_global_map" value="false" />
   </node>
 
   <node pkg="simple_odom_fusion" type="ysw_style_fusion_node"
@@ -36,14 +39,20 @@
     <param name="topics/map_to_odom" value="/localization/ysw_style_map_to_odom" />
     <param name="topics/fused_pose" value="/localization/ysw_style_pose" />
     <param name="topics/fused_path" value="/localization/ysw_style_path" />
-    <param name="topics/gm_source_cloud_odom" value="/localization/ysw_style/gm_source_cloud_odom" />
+    <param name="topics/current_scan_in_map" value="/localization/ysw_style/current_scan_in_map" />
 
     <param name="runtime/output_rate_hz" value="100.0" />
     <param name="runtime/publish_tf" value="true" />
     <param name="runtime/publish_map_to_odom_tf" value="true" />
     <param name="runtime/publish_odom_to_base_tf" value="true" />
     <param name="runtime/publish_path" value="true" />
-    <param name="global_matcher/publish_source_cloud_odom" value="true" />
+    <param name="global_matcher/publish_current_scan_in_map" value="true" />
+
+    <param name="map/publish_global_map" value="true" />
+    <param name="map/pcd_path" value="$(arg pcd_path)" />
+    <param name="map/global_map_topic" value="/localization/ysw_style/global_map" />
+    <param name="map/publish_voxel_leaf" value="1.2" />
+    <param name="map/publish_period" value="5.0" />
   </node>
 
   <node if="$(arg start_global_matcher)" pkg="global_matcher" type="global_matcher_node"
@@ -59,7 +68,7 @@
   </node>
 
   <node if="$(arg rviz)" pkg="rviz" type="rviz" name="ysw_style_fusion_rviz"
-        args="-d $(find simple_odom_fusion)/rviz/simple_odom_fusion.rviz" />
+        args="-d $(find simple_odom_fusion)/rviz/ysw.rviz" />
 
   <node if="$(arg play_bag)" pkg="rosbag" type="play" name="ysw_style_fusion_bag"
         args="--clock --delay=$(arg bag_delay) -r $(arg bag_rate) $(arg bag)" output="screen" />

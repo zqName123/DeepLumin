@@ -8,10 +8,10 @@
 
 
   <arg name="bag" default="/home/hhy/2004ros/data/2026-07-14-11-17-21.bag" />
-  <arg name="play_bag" default="true" />
+  <arg name="play_bag" default="false" />
   <arg name="bag_rate" default="1.0" />
   <arg name="bag_delay" default="2.0" />
-  <arg name="clock" default="true" />
+  <arg name="clock" default="false" />
   <arg name="rviz" default="false" />
   <!-- <arg name="adapter_config" default="$(find sensor_frame_adapter)/config/sensor_frame_adapter.yaml" />
 

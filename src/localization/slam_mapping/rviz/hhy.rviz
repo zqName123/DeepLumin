@@ -100,8 +100,7 @@ Visualization Manager:
       Marker Topic: /slam_mapping/loop_markers
       Name: MarkerArray
       Namespaces:
-        loop_edges: true
-        loop_nodes: true
+        {}
       Queue Size: 100
       Value: true
     - Alpha: 1
@@ -132,6 +131,22 @@ Visualization Manager:
       Use Fixed Frame: true
       Use rainbow: true
       Value: true
+    - Class: rviz/MarkerArray
+      Enabled: true
+      Marker Topic: /slam_mapping/gnss_markers
+      Name: MarkerArray
+      Namespaces:
+        gnss_rejected: true
+      Queue Size: 100
+      Value: true
+    - Class: rviz/MarkerArray
+      Enabled: true
+      Marker Topic: /slam_mapping/keyframes
+      Name: MarkerArray
+      Namespaces:
+        keyframes: true
+      Queue Size: 100
+      Value: true
   Enabled: true
   Global Options:
     Background Color: 48; 48; 48
@@ -160,7 +175,7 @@ Visualization Manager:
   Views:
     Current:
       Class: rviz/Orbit
-      Distance: 86.91382598876953
+      Distance: 56.70729446411133
       Enable Stereo Rendering:
         Stereo Eye Separation: 0.05999999865889549
         Stereo Focal Distance: 1
@@ -168,17 +183,17 @@ Visualization Manager:
         Value: false
       Field of View: 0.7853981852531433
       Focal Point:
-        X: -1.1033687591552734
-        Y: -42.04768753051758
-        Z: 1.300119400024414
+        X: -1.8175982236862183
+        Y: -3.102686882019043
+        Z: 0.7007714509963989
       Focal Shape Fixed Size: false
       Focal Shape Size: 0.05000000074505806
-      Invert Z Axis: true
+      Invert Z Axis: false
       Name: Current View
       Near Clip Distance: 0.009999999776482582
-      Pitch: 0.8803980946540833
+      Pitch: 0.9953980445861816
       Target Frame: base_link
-      Yaw: 3.130399227142334
+      Yaw: 3.1853981018066406
     Saved: ~
 Window Geometry:
   Displays:

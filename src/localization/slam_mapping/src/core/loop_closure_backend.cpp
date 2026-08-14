@@ -19,7 +19,8 @@ void LoopClosureBackend::reset() {
 }
 
 LoopClosureResult LoopClosureBackend::update(std::vector<MappingKeyframe>* keyframes) {
-  if (!impl_ || !config_.enable) return LoopClosureResult();
+  // 回环或 GNSS 任一启用时进入后端（GNSS 优化可独立于回环检测工作）
+  if (!impl_ || (!config_.enable && !config_.gnss.enable)) return LoopClosureResult();
   return impl_->update(keyframes);
 }
 
@@ -33,6 +34,32 @@ localization::PointCloudPtr LoopClosureBackend::latestHistorySubmap() const {
 
 std::pair<int, int> LoopClosureBackend::latestLoopPair() const {
   return impl_ ? impl_->latestLoopPair() : std::pair<int, int>{-1, -1};
+}
+
+std::vector<Eigen::Vector3d> LoopClosureBackend::gnssFactorPositions() const {
+  return impl_ ? impl_->gnssFactorPositions() : std::vector<Eigen::Vector3d>();
+}
+
+std::vector<Eigen::Vector3d> LoopClosureBackend::gnssRejectedPositions() const {
+  return impl_ ? impl_->gnssRejectedPositions() : std::vector<Eigen::Vector3d>();
+}
+
+std::vector<std::pair<int, Eigen::Vector3d>> LoopClosureBackend::gnssAcceptedFactors() const {
+  return impl_ ? impl_->gnssAcceptedFactors() : std::vector<std::pair<int, Eigen::Vector3d>>();
+}
+
+std::vector<std::pair<int, Eigen::Vector3d>> LoopClosureBackend::gnssRejectedFactors() const {
+  return impl_ ? impl_->gnssRejectedFactors() : std::vector<std::pair<int, Eigen::Vector3d>>();
+}
+
+bool LoopClosureBackend::gnssMapEnuTransform(Eigen::Matrix3d* rot,
+                                             Eigen::Vector3d* trans) const {
+  return impl_ ? impl_->gnssMapEnuTransform(rot, trans) : false;
+}
+
+bool LoopClosureBackend::gnssEnuOrigin(double* lat_deg, double* lon_deg,
+                                       double* alt) const {
+  return impl_ ? impl_->gnssEnuOrigin(lat_deg, lon_deg, alt) : false;
 }
 
 bool LoopClosureBackend::enabled() const { return config_.enable; }

@@ -101,6 +101,10 @@ TimestampedPointCloud FasterLIOImpl::getCurrentScan() const {
     return core_ ? core_->getCurrentScan() : TimestampedPointCloud();
 }
 
+TimestampedPointCloud FasterLIOImpl::getEffectScan() const {
+    return core_ ? core_->getEffectScan() : TimestampedPointCloud();
+}
+
 bool FasterLIOImpl::isDegenerate() const {
     return core_ && core_->isDegenerate();
 }

@@ -47,11 +47,16 @@ bool SlamMappingRosAdapter::initialize(ros::NodeHandle& nh, ros::NodeHandle& pnh
 
 void SlamMappingRosAdapter::spinOnce() {
   const bool ok = runtime_.processOnce();
-  ROS_INFO_THROTTLE(2.0, "[slam_mapping] spinOnce state=%s processOnce=%s frame_count=%llu keyframes=%llu",
+  ROS_INFO_THROTTLE(2.0,
+                    "[slam_mapping] spinOnce state=%s processOnce=%s frame_count=%llu keyframes=%llu "
+                    "gnss_factors=%llu gnss_rejected=%llu gnss_aligned=%s",
                     slam_mapping::toString(runtime_.status().state).c_str(),
                     ok ? "true" : "false",
                     static_cast<unsigned long long>(runtime_.status().frame_count),
-                    static_cast<unsigned long long>(runtime_.status().keyframe_count));
+                    static_cast<unsigned long long>(runtime_.status().keyframe_count),
+                    static_cast<unsigned long long>(runtime_.status().gnss_factor_count),
+                    static_cast<unsigned long long>(runtime_.status().gnss_rejected_count),
+                    runtime_.status().gnss_aligned ? "true" : "false");
   // publishOutputs();
   // 状态消息
   if ((ros::WallTime::now() - last_status_pub_time_).toSec() >= 0.1) {
@@ -80,6 +85,13 @@ void SlamMappingRosAdapter::spinOnce() {
     viz_.publishKeyframeMarkers(kfs);
     viz_.publishMapPreview(kfs);
     viz_.publishLoopMarkers(runtime_.loopPairs(), kfs);
+    viz_.publishGnssMarkers(runtime_.gnssFactorPositions(),
+                            runtime_.gnssRejectedPositions(),
+                            config_.frames.map);
+    viz_.publishGnssFactorEdges(runtime_.gnssAcceptedFactors(),
+                                runtime_.gnssRejectedFactors(),
+                                kfs,
+                                config_.frames.map);
   }
 
 }
@@ -121,7 +133,14 @@ void SlamMappingRosAdapter::shutdown() {
 void SlamMappingRosAdapter::onImu(const sensor_msgs::Imu::ConstPtr& msg) { runtime_.feedImu(slam_mapping_ros::fromRos(*msg)); }
 void SlamMappingRosAdapter::onLidar(const sensor_msgs::PointCloud2::ConstPtr& msg) { runtime_.feedLidar(slam_mapping_ros::fromRos(*msg, config_.slam_backend)); }
 void SlamMappingRosAdapter::onCan(const deeplumin_msgs::CanReceiveInfo::ConstPtr& msg) { runtime_.feedCanVelocity(slam_mapping_ros::fromRos(*msg)); }
-void SlamMappingRosAdapter::onGnss(const deeplumin_msgs::Gpchc::ConstPtr& msg) { runtime_.feedGnssAttitude(slam_mapping_ros::fromRos(*msg)); }
+void SlamMappingRosAdapter::onGnss(const deeplumin_msgs::Gpchc::ConstPtr& msg) {
+  // 前端姿态辅助（现有逻辑，保持不变）
+  runtime_.feedGnssAttitude(slam_mapping_ros::fromRos(*msg));
+  // 后端 GNSS 位置因子（仅在启用时缓冲，避免无效开销）
+  if (config_.loop_closure.gnss.enable) {
+    runtime_.feedGnss(slam_mapping_ros::fromRosGnss(*msg));
+  }
+}
 
 bool SlamMappingRosAdapter::handleStart(deeplumin_msgs::StartMappingRuntime::Request& req,
                                         deeplumin_msgs::StartMappingRuntime::Response& res) {

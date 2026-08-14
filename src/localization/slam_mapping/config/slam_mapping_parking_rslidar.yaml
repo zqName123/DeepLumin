@@ -107,6 +107,26 @@ loop_closure:
   icp_fitness_thresh: 0.3
   pose_graph_enable: false
 
+  # GNSS 后端优化（默认关闭；启用前请确认设备 status/nsv 语义）
+  gnss:
+    enable: false
+    min_status: 4
+    min_nsv: 15
+    max_age_sec: 0.2
+    min_spacing_m: 5.0
+    use_gps_elevation: false
+    z_override_sigma: 0.01
+    # status -> σ 表（白名单 + 噪声）；本车未标定，留空使用回退分档逻辑
+    status_sigma: []
+    sigma_fixed: 0.3
+    sigma_float: 1.5
+    sigma_unknown: 3.0
+    sigma_floor: 0.2
+    robust_delta: 1.0
+    alignment_frames: 20
+    consistency_thresh_m: 10.0
+    lever_arm: [0.0, 0.0, 0.0]
+
 visualization:
   publish_path: true
   publish_keyframes: true
@@ -114,6 +134,8 @@ visualization:
   publish_current_scan: true
   publish_accumulated_map_preview: true
   publish_loop_markers: true
+  publish_gnss_markers: true
+  publish_gnss_edges: true
   accumulated_map_publish_period: 2.0
   accumulated_map_voxel_leaf: 0.5
 
@@ -125,4 +147,6 @@ outputs:
   map_preview_topic: "/slam_mapping/map_preview"
   keyframe_markers_topic: "/slam_mapping/keyframes"
   loop_markers_topic: "/slam_mapping/loop_markers"
+  gnss_markers_topic: "/slam_mapping/gnss_markers"
+  gnss_factor_edges_topic: "/slam_mapping/gnss_factor_edges"
   status_topic: "/slam_mapping/status"

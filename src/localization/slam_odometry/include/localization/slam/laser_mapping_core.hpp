@@ -31,6 +31,8 @@ public:
     OdomResult getOdometry() const;
     TimestampedPointCloud getLocalMap() const;
     TimestampedPointCloud getCurrentScan() const;
+    /** 有效对应点（effect points，body 系）：仅包含里程计匹配中通过有效平面对应筛选的点 */
+    TimestampedPointCloud getEffectScan() const;
     bool isDegenerate() const;
     double getDegeneracyFactor() const;
 
@@ -43,6 +45,7 @@ private:
     OdomResult odom_;
     TimestampedPointCloud local_map_; // 局部地图
     TimestampedPointCloud current_scan_; // 当前扫描
+    TimestampedPointCloud effect_scan_; // 有效对应点（body 系）
     bool initialized_ = false;
     bool is_degenerate_ = false; // 是否退化
     double degeneracy_factor_ = 0.0;

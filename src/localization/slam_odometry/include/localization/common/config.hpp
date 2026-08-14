@@ -73,6 +73,7 @@ struct SlamConfig {
     Mat3d extrinsic_R = Mat3d::Identity();
     double degeneracy_threshold = 100.0;
 
+    std::string faster_lio_config_yaml;   ///< faster-lio (FAST-LIO2) 独立配置文件路径（slam/type=fastlio2 时使用）
     bool use_vel = false;
     bool use_gnss_attitude = true;
     double can_vel_diff_thresh_kmh = 2.0;

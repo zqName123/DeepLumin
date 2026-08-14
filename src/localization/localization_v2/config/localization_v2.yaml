@@ -1,0 +1,79 @@
+# =============================================================================
+# localization_v2 配置文件
+#
+# 结构：frames / topics / runtime / global_matcher / initialization /
+#       relocalization / initial_pose
+# 只保留实际生效的参数；节点私有命名空间（~）加载，launch 中可按需覆盖。
+# =============================================================================
+
+# -------------------- 坐标系 --------------------
+frames:
+  map: map
+  odom: odom
+  base_link: base_link
+
+# -------------------- 话题 --------------------
+topics:
+  # 输入
+  slam_odom: /localization/slam_odom                 # slam_odometry_v2: odom->base_link
+  global_matcher_result: /localization/global_matcher/result  # global_matcher 结果
+  initial_pose: /initialpose                          # 人工初始位姿（RViz 2D Pose Estimate）
+  source_cloud: /localization/cloud_registered_effect # 当前帧点云（odom 系，仅可视化用）
+  # 输出
+  fused_odom: /localization_v2/odom                  # map->base_link 融合里程计
+  map_to_odom: /localization_v2/map_to_odom          # map->odom 修正量
+  fused_path: /localization_v2/path                  # 融合轨迹（可视化）
+  status: /localization_v2/status                    # FusionStatus 定位状态
+  current_scan_in_map: /localization_v2/current_scan_in_map  # 点云在 map 系（可视化）
+
+# -------------------- 运行时 --------------------
+runtime:
+  output_rate_hz: 100.0
+  max_path_size: 5000
+  publish_tf: true
+  # map->odom 由本节点发布；odom->base 由 slam_odometry_v2 发布（避免重复 TF）
+  publish_map_to_odom_tf: true
+  publish_odom_to_base_tf: true
+  publish_path: false
+  publish_current_scan_in_map: false
+
+# -------------------- global_matcher 结果语义 --------------------
+global_matcher:
+  # odom: 结果为 map->odom（对应 global_matcher result/pose_frame=odom，推荐）
+  # base: 结果为 map->base_link，本节点内部用最新 slam 位姿反推 map->odom
+  result_pose_frame: odom
+  # 跳变门限：false = 完全 ysw 行为（GM 报 success 即生效）；
+  # true 时单次修正超过阈值将被拒绝（人工初值/重定位不受限）
+  enable_jump_guard: true
+  max_jump_translation: 5.0
+  max_jump_yaw_deg: 50.0
+
+# -------------------- 初始化策略 --------------------
+initialization:
+  # true: 必须获得初始位姿后才输出定位；false: ysw 原始行为（无初值先以单位 map->odom 输出）
+  require_initial_pose: false
+  use_relocalization_init: true   # 允许用重定位结果初始化
+  use_manual_initialpose: true    # 允许人工 initial pose 初始化/重置
+  use_global_matcher_init: true   # GM 自身匹配成功即视为初始化完成
+
+# -------------------- 重定位接口 --------------------
+relocalization:
+  result_topic: /localization/relocalization/result   # 输入：RelocalizationResult（map->base_link）
+  command_topic: /localization_v2/relocalization/command  # 输出：std_msgs/String "start"/"stop"
+  enabled: true
+  auto_start: true               # 未初始化时自动请求启动重定位
+  stop_on_success: true          # 重定位成功（过门限）后停止
+  stop_on_manual_pose: true      # 收到人工初值后停止
+  stop_on_global_match: true     # GM 自身成功后停止
+  require_accepted: false        # true: 仅接受 accepted=true 的结果
+  max_fitness_score: 1.0
+  min_inlier_ratio: 0.5
+  max_inlier_rmse: 0.8
+
+# -------------------- 人工初始位姿 z 补全 --------------------
+# 与 ysw_loc 一致：RViz 2D 初值取附近地图点云高度范围中值补全 z。
+# map_pcd_path 留空则关闭；launch 中与 global_matcher 共用 pcd_path 参数。
+initial_pose:
+  z_completion_enabled: true
+  z_search_radius: 5.0
+  map_pcd_path: ""

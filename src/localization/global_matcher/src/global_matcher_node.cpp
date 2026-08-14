@@ -387,7 +387,7 @@ class GlobalMatcherNode {
     // 订阅跟踪初始位姿（融合里程计）
     tracking_initial_sub_ = nh_.subscribe(initial_pose_topic_, 5, &GlobalMatcherNode::onTrackingInitialOdom, this);
     // 订阅源里程计（用于确定点云坐标系）
-    source_odom_sub_ = nh_.subscribe(source_odom_topic_, 20, &GlobalMatcherNode::onSourceOdom, this);
+    source_odom_sub_ = nh_.subscribe(source_odom_topic_, 1, &GlobalMatcherNode::onSourceOdom, this);
     // 订阅引导初始位姿（来自mapping_manager等）
     bootstrap_initial_pose_sub_ = nh_.subscribe(bootstrap_initial_pose_topic_, 2, &GlobalMatcherNode::onBootstrapInitialPose, this);
     // 订阅手动初始位姿（RViz中的2D Pose Estimate）
@@ -766,6 +766,12 @@ class GlobalMatcherNode {
     latest_bootstrap_map_base_ = poseToMatrix(msg->pose.pose);
     latest_bootstrap_stamp_ = msg->header.stamp.isZero() ? ros::Time::now() : msg->header.stamp;
     have_bootstrap_map_base_ = true;
+    // 与 ysw_loc 的 need_init 一致：人工初值直接成为下一次匹配的初值（map->source = 人工map位姿 × odom⁻¹）
+    if (have_source_odom_) {
+      last_map_source_ = latest_bootstrap_map_base_ * latest_source_base_.inverse();
+      have_last_map_source_ = true;
+    }
+    ++manual_reset_seq_;
     ROS_INFO("[global_matcher] received manual initial pose from %s", manual_initial_pose_topic_.c_str());
   }
 
@@ -894,6 +900,7 @@ class GlobalMatcherNode {
     bool have_bootstrap = false;
     bool have_source_odom = false;
     std::string source_frame;
+    uint64_t match_start_seq = 0;
 
     {
       std::lock_guard<std::mutex> lock(mutex_);
@@ -907,6 +914,7 @@ class GlobalMatcherNode {
       have_bootstrap = have_bootstrap_map_base_;
       have_source_odom = have_source_odom_;
       source_frame = latest_source_frame_;
+      match_start_seq = manual_reset_seq_;
     }
 
     if (!global_map_ || global_map_->empty()) {
@@ -953,10 +961,10 @@ class GlobalMatcherNode {
 
     publishInitialGuess(source_stamp, initial_map_base_for_crop);
     publishSourceInitial(source_stamp, source, initial_map_source);
-
+    const ros::Time start = ros::Time::now();
     CloudPtr target_submap = cropMap(initial_map_base_for_crop);
 
-    const ros::Time start = ros::Time::now();
+    
     // 把target_submap构建体素地图
     vgicp_coarse_map = buildVgicpVoxelMap(target_submap, vgicp_voxel_resolution_ * coarse_scale_);
     vgicp_fine_map = buildVgicpVoxelMap(target_submap, vgicp_voxel_resolution_ * fine_scale_);
@@ -990,6 +998,12 @@ class GlobalMatcherNode {
                                                               fine_scale_, &fine_fitness, &fine_converged);
     }
 
+    // 如果使用fast_gicp得到初始位姿， small_gicp得到精确位姿
+
+
+
+
+
 
     // const Eigen::Matrix4f coarse = registerAtScale(source, target_submap, initial_map_source,
     //                                                coarse_scale_, &coarse_fitness, &coarse_converged);
@@ -997,12 +1011,14 @@ class GlobalMatcherNode {
     // bool fine_converged = false;
     // const Eigen::Matrix4f final_map_source = registerAtScale(source, target_submap, coarse,
     //                                                         fine_scale_, &fine_fitness, &fine_converged);
-    const double elapsed_ms = (ros::Time::now() - start).toSec() * 1000.0;
+    // const double elapsed_ms = (ros::Time::now() - start).toSec() * 1000.0;
     const Eigen::Matrix4f final_map_base = final_map_source * source_base;
 
     MatchMetrics metrics = computeInliers(source, target_submap, final_map_source, inlier_distance_);
     const double delta_translation = translationDiff(final_map_base, initial_map_base_for_crop);
     const double delta_yaw = std::abs(yawDiff(final_map_base, initial_map_base_for_crop));
+
+    const double elapsed_ms = (ros::Time::now() - start).toSec() * 1000.0;
 
     // VGICP 不提供 PCL 式 fitness：用 computeInliers 统计的平均最近邻距离填充日志/消息字段，
     // 成功判定以内点率 / RMSE 为主（fitness 门限仅对 icp/gicp/fast_gicp 生效）。
@@ -1036,6 +1052,25 @@ class GlobalMatcherNode {
                         "[global_matcher] matcher hasConverged=false but quality gates passed "
                         "(fitness=%.4f inlier=%.3f rmse=%.3f); accepting result",
                         fine_fitness, metrics.inlier_ratio, metrics.inlier_rmse);
+    }
+
+    // 匹配期间收到了新的人工初值：本帧结果是基于旧初值算的，丢弃，避免旧结果覆盖新锚点
+    // （等价于 ysw_loc 的 need_init 在匹配线程内同步生效，不存在“旧结果补刀”窗口）。
+    {
+      std::lock_guard<std::mutex> lock(mutex_);
+      if (manual_reset_seq_ != match_start_seq) {
+        ROS_WARN_THROTTLE(1.0,
+                          "[global_matcher] manual initial pose arrived during match, discard stale result");
+        publishRejected(source_stamp, "manual pose reset during match");
+        return;
+      }
+    }
+
+    // 与 ysw_loc 一致：保存上一次成功匹配的 map->source（source 在 odom 系时即 map->odom），
+    // 作为下一帧初值，串行、无消息回路延迟。
+    if (success) {
+      last_map_source_ = final_map_source;
+      have_last_map_source_ = true;
     }
 
     updateModeAfterMatch(success);
@@ -1097,11 +1132,23 @@ class GlobalMatcherNode {
     bool have_map_base = false;
     Eigen::Matrix4f map_base = Eigen::Matrix4f::Identity();
 
-    // 优先级1：跟踪模式（使用融合里程计）
-    if (use_tracking_initial_pose_ && have_tracking) {
+    // 优先级1：跟踪模式。默认用上一次成功匹配的 map->source 作为初值（与 ysw_loc 的
+    // T_map_to_odom 串行结构一致），避免 fused odom 话题异步回读带来的滞后；
+    // 没有历史结果时才使用 fused odom。
+    if (use_tracking_initial_pose_ && (have_tracking || have_last_map_source_)) {
+      guess.mode = MatcherRunMode::TRACKING;
+      if (have_last_map_source_) {
+        guess.reason = "tracking:last_result";
+        guess.map_source = last_map_source_;
+        guess.source_base = have_source_odom ? source_odom_base : Eigen::Matrix4f::Identity();
+        guess.map_base = guess.map_source * guess.source_base;
+        ROS_INFO_THROTTLE(2.0, "[global_matcher] mode=%s initial=%s source_frame=%s failures=%d",
+                          modeToString(guess.mode).c_str(), guess.reason.c_str(), source_mode.c_str(),
+                          consecutive_failures_);
+        return guess;
+      }
       // 在线跟踪即使在匹配失败后也要继续使用fused_odom。
       // 失败的匹配帧只是被拒绝的观测，不是跳回地图原点/默认位置的理由。
-      guess.mode = MatcherRunMode::TRACKING;
       guess.reason = "tracking:fused_odom";
       map_base = tracking_map_base;
       have_map_base = true;
@@ -1240,8 +1287,14 @@ class GlobalMatcherNode {
                                   double scale,
                                   double* fitness,
                                   bool* converged) const {
-    const double source_leaf = std::max(0.01, source_voxel_leaf_);
-    const double target_leaf = std::max(0.01, target_voxel_leaf_ * 1);
+    // 与 ysw_loc 一致：粗/细两阶段按 scale 缩放体素（0.08 -> 粗 0.48 / 细 0.24），
+    // 对应距离固定不缩放（ysw_loc 两阶段都用同一个 max_correspondence_distance）。
+    const double source_leaf = (matcher_type_ != "vgicp")
+                                   ? std::max(0.01, source_voxel_leaf_ * scale)
+                                   : std::max(0.01, source_voxel_leaf_);
+    const double target_leaf = (matcher_type_ != "vgicp")
+                                   ? std::max(0.01, target_voxel_leaf_ * scale)
+                                   : std::max(0.01, target_voxel_leaf_);
     CloudPtr source_filtered = downsample(source, source_leaf);
     // VGICP：target 使用整张地图的预构建体素地图，无需每帧降采样/体素化 target
     CloudPtr target_filtered;
@@ -1267,23 +1320,23 @@ class GlobalMatcherNode {
       icp.setInputTarget(target_filtered);
       icp.setMaximumIterations(max_iterations_);
       icp.setTransformationEpsilon(transformation_epsilon_);
-      icp.setMaxCorrespondenceDistance(max_correspondence_distance_ * scale);
+      icp.setMaxCorrespondenceDistance(max_correspondence_distance_);
       icp.align(aligned, initial_guess);
       has_converged = icp.hasConverged();
       score = icp.getFitnessScore();
-      // Always take the last iterate; quality gates decide accept/reject.
-      transform = icp.getFinalTransformation();
+      // 与 ysw_loc 一致：未收敛时保持初始猜测（忽略本帧），避免坏迭代结果污染修正量
+      transform = has_converged ? icp.getFinalTransformation() : initial_guess;
     } else if (matcher_type_ == "gicp") {
       pcl::GeneralizedIterativeClosestPoint<PointT, PointT> gicp;
       gicp.setInputSource(source_filtered);
       gicp.setInputTarget(target_filtered);
       gicp.setMaximumIterations(max_iterations_);
       gicp.setTransformationEpsilon(transformation_epsilon_);
-      gicp.setMaxCorrespondenceDistance(max_correspondence_distance_ * scale);
+      gicp.setMaxCorrespondenceDistance(max_correspondence_distance_);
       gicp.align(aligned, initial_guess);
       has_converged = gicp.hasConverged();
       score = gicp.getFitnessScore();
-      transform = gicp.getFinalTransformation();
+      transform = has_converged ? gicp.getFinalTransformation() : initial_guess;
     } else if (matcher_type_ == "vgicp") {
       // target 为整张地图的预构建体素地图（coarse/fine 两个分辨率）。
       // IncrementalVoxelMap 的最近邻搜索只查询变换后点所在 voxel 的邻近体素，
@@ -1317,8 +1370,8 @@ class GlobalMatcherNode {
       init.matrix() = initial_guess.cast<double>();
       auto result = reg.align(*voxelmap, *source_pc, *voxelmap, init);
 
-      transform = result.T_target_source.matrix().cast<float>();
       has_converged = result.converged;
+      transform = has_converged ? result.T_target_source.matrix().cast<float>() : initial_guess;
       // VGICP 无 PCL 式 fitness：score 保持 inf，日志/消息用 computeInliers 的平均最近邻距离（见 runMatch）
     } else {
       fast_gicp::FastGICP<PointT, PointT> gicp;
@@ -1328,11 +1381,11 @@ class GlobalMatcherNode {
       gicp.setInputTarget(target_filtered);
       gicp.setMaximumIterations(max_iterations_);
       gicp.setTransformationEpsilon(transformation_epsilon_);
-      gicp.setMaxCorrespondenceDistance(max_correspondence_distance_ * scale);
+      gicp.setMaxCorrespondenceDistance(max_correspondence_distance_);
       gicp.align(aligned, initial_guess);
       has_converged = gicp.hasConverged();
       score = gicp.getFitnessScore();
-      transform = gicp.getFinalTransformation();
+      transform = has_converged ? gicp.getFinalTransformation() : initial_guess;
     }
 
     if (fitness) *fitness = score;
@@ -1560,6 +1613,11 @@ class GlobalMatcherNode {
   bool have_tracking_map_base_ = false;
   bool have_bootstrap_map_base_ = false;
   bool have_source_odom_ = false;
+  // 上一次成功匹配的 map->source（source 在 odom 系时即 map->odom，对应 ysw_loc 的 T_map_to_odom），
+  // 作为下一帧初值：串行、无消息回路延迟。
+  bool have_last_map_source_ = false;
+  Eigen::Matrix4f last_map_source_ = Eigen::Matrix4f::Identity();
+  uint64_t manual_reset_seq_ = 0;  // 人工初值序号：匹配期间有新的人工初值则丢弃本帧旧结果
   nav_msgs::Path path_;
 
   std::string map_frame_;
