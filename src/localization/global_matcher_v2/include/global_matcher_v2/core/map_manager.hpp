@@ -125,6 +125,9 @@ class MapManager {
   pcl::PointCloud<pcl::PointXYZ>::Ptr cropSubmap(const Eigen::Matrix4f& map_base,
                                                  const CropBoxConfig& crop) const;
 
+  /// 用人工初值 xy 在地图上估算 z（该 xy 附近点云 z 中值，与 ysw_loc GM 一致）
+  bool estimateGroundZ(double x, double y, double radius, double* z_out) const;
+
   const std::vector<ChunkInfo>& manifest() const { return manifest_; }
 
  private:

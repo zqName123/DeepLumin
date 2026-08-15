@@ -152,6 +152,9 @@ GlobalMatcherV2Config loadGlobalMatcherV2Config(ros::NodeHandle& pnh) {
       loadBool(pnh, "runtime/use_default_initial_pose", cfg.use_default_initial_pose);
   cfg.allow_identity_bootstrap =
       loadBool(pnh, "runtime/allow_identity_bootstrap", cfg.allow_identity_bootstrap);
+  cfg.manual_initial_pose_z_search_radius =
+      loadDouble(pnh, "manual_initial_pose/z_search_radius",
+                 cfg.manual_initial_pose_z_search_radius);
   cfg.default_initial_translation =
       loadVec3(pnh, "runtime/default_initial_pose/translation", cfg.default_initial_translation);
   cfg.default_initial_rpy_deg =

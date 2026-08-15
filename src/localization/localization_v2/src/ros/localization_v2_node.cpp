@@ -242,6 +242,7 @@ class LocalizationV2Node {
       ROS_WARN("[localization_v2] invalid manual initial pose, ignored");
       return;
     }
+    fusion_.requestJumpGuardBypass();
     state_machine_.onManualPose();
     dispatchRelocalizationCommand();
     publishMapToOdom();
@@ -285,6 +286,7 @@ class LocalizationV2Node {
       ROS_WARN("[localization_v2] invalid relocalization pose, ignored");
       return;
     }
+    fusion_.requestJumpGuardBypass();
     latest_map_id_ = signal.map_id;
     state_machine_.onRelocalizationResult(/*accepted=*/true);
     dispatchRelocalizationCommand();

@@ -68,6 +68,8 @@ struct GlobalMatcherV2Config {
   bool use_manual_initial_pose = true;
   bool use_default_initial_pose = true;
   bool allow_identity_bootstrap = true;
+  // ---- 人工初值 z 补全（与 ysw_loc GM 一致） ----
+  double manual_initial_pose_z_search_radius = 10.0;
   Eigen::Vector3f default_initial_translation = Eigen::Vector3f::Zero();
   Eigen::Vector3f default_initial_rpy_deg = Eigen::Vector3f::Zero();
 

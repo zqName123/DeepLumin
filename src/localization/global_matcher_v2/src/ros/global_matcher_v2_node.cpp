@@ -211,6 +211,9 @@ class GlobalMatcherV2Node {
     if (config_.publish_global_map) {
       global_map_pub_ =
           nh_.advertise<sensor_msgs::PointCloud2>(config_.global_map_topic, 1, true);
+      // 发布器创建后立即发布一次全局地图（latch，新订阅者自动收到），
+      // 避免“启动后要等首个匹配帧/定时器才出图”
+      publishGlobalMap();
     }
     if (config_.publish_source_initial_scan) {
       source_initial_pub_ =
@@ -307,8 +310,21 @@ class GlobalMatcherV2Node {
     if (!config_.use_manual_initial_pose) {
       return;
     }
+    Eigen::Matrix4f manual_pose = poseToMatrix(msg->pose.pose);
+    // 与 ysw_loc GM 一致：人工 2D 初值用地图补全 z（该 xy 附近点云 z 中值）
+    double init_z = 0.0;
+    if (map_manager_.estimateGroundZ(manual_pose(0, 3), manual_pose(1, 3),
+                                     config_.manual_initial_pose_z_search_radius, &init_z)) {
+      manual_pose(2, 3) = init_z;
+      ROS_INFO("[global_matcher_v2] manual initial pose z completed to %.2f", init_z);
+    } else {
+      ROS_WARN_THROTTLE(2.0,
+                        "[global_matcher_v2] cannot estimate z from map at manual pose "
+                        "(x=%.2f y=%.2f), keep given z=%.2f",
+                        manual_pose(0, 3), manual_pose(1, 3), manual_pose(2, 3));
+    }
     std::lock_guard<std::mutex> lock(mutex_);
-    latest_bootstrap_map_base_ = poseToMatrix(msg->pose.pose);
+    latest_bootstrap_map_base_ = manual_pose;
     latest_bootstrap_stamp_ = msg->header.stamp.isZero() ? ros::Time::now() : msg->header.stamp;
     have_bootstrap_map_base_ = true;
     if (have_source_odom_) {

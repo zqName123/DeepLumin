@@ -37,13 +37,15 @@ bool FusionCore::updateFromGlobalMatch(const GlobalMatchUpdate& update) {
     return false;
   }
 
-  if (!passesJumpGuard(candidate_map_odom)) {
+  if (!passesJumpGuard(candidate_map_odom) && !jump_guard_bypass_) {
     return false;
   }
 
   map_odom_ = candidate_map_odom;
   map_odom_.orientation.normalize();
   have_map_odom_ = true;
+  // 人工初值/重定位后的首次 GM 结果作为锚点确认，一次性绕过跳变门限
+  jump_guard_bypass_ = false;
   return true;
 }
 

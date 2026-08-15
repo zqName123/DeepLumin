@@ -51,7 +51,7 @@ map:
   map_dir: ""                 # chunked 模式：分片目录（含 chunks.txt / index.txt / N.pcd）
   chunk_size: 100.0           # 分片边长（须与脚本一致）
   load_radius_chunks: 1       # 加载当前分片周围 (2r+1)^2 个分片
-  load_voxel_leaf: 0.02        # 分片加载时体素降采样
+  load_voxel_leaf: 0.1        # 分片加载时体素降采样
   max_loaded_chunks: 64       # 内存中最多保留分片数（LRU 淘汰）
   cov_num_neighbors: 20       # 分片协方差估计近邻数（加载时一次性计算）
   cov_num_threads: 2
@@ -78,6 +78,10 @@ runtime:
   default_initial_pose:
     translation: [0.0, 0.0, 0.0]
     rpy_deg: [0.0, 0.0, 0.0]
+
+# -------------------- 人工初值 z 补全（与 ysw_loc GM 一致） --------------------
+manual_initial_pose:
+  z_search_radius: 10.0    # 人工 2D 初值用该 xy 附近地图点云 z 中值补全
 
 # -------------------- 可视化裁剪盒（仅 publish.target_submap 用） --------------------
 crop:

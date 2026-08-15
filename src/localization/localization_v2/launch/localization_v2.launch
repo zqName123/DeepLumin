@@ -62,9 +62,9 @@
     <param name="runtime/publish_current_scan_in_map" value="true" />
 
     <param name="global_matcher/result_pose_frame" value="odom" />
-    <param name="global_matcher/enable_jump_guard" value="false" />
+    <param name="global_matcher/enable_jump_guard" value="true" />
     <param name="global_matcher/max_jump_translation" value="5.0" />
-    <param name="global_matcher/max_jump_yaw_deg" value="50.0" />
+    <param name="global_matcher/max_jump_yaw_deg" value="20.0" />
 
     <param name="initialization/require_initial_pose" value="false" />
     <param name="initialization/use_relocalization_init" value="true" />

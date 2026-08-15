@@ -4,6 +4,7 @@
 #include <cstdint>
 #include <chrono>
 #include <cmath>
+#include <limits>
 #include <fstream>
 #include <sstream>
 #include <unordered_map>
@@ -507,4 +508,31 @@ pcl::PointCloud<pcl::PointXYZ>::Ptr MapManager::cropSubmap(
   return cropped;
 }
 
+bool MapManager::estimateGroundZ(double x, double y, double radius, double* z_out) const {
+  if (radius <= 0.0 || !z_out) {
+    return false;
+  }
+  std::lock_guard<std::mutex> lock(mutex_);
+  if (!active_pcl_ || active_pcl_->empty()) {
+    return false;
+  }
+  const double r2 = radius * radius;
+  bool found = false;
+  double z_min = std::numeric_limits<double>::max();
+  double z_max = std::numeric_limits<double>::lowest();
+  for (const auto& p : active_pcl_->points) {
+    const double dx = p.x - x;
+    const double dy = p.y - y;
+    if (dx * dx + dy * dy <= r2) {
+      found = true;
+      z_min = std::min(z_min, static_cast<double>(p.z));
+      z_max = std::max(z_max, static_cast<double>(p.z));
+    }
+  }
+  if (!found) {
+    return false;
+  }
+  *z_out = 0.5 * (z_min + z_max);
+  return true;
+}
 }  // namespace global_matcher_v2

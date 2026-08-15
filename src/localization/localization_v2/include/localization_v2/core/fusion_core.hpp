@@ -52,6 +52,9 @@ class FusionCore {
  public:
   void setJumpGuard(const JumpGuardConfig& config) { jump_guard_ = config; }
 
+  /// 人工初值/重定位成功后调用：下一次 GM 结果跳过跳变门限（作为锚点确认/修正），一次性生效
+  void requestJumpGuardBypass() { jump_guard_bypass_ = true; }
+
   // ---- slam 局部里程计 ----
   void setOdomBase(const Pose3d& odom_base);
   bool hasSlam() const { return have_slam_; }
@@ -90,6 +93,7 @@ class FusionCore {
   bool have_slam_ = false;
   bool have_map_odom_ = false;
   JumpGuardConfig jump_guard_;
+  bool jump_guard_bypass_ = false;  ///< 人工初值/重定位后的首次 GM 结果绕过跳变门限
 };
 
 }  // namespace localization_v2
