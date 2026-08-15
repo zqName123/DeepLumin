@@ -204,13 +204,18 @@ class LocalizationV2Node {
       return;
     }
 
+    // 记录最近一次被接受的 GM 结果指标，供重定位结果比较
+    have_latest_gm_ = true;
+    latest_gm_inlier_ratio_ = msg->inlier_ratio;
+    latest_gm_inlier_rmse_ = msg->inlier_rmse;
+
     // GM 自身成功：若尚未初始化则完成初始化并停止重定位
     state_machine_.onGlobalMatchSuccess();
     dispatchRelocalizationCommand();
     latest_map_id_ = msg->map_id;
     publishMapToOdom();
-    ROS_INFO("[localization_v2] updated map->odom from global matcher map_id=%s fitness=%.4f inlier=%.3f",
-             msg->map_id.c_str(), msg->fitness_score, msg->inlier_ratio);
+    ROS_INFO("[localization_v2] updated map->odom from global matcher map_id=%s fitness=%.4f inlier=%.3f rmse=%.3f",
+             msg->map_id.c_str(), msg->fitness_score, msg->inlier_ratio, msg->inlier_rmse);
   }
 
   void onInitialPose(const geometry_msgs::PoseWithCovarianceStamped::ConstPtr& msg) {
@@ -281,18 +286,32 @@ class LocalizationV2Node {
       return;
     }
 
-    // 通过门限：以重定位位姿作为初始位姿完成初始化
-    if (!fusion_.updateMapOdomFromMapBase(signal.map_base, /*require_slam=*/false)) {
-      ROS_WARN("[localization_v2] invalid relocalization pose, ignored");
-      return;
+    // 通过门限：与最近一次 GM 成功结果直接比较内点率 / RMSE，
+    // 重定位更优（或尚无 GM 结果）时以重定位位姿完成初始化，否则保留 GM 初值。
+    const bool reloc_better =
+        !have_latest_gm_ || (signal.inlier_ratio >= latest_gm_inlier_ratio_ &&
+                             signal.inlier_rmse <= latest_gm_inlier_rmse_);
+    if (reloc_better) {
+      if (!fusion_.updateMapOdomFromMapBase(signal.map_base, /*require_slam=*/false)) {
+        ROS_WARN("[localization_v2] invalid relocalization pose, ignored");
+        return;
+      }
+      // 注意：重定位胜出时不设置 jump guard bypass，
+      // 避免下一帧 GM 的旧误匹配结果无条件覆盖重定位位姿。
+      latest_map_id_ = signal.map_id;
+      ROS_INFO("[localization_v2] initialized from relocalization method=%s map_id=%s "
+               "(reloc inlier=%.3f rmse=%.3f vs gm inlier=%.3f rmse=%.3f)",
+               signal.method.c_str(), signal.map_id.c_str(), signal.inlier_ratio,
+               signal.inlier_rmse, latest_gm_inlier_ratio_, latest_gm_inlier_rmse_);
+    } else {
+      ROS_INFO("[localization_v2] keep global matcher initial pose "
+               "(gm inlier=%.3f rmse=%.3f better than reloc inlier=%.3f rmse=%.3f)",
+               latest_gm_inlier_ratio_, latest_gm_inlier_rmse_, signal.inlier_ratio,
+               signal.inlier_rmse);
     }
-    fusion_.requestJumpGuardBypass();
-    latest_map_id_ = signal.map_id;
     state_machine_.onRelocalizationResult(/*accepted=*/true);
     dispatchRelocalizationCommand();
     publishMapToOdom();
-    ROS_INFO("[localization_v2] initialized from relocalization method=%s map_id=%s",
-             signal.method.c_str(), signal.map_id.c_str());
   }
 
   void onSourceCloud(const sensor_msgs::PointCloud2::ConstPtr& msg) { latest_cloud_ = msg; }
@@ -507,6 +526,9 @@ class LocalizationV2Node {
   nav_msgs::Path path_;
   pcl::PointCloud<pcl::PointXYZI>::Ptr init_z_map_;
   std::string latest_map_id_;
+  bool have_latest_gm_ = false;
+  double latest_gm_inlier_ratio_ = 0.0;
+  double latest_gm_inlier_rmse_ = std::numeric_limits<double>::infinity();
 };
 
 }  // namespace localization_v2

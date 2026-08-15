@@ -18,7 +18,7 @@
 
   <arg name="start_slam" default="true" />
   <arg name="start_global_matcher" default="true" />
-  <arg name="start_relocalization" default="false" />
+  <arg name="start_relocalization" default="true" />
   <arg name="rviz" default="true" />
 
   <arg name="play_bag" default="false" />
@@ -63,8 +63,8 @@
 
     <param name="global_matcher/result_pose_frame" value="odom" />
     <param name="global_matcher/enable_jump_guard" value="true" />
-    <param name="global_matcher/max_jump_translation" value="5.0" />
-    <param name="global_matcher/max_jump_yaw_deg" value="20.0" />
+    <param name="global_matcher/max_jump_translation" value="3.0" />
+    <param name="global_matcher/max_jump_yaw_deg" value="50.0" />
 
     <param name="initialization/require_initial_pose" value="false" />
     <param name="initialization/use_relocalization_init" value="true" />

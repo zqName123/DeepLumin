@@ -124,7 +124,7 @@ gate:
   min_source_points: 50
   min_target_points: 100
   max_fitness_score: 100.0      # 仅 fast_gicp 类型生效（PCL fitness 语义）
-  min_inlier_ratio: 0.3
+  min_inlier_ratio: 0.7
   max_inlier_rmse: 0.4
   inlier_distance: 0.5
   max_delta_translation: 20.0

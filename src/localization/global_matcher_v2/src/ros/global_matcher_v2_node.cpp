@@ -587,6 +587,20 @@ class GlobalMatcherV2Node {
     if (success) {
       last_map_source_ = final_map_source;
       have_last_map_source_ = true;
+    } else if (have_last_map_source_) {
+      // 匹配失败时，检查当前结果与 last_map_source_ 的一致性
+      // 若偏差过大，说明 last_map_source_ 已不可靠，丢弃之
+      const double diff_t = translationDiff(final_map_source, last_map_source_);
+      const double diff_yaw = std::abs(yawDiff(final_map_source, last_map_source_));
+      constexpr double kMaxDiffTranslation = 1.0;   // 1 m
+      constexpr double kMaxDiffYawDeg = 5.0;        // 5°
+      if (diff_t > kMaxDiffTranslation || diff_yaw > kMaxDiffYawDeg * kPi / 180.0) {
+        ROS_WARN("[global_matcher_v2] match failed and result deviates from last_map_source_ "
+                 "(diff_t=%.3fm diff_yaw=%.2fdeg). Discarding last_map_source_.",
+                 diff_t, diff_yaw * 180.0 / kPi);
+        have_last_map_source_ = false;
+        last_map_source_ = Eigen::Matrix4f::Identity();
+      }
     }
     updateModeAfterMatch(success);
 
