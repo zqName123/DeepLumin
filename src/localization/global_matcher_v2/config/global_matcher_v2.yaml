@@ -29,6 +29,7 @@ topics:
   source_odom: /localization/slam_odom
   bootstrap_initial_pose: /localization/manager/initial_pose
   manual_initial_pose: /initialpose
+  gm_anchor: /localization_v2/gm_anchor            # localization_v2 初始化仲裁重锚（仅初始化阶段）
   result: /localization/global_matcher/result
   status: /localization/global_matcher/status
   global_map: /localization/global_matcher/global_map
@@ -97,7 +98,7 @@ matcher:
   # icp | gicp | vgicp（small_gicp）| fast_gicp（v1 行为）| fast_gicp_vgicp（fast_gicp 粗 + vgicp 细）
   type: gicp
   use_crop: false
-  source_voxel_leaf: 0.08
+  source_voxel_leaf: 0.06
   target_voxel_leaf: 0.08
   coarse_scale: 8.0
   fine_scale: 1.0
@@ -124,7 +125,7 @@ gate:
   min_source_points: 50
   min_target_points: 100
   max_fitness_score: 100.0      # 仅 fast_gicp 类型生效（PCL fitness 语义）
-  min_inlier_ratio: 0.7
+  min_inlier_ratio: 0.4
   max_inlier_rmse: 0.4
   inlier_distance: 0.5
   max_delta_translation: 20.0

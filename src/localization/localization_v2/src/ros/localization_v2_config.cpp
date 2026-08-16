@@ -54,6 +54,7 @@ LocalizationV2Config loadLocalizationV2Config(ros::NodeHandle& pnh) {
       loadString(pnh, "relocalization/result_topic", cfg.relocalization_result_topic);
   cfg.relocalization_command_topic =
       loadString(pnh, "relocalization/command_topic", cfg.relocalization_command_topic);
+  cfg.gm_anchor_topic = loadString(pnh, "topics/gm_anchor", cfg.gm_anchor_topic);
 
   // runtime
   cfg.output_rate_hz = loadDouble(pnh, "runtime/output_rate_hz", cfg.output_rate_hz);
@@ -104,6 +105,8 @@ LocalizationV2Config loadLocalizationV2Config(ros::NodeHandle& pnh) {
       pnh, "relocalization/min_inlier_ratio", cfg.relocalization_min_inlier_ratio);
   cfg.relocalization_max_inlier_rmse =
       loadDouble(pnh, "relocalization/max_inlier_rmse", cfg.relocalization_max_inlier_rmse);
+  cfg.relocalization_fallback_timeout =
+      loadDouble(pnh, "relocalization/fallback_timeout", cfg.relocalization_fallback_timeout);
 
   // 人工初始位姿 z 补全
   cfg.initial_pose_z_completion =

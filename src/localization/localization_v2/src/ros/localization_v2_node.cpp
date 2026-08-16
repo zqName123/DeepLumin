@@ -50,6 +50,7 @@ namespace localization_v2 {
 namespace {
 
 constexpr double kPi = 3.14159265358979323846;
+constexpr double kRelocResultMaxAge = 3.0;  ///< 初始化仲裁中重定位结果的时效窗（s）
 
 Pose3d poseFromRos(const geometry_msgs::Pose& msg) {
   Pose3d pose;
@@ -148,6 +149,8 @@ class LocalizationV2Node {
     map_to_odom_pub_ = nh_.advertise<nav_msgs::Odometry>(config_.map_to_odom_topic, 10);
     path_pub_ = nh_.advertise<nav_msgs::Path>(config_.fused_path_topic, 5);
     status_pub_ = nh_.advertise<deeplumin_msgs::FusionStatus>(config_.status_topic, 10);
+    gm_anchor_pub_ =
+        nh_.advertise<geometry_msgs::PoseWithCovarianceStamped>(config_.gm_anchor_topic, 1, true);
     if (config_.publish_current_scan_in_map) {
       current_scan_map_pub_ =
           nh_.advertise<sensor_msgs::PointCloud2>(config_.current_scan_in_map_topic, 2);
@@ -175,6 +178,10 @@ class LocalizationV2Node {
 
     // slam 到达：若处于未初始化状态，触发（可选）自动启动重定位
     state_machine_.onSlamOdom();
+    if (state_machine_.state() == InitStateMachine::State::kRelocalizing &&
+        relocalizing_since_.isZero()) {
+      relocalizing_since_ = ros::Time::now();
+    }
     dispatchRelocalizationCommand();
 
     publishCurrentScanInMap();
@@ -198,20 +205,60 @@ class LocalizationV2Node {
       return;
     }
 
-    const bool accepted = fusion_.updateFromGlobalMatch(update);
-    if (!accepted) {
-      ROS_WARN_THROTTLE(1.0, "[localization_v2] reject global matcher result (jump guard)");
+    // 缓存 GM 候选：初始化阶段仅缓存供仲裁，TRACKING 阶段才应用
+    have_gm_candidate_ = true;
+    gm_candidate_inlier_ratio_ = msg->inlier_ratio;
+    gm_candidate_inlier_rmse_ = msg->inlier_rmse;
+    gm_candidate_map_id_ = msg->map_id;
+    if (update.pose_is_map_base) {
+      if (!fusion_.hasSlam()) {
+        return;
+      }
+      gm_candidate_map_odom_ = compose(update.pose, inverse(fusion_.odomBase()));
+    } else {
+      gm_candidate_map_odom_ = update.pose;
+    }
+
+    // 未进入 TRACKING：不应用 jump guard（门限仅 TRACKING 生效）
+    if (state_machine_.state() != InitStateMachine::State::kTracking) {
+      if (config_.use_global_matcher_init && !config_.use_relocalization_init) {
+        // 仅 GM 初始化：GM 成功即完成初始化
+        if (!fusion_.setMapOdom(gm_candidate_map_odom_)) {
+          return;
+        }
+        state_machine_.onGlobalMatchSuccess();
+        dispatchRelocalizationCommand();
+        latest_map_id_ = msg->map_id;
+        publishMapToOdom();
+        ROS_INFO("[localization_v2] initialized from global matcher map_id=%s inlier=%.3f rmse=%.3f",
+                 msg->map_id.c_str(), msg->inlier_ratio, msg->inlier_rmse);
+      } else if (config_.use_global_matcher_init && config_.use_relocalization_init) {
+        // 双源初始化：缓存候选，等待重定位结果仲裁
+        tryCompleteInitialization();
+      } else {
+        ROS_INFO_THROTTLE(1.0,
+                          "[localization_v2] cached global matcher candidate during initializing "
+                          "inlier=%.3f rmse=%.3f",
+                          msg->inlier_ratio, msg->inlier_rmse);
+      }
       return;
     }
 
-    // 记录最近一次被接受的 GM 结果指标，供重定位结果比较
-    have_latest_gm_ = true;
-    latest_gm_inlier_ratio_ = msg->inlier_ratio;
-    latest_gm_inlier_rmse_ = msg->inlier_rmse;
-
-    // GM 自身成功：若尚未初始化则完成初始化并停止重定位
-    state_machine_.onGlobalMatchSuccess();
-    dispatchRelocalizationCommand();
+    // TRACKING：jump guard / bypass 校验后应用
+    const bool accepted = fusion_.updateFromGlobalMatch(update);
+    if (!accepted) {
+      const double jump_dx = translationDiff(fusion_.mapOdom(), gm_candidate_map_odom_);
+      const double jump_dyaw = yawDiffDeg(fusion_.mapOdom(), gm_candidate_map_odom_);
+      const bool dx_exceed = jump_dx > config_.max_jump_translation;
+      const bool yaw_exceed = std::abs(jump_dyaw) > config_.max_jump_yaw_deg;
+      ROS_WARN_THROTTLE(
+          1.0,
+          "[localization_v2] reject global matcher result (jump guard): trans=%.2fm "
+          "(limit %.2fm) %s, yaw=%.1fdeg (limit %.1fdeg) %s",
+          jump_dx, config_.max_jump_translation, dx_exceed ? "EXCEED" : "ok", jump_dyaw,
+          config_.max_jump_yaw_deg, yaw_exceed ? "EXCEED" : "ok");
+      return;
+    }
     latest_map_id_ = msg->map_id;
     publishMapToOdom();
     ROS_INFO("[localization_v2] updated map->odom from global matcher map_id=%s fitness=%.4f inlier=%.3f rmse=%.3f",
@@ -286,32 +333,110 @@ class LocalizationV2Node {
       return;
     }
 
-    // 通过门限：与最近一次 GM 成功结果直接比较内点率 / RMSE，
-    // 重定位更优（或尚无 GM 结果）时以重定位位姿完成初始化，否则保留 GM 初值。
-    const bool reloc_better =
-        !have_latest_gm_ || (signal.inlier_ratio >= latest_gm_inlier_ratio_ &&
-                             signal.inlier_rmse <= latest_gm_inlier_rmse_);
-    if (reloc_better) {
-      if (!fusion_.updateMapOdomFromMapBase(signal.map_base, /*require_slam=*/false)) {
-        ROS_WARN("[localization_v2] invalid relocalization pose, ignored");
-        return;
-      }
-      // 注意：重定位胜出时不设置 jump guard bypass，
-      // 避免下一帧 GM 的旧误匹配结果无条件覆盖重定位位姿。
-      latest_map_id_ = signal.map_id;
-      ROS_INFO("[localization_v2] initialized from relocalization method=%s map_id=%s "
-               "(reloc inlier=%.3f rmse=%.3f vs gm inlier=%.3f rmse=%.3f)",
-               signal.method.c_str(), signal.map_id.c_str(), signal.inlier_ratio,
-               signal.inlier_rmse, latest_gm_inlier_ratio_, latest_gm_inlier_rmse_);
-    } else {
-      ROS_INFO("[localization_v2] keep global matcher initial pose "
-               "(gm inlier=%.3f rmse=%.3f better than reloc inlier=%.3f rmse=%.3f)",
-               latest_gm_inlier_ratio_, latest_gm_inlier_rmse_, signal.inlier_ratio,
-               signal.inlier_rmse);
+    // 通过门限：暂存重定位结果，交由初始化仲裁（双源）或直接完成（仅重定位源）
+    reloc_result_pending_ = true;
+    reloc_result_map_base_ = signal.map_base;
+    reloc_result_inlier_ratio_ = signal.inlier_ratio;
+    reloc_result_inlier_rmse_ = signal.inlier_rmse;
+    reloc_result_map_id_ = signal.map_id;
+    reloc_result_method_ = signal.method;
+    reloc_result_stamp_ = ros::Time::now();
+    tryCompleteInitialization();
+  }
+
+  // ===================================================================
+  // 初始化仲裁
+  // ===================================================================
+
+  void tryCompleteInitialization() {
+    if (state_machine_.state() != InitStateMachine::State::kRelocalizing) {
+      return;
     }
+    const bool reloc_fresh =
+        reloc_result_pending_ && !relocalizing_since_.isZero() &&
+        (ros::Time::now() - reloc_result_stamp_).toSec() <= kRelocResultMaxAge;
+    const bool both_mode = config_.use_global_matcher_init && config_.use_relocalization_init;
+    const bool deadline = !relocalizing_since_.isZero() &&
+                          (ros::Time::now() - relocalizing_since_).toSec() >=
+                              config_.relocalization_fallback_timeout;
+    if (!both_mode) {
+      if (reloc_fresh) {
+        completeWithReloc();
+      } else if (have_gm_candidate_ && config_.use_global_matcher_init) {
+        completeWithGm();
+      }
+      return;
+    }
+    if (reloc_fresh && have_gm_candidate_) {
+      arbitrateAndComplete();
+      return;
+    }
+    if (!deadline) {
+      return;
+    }
+    if (reloc_fresh) {
+      completeWithReloc();
+    } else if (have_gm_candidate_) {
+      completeWithGm();
+    } else {
+      ROS_WARN_THROTTLE(5.0,
+                        "[localization_v2] no init source ready within %.1fs, keep initializing",
+                        config_.relocalization_fallback_timeout);
+    }
+  }
+
+  void arbitrateAndComplete() {
+    const bool reloc_better =
+        reloc_result_inlier_ratio_ >= gm_candidate_inlier_ratio_ &&
+        reloc_result_inlier_rmse_ <= gm_candidate_inlier_rmse_;
+    if (reloc_better) {
+      completeWithReloc();
+    } else {
+      completeWithGm();
+    }
+  }
+
+  void completeWithReloc() {
+    if (!fusion_.updateMapOdomFromMapBase(reloc_result_map_base_, /*require_slam=*/false)) {
+      ROS_WARN("[localization_v2] invalid relocalization pose, ignored");
+      reloc_result_pending_ = false;
+      return;
+    }
+    // 覆盖 GM 上一次结果：仅初始化阶段，向 GM 发布一次性锚点
+    publishGmAnchor(reloc_result_map_base_);
+    latest_map_id_ = reloc_result_map_id_;
     state_machine_.onRelocalizationResult(/*accepted=*/true);
     dispatchRelocalizationCommand();
     publishMapToOdom();
+    ROS_INFO("[localization_v2] initialized from relocalization method=%s map_id=%s "
+             "(reloc inlier=%.3f rmse=%.3f vs gm inlier=%.3f rmse=%.3f)",
+             reloc_result_method_.c_str(), reloc_result_map_id_.c_str(),
+             reloc_result_inlier_ratio_, reloc_result_inlier_rmse_, gm_candidate_inlier_ratio_,
+             gm_candidate_inlier_rmse_);
+  }
+
+  void completeWithGm() {
+    if (!fusion_.setMapOdom(gm_candidate_map_odom_)) {
+      ROS_WARN("[localization_v2] invalid global matcher candidate pose, ignored");
+      return;
+    }
+    latest_map_id_ = gm_candidate_map_id_;
+    state_machine_.onRelocalizationResult(/*accepted=*/true);
+    dispatchRelocalizationCommand();
+    publishMapToOdom();
+    ROS_INFO("[localization_v2] initialized from global matcher candidate "
+             "(gm inlier=%.3f rmse=%.3f vs reloc inlier=%.3f rmse=%.3f)",
+             gm_candidate_inlier_ratio_, gm_candidate_inlier_rmse_, reloc_result_inlier_ratio_,
+             reloc_result_inlier_rmse_);
+  }
+
+  void publishGmAnchor(const Pose3d& map_base) {
+    geometry_msgs::PoseWithCovarianceStamped msg;
+    msg.header.stamp = ros::Time::now();
+    msg.header.frame_id = config_.map_frame;
+    fillPose(map_base, &msg.pose.pose);
+    gm_anchor_pub_.publish(msg);
+    ROS_INFO("[localization_v2] published gm anchor (relocalization winner)");
   }
 
   void onSourceCloud(const sensor_msgs::PointCloud2::ConstPtr& msg) { latest_cloud_ = msg; }
@@ -327,6 +452,8 @@ class LocalizationV2Node {
                         config_.slam_odom_topic.c_str());
       return;
     }
+    // 初始化仲裁：双源等待超时后取已就绪的一源，防止状态切换被阻塞
+    tryCompleteInitialization();
     publishCurrentScanInMap();
     publishOutput();
   }
@@ -517,6 +644,7 @@ class LocalizationV2Node {
   ros::Publisher map_to_odom_pub_;
   ros::Publisher path_pub_;
   ros::Publisher status_pub_;
+  ros::Publisher gm_anchor_pub_;
   ros::Publisher current_scan_map_pub_;
   tf2_ros::TransformBroadcaster tf_broadcaster_;
   ros::Timer timer_;
@@ -526,9 +654,19 @@ class LocalizationV2Node {
   nav_msgs::Path path_;
   pcl::PointCloud<pcl::PointXYZI>::Ptr init_z_map_;
   std::string latest_map_id_;
-  bool have_latest_gm_ = false;
-  double latest_gm_inlier_ratio_ = 0.0;
-  double latest_gm_inlier_rmse_ = std::numeric_limits<double>::infinity();
+  ros::Time relocalizing_since_;
+  bool reloc_result_pending_ = false;
+  Pose3d reloc_result_map_base_ = Pose3d();
+  double reloc_result_inlier_ratio_ = 0.0;
+  double reloc_result_inlier_rmse_ = std::numeric_limits<double>::infinity();
+  std::string reloc_result_map_id_;
+  std::string reloc_result_method_;
+  ros::Time reloc_result_stamp_;
+  bool have_gm_candidate_ = false;
+  double gm_candidate_inlier_ratio_ = 0.0;
+  double gm_candidate_inlier_rmse_ = std::numeric_limits<double>::infinity();
+  Pose3d gm_candidate_map_odom_ = Pose3d();
+  std::string gm_candidate_map_id_;
 };
 
 }  // namespace localization_v2

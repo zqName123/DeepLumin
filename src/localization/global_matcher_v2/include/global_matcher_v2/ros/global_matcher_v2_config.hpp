@@ -29,6 +29,7 @@ struct GlobalMatcherV2Config {
   std::string source_odom_topic = "/localization/slam_odom";
   std::string bootstrap_initial_pose_topic = "/localization/manager/initial_pose";
   std::string manual_initial_pose_topic = "/initialpose";
+  std::string gm_anchor_topic = "/localization_v2/gm_anchor";  ///< localization_v2 初始化仲裁发布的重锚消息
   std::string result_topic = "/localization/global_matcher/result";
   std::string status_topic = "/localization/global_matcher/status";
   std::string source_initial_scan_topic = "/localization/global_matcher/source_scan_initial";

@@ -49,6 +49,17 @@ bool FusionCore::updateFromGlobalMatch(const GlobalMatchUpdate& update) {
   return true;
 }
 
+bool FusionCore::setMapOdom(const Pose3d& map_odom) {
+  if (!isFinite(map_odom.position) || !isFinite(map_odom.orientation)) {
+    return false;
+  }
+  map_odom_ = map_odom;
+  map_odom_.orientation.normalize();
+  have_map_odom_ = true;
+  return true;
+}
+
+
 bool FusionCore::updateMapOdomFromMapBase(const Pose3d& map_base, bool require_slam) {
   if (!isFinite(map_base.position) || !isFinite(map_base.orientation)) {
     return false;

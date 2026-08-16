@@ -247,6 +247,8 @@ class GlobalMatcherV2Node {
         this);
     manual_initial_pose_sub_ = nh_.subscribe(config_.manual_initial_pose_topic, 2,
                                              &GlobalMatcherV2Node::onManualInitialPose, this);
+    gm_anchor_sub_ =
+        nh_.subscribe(config_.gm_anchor_topic, 2, &GlobalMatcherV2Node::onGmAnchor, this);
     load_map_command_sub_ = nh_.subscribe(config_.load_map_command_topic, 2,
                                           &GlobalMatcherV2Node::onLoadMapCommand, this);
     set_map_segment_command_sub_ =
@@ -335,6 +337,19 @@ class GlobalMatcherV2Node {
     ROS_INFO("[global_matcher_v2] received manual initial pose from %s",
              config_.manual_initial_pose_topic.c_str());
   }
+
+  void onGmAnchor(const geometry_msgs::PoseWithCovarianceStamped::ConstPtr& msg) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (!have_source_odom_) {
+      return;
+    }
+    // 初始化仲裁重定位胜出：覆盖 GM 上一次成功结果（仅初始化阶段发生一次）
+    last_map_source_ = poseToMatrix(msg->pose.pose) * latest_source_base_.inverse();
+    have_last_map_source_ = true;
+    ++manual_reset_seq_;
+    ROS_INFO("[global_matcher_v2] re-anchored last_map_source_ from gm anchor (init arbitration)");
+  }
+
 
   void onLoadMapCommand(const std_msgs::String::ConstPtr& msg) {
     if (config_.map_mode == "chunked") {
@@ -920,6 +935,7 @@ class GlobalMatcherV2Node {
   ros::Subscriber source_odom_sub_;
   ros::Subscriber bootstrap_initial_pose_sub_;
   ros::Subscriber manual_initial_pose_sub_;
+  ros::Subscriber gm_anchor_sub_;
   ros::Subscriber load_map_command_sub_;
   ros::Subscriber set_map_segment_command_sub_;
 

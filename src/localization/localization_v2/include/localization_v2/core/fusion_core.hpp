@@ -69,6 +69,10 @@ class FusionCore {
    * @return true 表示已接受并更新
    */
   bool updateFromGlobalMatch(const GlobalMatchUpdate& update);
+  /**
+   * @brief 直接设置 map->odom（初始化仲裁选优后写入，不做跳变门限）
+   */
+  bool setMapOdom(const Pose3d& map_odom);
 
   /**
    * @brief 用 map->base_link 位姿反推并设置 map->odom（人工初值 / 重定位结果）

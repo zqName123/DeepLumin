@@ -32,6 +32,7 @@ struct LocalizationV2Config {
   std::string current_scan_in_map_topic = "/localization_v2/current_scan_in_map";
   std::string relocalization_result_topic = "/localization/relocalization/result";
   std::string relocalization_command_topic = "/localization_v2/relocalization/command";
+  std::string gm_anchor_topic = "/localization_v2/gm_anchor";  ///< 初始化仲裁重定位胜出时，通知 GM 重锚（仅初始化阶段）
 
   // ---- 运行时 ----
   double output_rate_hz = 100.0;
@@ -64,6 +65,7 @@ struct LocalizationV2Config {
   double relocalization_max_fitness_score = 1.0;
   double relocalization_min_inlier_ratio = 0.5;
   double relocalization_max_inlier_rmse = 0.8;
+  double relocalization_fallback_timeout = 8.0;  ///< 双源初始化仲裁超时（s），超时后取已就绪的一源，防止阻塞
 
   // ---- 人工初始位姿 z 补全（可选，复用全局地图 PCD） ----
   bool initial_pose_z_completion = true;

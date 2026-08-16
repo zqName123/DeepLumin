@@ -100,6 +100,7 @@ GlobalMatcherV2Config loadGlobalMatcherV2Config(ros::NodeHandle& pnh) {
       loadString(pnh, "topics/bootstrap_initial_pose", cfg.bootstrap_initial_pose_topic);
   cfg.manual_initial_pose_topic =
       loadString(pnh, "topics/manual_initial_pose", cfg.manual_initial_pose_topic);
+  cfg.gm_anchor_topic = loadString(pnh, "topics/gm_anchor", cfg.gm_anchor_topic);
   cfg.result_topic = loadString(pnh, "topics/result", cfg.result_topic);
   cfg.status_topic = loadString(pnh, "topics/status", cfg.status_topic);
   cfg.source_initial_scan_topic =
