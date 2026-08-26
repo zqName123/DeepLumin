@@ -163,4 +163,12 @@ struct LoopResult {
 
 std::string toString(RuntimeState state);
 
+/// Pose → 4×4 齐次变换矩阵
+inline Eigen::Matrix4d poseToMatrix(const Pose& p) {
+  Eigen::Matrix4d t = Eigen::Matrix4d::Identity();
+  t.block<3, 3>(0, 0) = p.orientation.normalized().toRotationMatrix();
+  t.block<3, 1>(0, 3) = p.position;
+  return t;
+}
+
 }  // namespace slam_mapping_v2

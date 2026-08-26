@@ -1,15 +1,20 @@
 #pragma once
-#include "ivox3d.h"
 
 /**
  * @file global_map.hpp
- * @brief 全局地图：faster-lio iVox 增量建图（O(1)/帧，替代关键帧全量重建）
+ * @brief 全局地图：map 坐标系下的降采样关键帧缓存
+ *
+ * 职责：
+ * - 从关键帧列表重建 map 系点云（逐关键帧变换 + VoxelGrid 降采样）
+ * - 提供已缓存的 map 系点云供可视化线程直接发布
+ *
+ * 线程安全：rebuild() 与 cloud() 可从不同线程调用。
  */
 
 #include "slam_mapping_v2/common/config.hpp"
 #include "slam_mapping_v2/common/types.hpp"
 
-#include <memory>
+#include <mutex>
 
 namespace slam_mapping_v2 {
 
@@ -18,17 +23,23 @@ class GlobalMap {
   void configure(const MapConfig& cfg);
   void reset();
 
-  /// 增量插入一帧 odom 系配准扫描（体素去重，规则同 faster-lio MapIncremental）
-  void insert(const FrameInput& f);
+  /**
+   * @brief 从关键帧列表重建 map 系降采样地图
+   *
+   * 对每个关键帧计算 T(pose_map) * T(pose_odom)^{-1}，将 odom 系点云
+   * 变换到 map 系后累加，最后用 VoxelGrid 降采样。回环优化后调用。
+   */
+  void rebuild(const std::vector<Keyframe>& keyframes);
 
-  /// 导出全部地图点（可选降采样，voxel_leaf<=0 不降采样）
-  PointCloudPtr cloud(double voxel_leaf = 0.0) const;
+  /// 导出已缓存的 map 系地图（无需再变换，可直接发布）
+  PointCloudPtr cloud() const;
 
   std::size_t numPoints() const;
 
  private:
   MapConfig cfg_;
-  std::shared_ptr<faster_lio::IVox<3, faster_lio::IVoxNodeType::DEFAULT, PointType>> ivox_;
+  PointCloudPtr cached_map_;
+  mutable std::mutex mutex_;
 };
 
 }  // namespace slam_mapping_v2

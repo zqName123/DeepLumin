@@ -287,20 +287,22 @@ struct LocalizationV2Config {
   std::string fused_path_topic = "/localization_v2/path";
   std::string status_topic = "/localization_v2/status";
   std::string current_scan_in_map_topic = "/localization_v2/current_scan_in_map";
-  std::string gm_anchor_topic = "/localization_v2/gm_anchor";
+  std::string relocalization_result_topic = "/localization/relocalization/result";
+  std::string relocalization_command_topic = "/localization_v2/relocalization/command";
+  std::string gm_anchor_topic = "/localization_v2/gm_anchor";  ///< 初始化仲裁重定位胜出时，通知 GM 重锚（仅初始化阶段）
 
   // 运行时
   double output_rate_hz = 100.0;
-  int max_path_size = 5000;
+  int max_path_size = 50000;
   bool publish_tf = true;
   bool publish_map_to_odom_tf = true;
-  bool publish_odom_to_base_tf = true;
-  bool publish_path = false;
-  bool publish_current_scan_in_map = false;
+  bool publish_odom_to_base_tf = false;  // slam_odometry_v2 默认已发布 odom->base，避免重复
+  bool publish_path = true;
+  bool publish_current_scan_in_map = true;
 
   // global_matcher 结果语义与门控
   std::string gm_result_pose_frame = "odom";
-  bool enable_jump_guard = true;
+  bool enable_jump_guard = false;
   double max_jump_translation = 5.0;
   double max_jump_yaw_deg = 50.0;
 
@@ -419,9 +421,9 @@ struct LocalizationV2Config {
 | `/localization_v2/path` | `nav_msgs/Path` | RViz | 融合轨迹历史 | 100Hz（可选） |
 | `/localization_v2/status` | `deeplumin_msgs/FusionStatus` | 监控 | 定位状态 | 100Hz |
 | `/localization_v2/current_scan_in_map` | `sensor_msgs/PointCloud2` | RViz | 当前帧点云在 map 系 | 100Hz（可选） |
-| `/localization_v2/gm_anchor` | `geometry_msgs/PoseWithCovarianceStamped` | global_matcher | 初始化仲裁重定位胜出时通知 GM 重锚 | 事件触发 |
+| `/localization_v2/gm_anchor` | `geometry_msgs/PoseWithCovarianceStamped` | global_matcher | 初始化仲裁重定位胜出时通知 GM 重锚（一次性，仅初始化阶段） | 事件触发 |
 | `TF: map->odom` | `geometry_msgs/TransformStamped` | TF 树 | 全局到局部坐标系修正 | 100Hz |
-| `TF: odom->base` | `geometry_msgs/TransformStamped` | TF 树 | 局部里程计（可选，避免重复） | 100Hz |
+| `TF: odom->base` | `geometry_msgs/TransformStamped` | TF 树 | 局部里程计（默认关闭，避免与 slam_odometry_v2 重复） | 100Hz |
 
 **FusionStatus 字段含义**：
 - `level`：状态等级（NORMAL / WARNING / ERROR）
@@ -459,26 +461,28 @@ struct LocalizationV2Config {
 | `topics/fused_path` | string | "/localization_v2/path" | 轨迹输出 |
 | `topics/status` | string | "/localization_v2/status" | 状态输出 |
 | `topics/current_scan_in_map` | string | "/localization_v2/current_scan_in_map" | 点云 map 系输出 |
-| `topics/gm_anchor` | string | "/localization_v2/gm_anchor" | GM 锚点通知 |
+| `topics/relocalization_result` | string | "/localization/relocalization/result" | 重定位结果输入 |
+| `topics/relocalization_command` | string | "/localization_v2/relocalization/command" | 重定位启停命令输出 |
+| `topics/gm_anchor` | string | "/localization_v2/gm_anchor" | GM 锚点通知（仅初始化阶段重定位胜出时发布） |
 
 ### 7.3 运行时（runtime）
 
 | 参数 | 类型 | 默认值 | 说明 |
 |------|------|--------|------|
 | `runtime/output_rate_hz` | double | 100.0 | 输出频率（Hz） |
-| `runtime/max_path_size` | int | 5000 | 轨迹最大保留点数 |
+| `runtime/max_path_size` | int | 50000 | 轨迹最大保留点数 |
 | `runtime/publish_tf` | bool | true | 是否发布 TF |
 | `runtime/publish_map_to_odom_tf` | bool | true | 是否发布 map->odom TF |
-| `runtime/publish_odom_to_base_tf` | bool | true | 是否发布 odom->base TF |
-| `runtime/publish_path` | bool | false | 是否发布轨迹 |
-| `runtime/publish_current_scan_in_map` | bool | false | 是否发布 map 系点云 |
+| `runtime/publish_odom_to_base_tf` | bool | false | 是否发布 odom->base TF（默认关闭，避免与 slam_odometry_v2 重复） |
+| `runtime/publish_path` | bool | true | 是否发布轨迹 |
+| `runtime/publish_current_scan_in_map` | bool | true | 是否发布 map 系点云 |
 
 ### 7.4 全局匹配结果（global_matcher）
 
 | 参数 | 类型 | 默认值 | 说明 |
 |------|------|--------|------|
 | `global_matcher/result_pose_frame` | string | "odom" | GM 结果坐标系（"odom" 或 "base"） |
-| `global_matcher/enable_jump_guard` | bool | true | 是否启用跳变门限 |
+| `global_matcher/enable_jump_guard` | bool | false | 是否启用跳变门限（默认关闭 = ysw_loc 原始行为） |
 | `global_matcher/max_jump_translation` | double | 5.0 | 最大平移跳变（米） |
 | `global_matcher/max_jump_yaw_deg` | double | 50.0 | 最大偏航跳变（度） |
 
@@ -549,7 +553,12 @@ global_match 回调（低频）
   │   ├── 跳变门限检查（FusionCore::updateFromGlobalMatch）
   │   ├── 若通过：更新 map_odom，发布 map_to_odom
   │   └── 若拒绝：记录日志，保持当前 map_odom
-  └── 初始化阶段：交由初始化仲裁处理
+  └── 初始化阶段：
+      ├── 仅 GM 初始化（use_global_matcher_init=true, use_relocalization_init=false）：
+      │   └── GM 成功即完成初始化
+      ├── 双源初始化（use_global_matcher_init=true, use_relocalization_init=true）：
+      │   └── 缓存候选，等待重定位结果仲裁
+      └── 其他模式：仅缓存候选，不完成初始化
 
 timer 回调（100Hz）
   ├── 若无 slam 数据：发布单位 map->odom TF，等待 slam
@@ -582,7 +591,7 @@ timer 回调（100Hz）
   ├── 设置 map_odom
   ├── 状态切换为 TRACKING
   ├── 下发 stop 命令给重定位模块
-  └── 若重定位胜出：发布 gm_anchor 通知 GM 重锚
+  └── 若重定位胜出：发布 gm_anchor 通知 GM 重锚（一次性，仅初始化阶段）
 ```
 
 ### 8.4 融合公式
@@ -652,7 +661,8 @@ GM 结果到达（TRACKING 状态）
 | UNINITIALIZED | onGlobalMatchSuccess | init.use_global_matcher_init | TRACKING | 下发 stop 命令（若启用） |
 | RELOCALIZING | onManualPose | init.use_manual_initialpose | TRACKING | 下发 stop 命令 |
 | RELOCALIZING | onRelocalizationResult | accepted=true | TRACKING | 下发 stop 命令 |
-| RELOCALIZING | onGlobalMatchSuccess | init.use_global_matcher_init | TRACKING | 下发 stop 命令 |
+| RELOCALIZING | onGlobalMatchSuccess | init.use_global_matcher_init | TRACKING | 下发 stop 命令（仅单源 GM 模式） |
+| RELOCALIZING | onGlobalMatchSuccess | init.use_global_matcher_init && init.use_relocalization_init | RELOCALIZING | 缓存候选，等待仲裁（双源模式） |
 | TRACKING | （任意） | - | TRACKING | 无状态切换 |
 
 ### 9.3 重定位命令决策

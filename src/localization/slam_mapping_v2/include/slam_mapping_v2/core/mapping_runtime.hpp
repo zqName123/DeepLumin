@@ -77,8 +77,8 @@ class MappingRuntime {
   std::vector<Keyframe> keyframes() const;
   LoopData loopData() const;
   FrameInput latestFrame() const;
-  /// 全局地图导出（iVox 全图，可选降采样）
-  PointCloudPtr mapCloud(double voxel_leaf = 0.0) const;
+  /// 全局地图导出（map 系降采样缓存，回环优化后自动重建）
+  PointCloudPtr mapCloud() const;
   bool mapOdomTransform(Eigen::Matrix4d* t_map_odom) const;
 
  private:

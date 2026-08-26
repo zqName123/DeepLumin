@@ -19,8 +19,6 @@
 #include "slam_mapping_v2/core/orb_feature_provider.hpp"
 #include <cv_bridge/cv_bridge.h>
 
-#include <pcl/common/transforms.h>
-
 #include <algorithm>
 #include <chrono>
 #include <cmath>
@@ -29,25 +27,6 @@
 namespace slam_mapping_v2 {
 
 namespace {
-
-/**
- * @brief 将Pose结构体转换为4x4齐次变换矩阵
- * @param p 输入位姿（包含位置position和姿态orientation）
- * @return Eigen::Matrix4d 4x4齐次变换矩阵
- *
- * 变换矩阵格式：
- * [ R(3x3)  t(3x1) ]
- * [   0      1    ]
- * 其中R为旋转矩阵，t为平移向量
- */
-Eigen::Matrix4d poseToMatrix(const Pose& p) {
-  Eigen::Matrix4d t = Eigen::Matrix4d::Identity();
-  // 将四元数归一化后转换为3x3旋转矩阵，填入左上角
-  t.block<3, 3>(0, 0) = p.orientation.normalized().toRotationMatrix();
-  // 将位置向量填入右上角
-  t.block<3, 1>(0, 3) = p.position;
-  return t;
-}
 
 /**
  * @brief 从FrameInput提取位姿信息生成Pose对象
@@ -456,12 +435,6 @@ bool MappingRuntime::processOnce() {
   }
   ++frame_count_;
 
-  // 全局地图增量插入（每帧，faster-lio风格）
-  {
-    std::lock_guard<std::mutex> lock(map_mutex_);
-    global_map_.insert(scan);
-  }
-
   // 关键帧判定（主线程私有last_keyframe_，无锁）
   if (kf_manager_.shouldAdd(last_keyframe_, frame, frame_count_)) {
     Keyframe kf;
@@ -589,6 +562,11 @@ void MappingRuntime::backendLoop() {
         }
         // 执行位姿图优化
         optimizer_.optimize(&keyframes_);
+      }
+      // 用优化后的位姿重建可视化地图（map 系降采样缓存）
+      {
+        std::lock_guard<std::mutex> map_lock(map_mutex_);
+        global_map_.rebuild(keyframes_);
       }
       // 记录最新关键帧
       if (!keyframes_.empty()) latest_kf = &keyframes_.back();
@@ -799,23 +777,12 @@ bool MappingRuntime::mapOdomTransform(Eigen::Matrix4d* t_map_odom) const {
 }
 
 /**
- * @brief 获取全局地图点云（可选择体素降采样）
- * @param voxel_leaf 体素网格大小（0表示不降采样）
- * @return PointCloudPtr 地图点云指针
- *
- * 如果存在有效的地图到里程计变换，将点云转换到地图坐标系
+ * @brief 获取全局地图点云（map 系，已降采样）
+ * @return PointCloudPtr 地图点云指针，可直接发布
  */
-PointCloudPtr MappingRuntime::mapCloud(double voxel_leaf) const {
+PointCloudPtr MappingRuntime::mapCloud() const {
   std::lock_guard<std::mutex> lock(map_mutex_);
-  auto cloud = global_map_.cloud(voxel_leaf);
-  Eigen::Matrix4d t_map_odom;
-  // 如果存在有效的地图-里程计变换，将点云对齐到地图坐标系
-  if (mapOdomTransform(&t_map_odom) && cloud && !cloud->empty()) {
-    PointCloud tmp;
-    pcl::transformPointCloud(*cloud, tmp, t_map_odom.cast<float>());
-    cloud = PointCloudPtr(new PointCloud(tmp));
-  }
-  return cloud;
+  return global_map_.cloud();
 }
 
 /**

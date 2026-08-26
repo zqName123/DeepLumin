@@ -96,7 +96,7 @@ loop_closure:
     # ORB 词库路径（从 ORB-SLAM3 移植的预训练词库）
     vocabulary_path: "/home/hhy/2004ros/DeepLumin/src/localization/slam_mapping_v2/thirdparty/DBoW2/vocabulary/ORBvoc.txt"
     # ORB 特征参数
-    nfeatures: 3000
+    nfeatures: 2000
     scale_factor: 1.2
     nlevels: 8
     ini_th_fast: 15
@@ -107,13 +107,13 @@ loop_closure:
     max_candidates: 4
     # 特征匹配参数
     min_bow_matches: 80
-    nn_ratio: 0.7
+    nn_ratio: 0.4
     # RANSAC 几何验证参数
-    ransac_min_inliers: 15
+    ransac_min_inliers: 25
     ransac_probability: 0.99
     ransac_max_iterations: 300
     # 连续性验证参数
-    min_continuity: 3
+    min_continuity: 4
     max_continuity_miss: 2
     # 线程参数
     feature_extract_rate_hz: 10

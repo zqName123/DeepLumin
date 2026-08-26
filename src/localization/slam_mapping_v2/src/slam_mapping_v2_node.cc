@@ -173,8 +173,7 @@ class SlamMappingV2Node {
       const auto kfs = runtime_.keyframes();
       pubs_.publishPath(kfs);
       if (cfg_.map.publish_global_map) {
-        pubs_.publishMap(runtime_.mapCloud(cfg_.map.publish_voxel_leaf), cfg_.frames.map,
-                         st.last_frame_time);
+        pubs_.publishMap(runtime_.mapCloud(), cfg_.frames.map, st.last_frame_time);
       }
       if (cfg_.output.publish_debug_markers) {
         const auto ld = runtime_.loopData();

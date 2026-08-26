@@ -51,13 +51,6 @@ void debugLoopLog(const std::string& msg) {
   std::cerr << "[slam_mapping_v2][loop_debug] " << msg << std::endl;
 }
 
-Eigen::Matrix4d poseToMatrix(const Pose& p) {
-  Eigen::Matrix4d T = Eigen::Matrix4d::Identity();
-  T.block<3, 3>(0, 0) = p.orientation.normalized().toRotationMatrix();
-  T.block<3, 1>(0, 3) = p.position;
-  return T;
-}
-
 }  // namespace
 
 void KdtreeGicpLoopDetector::configure(const LoopClosureConfig& cfg) {
