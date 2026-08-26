@@ -1,0 +1,11 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(cp *)",
+      "Bash(sed *)",
+      "Bash(mkdir *)",
+      "Read(//home/hhy/2004ros/ORB_SLAM3/include/**)",
+      "Read(//home/hhy/2004ros/ORB_SLAM3/src/**)"
+    ]
+  }
+}

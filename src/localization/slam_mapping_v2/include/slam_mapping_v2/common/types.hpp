@@ -66,6 +66,11 @@ struct Keyframe {
   bool loop_closed = false;
   int loop_match_count = 0;
   GnssObservation gnss;
+
+  // ===== 视觉回环可选字段（不影响现有代码） =====
+  bool has_visual = false;           // 是否包含视觉数据
+  double image_timestamp = 0.0;      // 关联的图像时间戳
+  int visual_feature_count = 0;      // 视觉特征点数量
 };
 
 struct LoopCandidate {

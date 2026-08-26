@@ -8,6 +8,7 @@
 #include <ros/ros.h>
 #include <sensor_msgs/PointCloud2.h>
 #include <std_msgs/String.h>
+#include <atomic>
 
 #include <cmath>
 #include <iomanip>
@@ -109,6 +110,8 @@ class GlobalRelocalizationNode {
     }
 
     lidar_sub_ = nh_.subscribe(config_.lidar_topic, 1, &GlobalRelocalizationNode::onCloud, this);
+    command_sub_ =
+        nh_.subscribe(config_.command_topic, 5, &GlobalRelocalizationNode::onCommand, this);
     pose_pub_ = nh_.advertise<geometry_msgs::PoseStamped>("reloc_pose", 1, true);
     result_pub_ = nh_.advertise<deeplumin_msgs::RelocalizationResult>(config_.result_topic, 1, true);
     status_pub_ = nh_.advertise<std_msgs::String>("reloc_status", 1, true);
@@ -122,13 +125,37 @@ class GlobalRelocalizationNode {
                     << " lidar_frame_id=" << config_.lidar_frame_id
                     << " query_cloud_frame=" << config_.query_cloud_frame
                     << " map_id=" << config_.map_id
-                    << " method=" << config_.method);
+                    << " method=" << config_.method
+                    << " command_topic=" << config_.command_topic);
     ROS_INFO_STREAM("query_frame.rotate_xy_y_negx=" << (config_.query_rotate_xy_y_negx ? "true" : "false")
                     << " yaw_deg=" << config_.query_frame_yaw_deg);
   }
 
  private:
+  // ===================================================================
+  // 启停命令
+  // ===================================================================
+
+  /// start/stop 命令：控制是否执行匹配流程（默认开启，兼容无命令场景）
+  void onCommand(const std_msgs::String::ConstPtr& msg) {
+    if (msg->data == "start") {
+      matching_enabled_.store(true);
+      ROS_INFO("[global_relocalization] matching enabled (start)");
+    } else if (msg->data == "stop") {
+      matching_enabled_.store(false);
+      ROS_INFO("[global_relocalization] matching disabled (stop), skip matching flow");
+    } else {
+      ROS_WARN_THROTTLE(2.0, "[global_relocalization] unknown command %s (expect start/stop)",
+                        msg->data.c_str());
+    }
+  }
+
+
   void onCloud(const sensor_msgs::PointCloud2ConstPtr& msg) {
+    // stop 命令期间跳过匹配流程（节点后台常驻，几乎零消耗）
+    if (!matching_enabled_.load()) {
+      return;
+    }
     relocalization::CloudPtr raw = relocalization::cloudFromRosMsg(*msg);
     double query_frame_yaw_rad = config_.query_frame_yaw_deg * M_PI / 180.0;
     if (config_.query_rotate_xy_y_negx) {
@@ -192,6 +219,7 @@ class GlobalRelocalizationNode {
   ros::NodeHandle nh_;
   ros::NodeHandle pnh_;
   ros::Subscriber lidar_sub_;
+  ros::Subscriber command_sub_;
   ros::Publisher pose_pub_;
   ros::Publisher result_pub_;
   ros::Publisher status_pub_;
@@ -199,6 +227,7 @@ class GlobalRelocalizationNode {
   ros::Publisher target_pub_;
   relocalization_ros::OnlineRelocalizationConfig config_;
   relocalization::RelocalizationCore core_;
+  std::atomic<bool> matching_enabled_{true};  ///< start 后执行匹配，stop 后跳过（后台常驻）
 };
 
 int main(int argc, char** argv) {

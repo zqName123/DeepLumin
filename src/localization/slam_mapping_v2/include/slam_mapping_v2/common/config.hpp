@@ -23,6 +23,7 @@ struct InputConfig {
   std::string odom_topic = "/localization/slam_odom";
   std::string scan_topic = "/localization/cloud_registered";
   std::string gnss_topic = "/gnss_chc_data";
+  std::string image_topic = "/camera/image_raw";  // 相机图像话题（视觉回环用）
 };
 
 struct OutputConfig {
@@ -80,8 +81,58 @@ struct GnssConfig {
   std::vector<std::pair<int, double>> status_sigma;
 };
 
+/// 视觉回环配置
+struct VisualLoopConfig {
+  // 词库
+  std::string vocabulary_path = "";    // ORBvoc.txt 路径
+
+  // ORB 特征
+  int nfeatures = 2000;
+  float scale_factor = 1.2f;
+  int nlevels = 8;
+  int ini_th_fast = 20;
+  int min_th_fast = 7;
+
+  // 检索
+  double min_bow_score = 0.03;
+  int min_shared_words = 20;
+  int max_candidates = 3;
+
+  // 匹配
+  int min_bow_matches = 50;
+  double nn_ratio = 0.6;
+  int ransac_min_inliers = 15;
+  double ransac_probability = 0.99;
+  int ransac_max_iterations = 300;
+
+  // 连续性验证
+  int min_continuity = 3;
+  int max_continuity_miss = 2;
+
+  // 线程
+  int feature_extract_rate_hz = 10;
+  int buffer_size = 100;
+
+  // 相机内参（几何验证必需）
+  struct CameraIntrinsic {
+    double fx = 500.0;
+    double fy = 500.0;
+    double cx = 320.0;
+    double cy = 240.0;
+  } camera;
+
+  // LiDAR 到相机的外参 T_L_C（4x4 齐次变换矩阵）
+  // 默认值：相机 x 轴 = LiDAR z 轴，相机 y 轴 = -LiDAR x 轴，相机 z 轴 = -LiDAR y 轴
+  Eigen::Matrix4d T_L_C = (Eigen::Matrix4d() <<
+    0., 0., 1., 0.30456,
+   -1., 0., 0., 0.00065,
+    0.,-1., 0., 0.65376,
+    0., 0., 0., 1.).finished();
+};
+
 struct LoopClosureConfig {
   bool enable = true;
+  std::string detector_type = "laser";     // "laser" | "visual" | "hybrid"
   int min_index_gap = 20;
   double time_thresh_sec = 20.0;
   int loop_kf_gap = 30;
@@ -98,6 +149,7 @@ struct LoopClosureConfig {
   double odom_rot_noise = 1e-6;   ///< 里程计因子旋转噪声
   double odom_pos_noise = 1e-4;   ///< 里程计因子平移噪声
   GnssConfig gnss;
+  VisualLoopConfig visual;         ///< 视觉回环配置
 };
 
 struct MapSaverConfig {

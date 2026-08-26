@@ -64,6 +64,7 @@ MappingConfig loadConfig(ros::NodeHandle& pnh) {
   pnh.param<std::string>("input/odom_topic", cfg.input.odom_topic, cfg.input.odom_topic);
   pnh.param<std::string>("input/scan_topic", cfg.input.scan_topic, cfg.input.scan_topic);
   pnh.param<std::string>("input/gnss_topic", cfg.input.gnss_topic, cfg.input.gnss_topic);
+  pnh.param<std::string>("input/image_topic", cfg.input.image_topic, cfg.input.image_topic);
 
   // output
   pnh.param<std::string>("output/status_topic", cfg.output.status_topic, cfg.output.status_topic);
@@ -113,6 +114,8 @@ MappingConfig loadConfig(ros::NodeHandle& pnh) {
 
   // loop_closure
   pnh.param<bool>("loop_closure/enable", cfg.loop_closure.enable, cfg.loop_closure.enable);
+  pnh.param<std::string>("loop_closure/detector_type", cfg.loop_closure.detector_type,
+                         cfg.loop_closure.detector_type);
   pnh.param<int>("loop_closure/min_index_gap", cfg.loop_closure.min_index_gap,
                  cfg.loop_closure.min_index_gap);
   pnh.param<double>("loop_closure/time_thresh_sec", cfg.loop_closure.time_thresh_sec,
@@ -143,6 +146,50 @@ MappingConfig loadConfig(ros::NodeHandle& pnh) {
                     cfg.loop_closure.odom_rot_noise);
   pnh.param<double>("loop_closure/odom_pos_noise", cfg.loop_closure.odom_pos_noise,
                     cfg.loop_closure.odom_pos_noise);
+
+  // visual loop config
+  auto& v = cfg.loop_closure.visual;
+  pnh.param<std::string>("loop_closure/visual/vocabulary_path", v.vocabulary_path, v.vocabulary_path);
+  int nfeatures = v.nfeatures;
+  pnh.param<int>("loop_closure/visual/nfeatures", nfeatures, nfeatures);
+  v.nfeatures = nfeatures;
+  double scale_factor = v.scale_factor;
+  pnh.param<double>("loop_closure/visual/scale_factor", scale_factor, scale_factor);
+  v.scale_factor = static_cast<float>(scale_factor);
+  pnh.param<int>("loop_closure/visual/nlevels", v.nlevels, v.nlevels);
+  int ini_th = v.ini_th_fast;
+  pnh.param<int>("loop_closure/visual/ini_th_fast", ini_th, ini_th);
+  v.ini_th_fast = ini_th;
+  int min_th = v.min_th_fast;
+  pnh.param<int>("loop_closure/visual/min_th_fast", min_th, min_th);
+  v.min_th_fast = min_th;
+  pnh.param<double>("loop_closure/visual/min_bow_score", v.min_bow_score, v.min_bow_score);
+  pnh.param<int>("loop_closure/visual/min_shared_words", v.min_shared_words, v.min_shared_words);
+  pnh.param<int>("loop_closure/visual/max_candidates", v.max_candidates, v.max_candidates);
+  pnh.param<int>("loop_closure/visual/min_bow_matches", v.min_bow_matches, v.min_bow_matches);
+  pnh.param<double>("loop_closure/visual/nn_ratio", v.nn_ratio, v.nn_ratio);
+  pnh.param<int>("loop_closure/visual/ransac_min_inliers", v.ransac_min_inliers, v.ransac_min_inliers);
+  pnh.param<double>("loop_closure/visual/ransac_probability", v.ransac_probability, v.ransac_probability);
+  pnh.param<int>("loop_closure/visual/ransac_max_iterations", v.ransac_max_iterations, v.ransac_max_iterations);
+  pnh.param<int>("loop_closure/visual/min_continuity", v.min_continuity, v.min_continuity);
+  pnh.param<int>("loop_closure/visual/max_continuity_miss", v.max_continuity_miss, v.max_continuity_miss);
+  pnh.param<int>("loop_closure/visual/feature_extract_rate_hz", v.feature_extract_rate_hz, v.feature_extract_rate_hz);
+  pnh.param<int>("loop_closure/visual/buffer_size", v.buffer_size, v.buffer_size);
+  pnh.param<double>("loop_closure/visual/camera/fx", v.camera.fx, v.camera.fx);
+  pnh.param<double>("loop_closure/visual/camera/fy", v.camera.fy, v.camera.fy);
+  pnh.param<double>("loop_closure/visual/camera/cx", v.camera.cx, v.camera.cx);
+  pnh.param<double>("loop_closure/visual/camera/cy", v.camera.cy, v.camera.cy);
+
+  // LiDAR 到相机外参 T_L_C（4x4 矩阵，行优先存储）
+  std::vector<double> T_L_C_data;
+  if (pnh.getParam("loop_closure/visual/T_L_C", T_L_C_data) && T_L_C_data.size() == 16) {
+    for (int r = 0; r < 4; ++r) {
+      for (int c = 0; c < 4; ++c) {
+        v.T_L_C(r, c) = T_L_C_data[r * 4 + c];
+      }
+    }
+  }
+
   loadGnssConfig(pnh, cfg.loop_closure.gnss);
 
   // map_saver

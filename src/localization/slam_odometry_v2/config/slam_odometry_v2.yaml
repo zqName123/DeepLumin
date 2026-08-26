@@ -33,8 +33,12 @@ localization:
 
 # -------------------- 节点层：订阅话题 --------------------
 sensors:
-  imu_topic: "/ouster/imu"
-  lidar_topic: "/ouster/points"
+  # imu_topic: "/imu/data"
+  # lidar_topic: "/ouster/points"
+  # wheel_topic: "/can_receive_info"
+  # gnss_topic: "/gnss_chc_data"
+  imu_topic: "/handsfree/imu"
+  lidar_topic: "/velodyne_points"
   wheel_topic: "/can_receive_info"
   gnss_topic: "/gnss_chc_data"
 
@@ -66,7 +70,7 @@ common:
 
 # 轮速/GNSS 辅助：唯一来源（核心 yaml 读取 + 节点订阅开关共用）
 vel_gnss:
-  use_vel: true    # 与 faster_lio_ws ouster64.yaml 对齐：启用 CAN 轮速约束
+  use_vel: false    # 与 faster_lio_ws ouster64.yaml 对齐：启用 CAN 轮速约束
   use_gnss_attitude: false
   can_vel_diff_thresh_kmh: 2.0
   can_timeout_sec: 0.2
@@ -75,9 +79,9 @@ vel_gnss:
   attitude_correction_gain: 0.7
 
 preprocess:
-  lidar_type: 3          # 1: Livox AVIA, 2: Velodyne, 3: Ouster, 4: Hesai, 5: Robosense, 6: Livox(PointCloud2)
-  scan_line: 64
-  blind: 3
+  lidar_type: 2          # 1: Livox AVIA, 2: Velodyne, 3: Ouster, 4: Hesai, 5: Robosense, 6: Livox(PointCloud2)
+  scan_line: 32
+  blind: 1.5
   time_scale: 1e-3
 
 mapping:
@@ -88,14 +92,19 @@ mapping:
   extrinsic_est_en: false
   map_trim_radius: 150.0            # iVox 局部地图剔除半径（米）；0=不剔除
   map_trim_interval_frames: 10      # 每 N 帧执行一次剔除（控制开销）
-  extrinsic_T: [0.0, 0.0, 0.0]
-  extrinsic_R: [0, 1, 0,
-                -1, 0, 0,
-                0, 0, 1]
+  # extrinsic_T: [0.0, 0.0, 0.0]
+  # extrinsic_R: [0, 1, 0,
+  #               -1, 0, 0,
+  #               0, 0, 1]
 
-point_filter_num: 2
+  extrinsic_T: [0.27255, -0.00053, 0.17954]
+  extrinsic_R: [1.0, 0.0, 0.0,
+                0.0, 1.0, 0.0,
+                0.0, 0.0, 1.0]
+
+point_filter_num: 3
 max_iteration: 3
-filter_size_surf: 0.2
+filter_size_surf: 0.5
 filter_size_map: 0.2
 
 ivox_grid_resolution: 0.5

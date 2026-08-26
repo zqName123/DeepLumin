@@ -16,27 +16,40 @@ find_package(catkin REQUIRED COMPONENTS
   pcl_ros
   pcl_conversions
   std_srvs
+  cv_bridge
   deeplumin_msgs
 )
 find_package(PCL REQUIRED COMPONENTS common io features filters search)
+find_package(OpenCV REQUIRED)
 set(GTSAM_DIR "/home/hhy/2004ros/DeepLumin/gtsam_install/lib/cmake/GTSAM" CACHE PATH "Path to GTSAMConfig.cmake" FORCE)
 find_package(GTSAM REQUIRED CONFIG PATHS "${GTSAM_DIR}" NO_DEFAULT_PATH)
 
 catkin_package(
   INCLUDE_DIRS include
-  CATKIN_DEPENDS roscpp std_msgs geometry_msgs sensor_msgs nav_msgs visualization_msgs tf2_ros pcl_ros pcl_conversions std_srvs deeplumin_msgs
+  CATKIN_DEPENDS roscpp std_msgs geometry_msgs sensor_msgs nav_msgs visualization_msgs tf2_ros pcl_ros pcl_conversions std_srvs cv_bridge deeplumin_msgs
 )
 
 include_directories(
   include
   ${CMAKE_CURRENT_SOURCE_DIR}/thirdparty/ivox3d
+  ${CMAKE_CURRENT_SOURCE_DIR}/thirdparty/DBoW2
+  ${CMAKE_CURRENT_SOURCE_DIR}/thirdparty/ORBextractor
   ${catkin_INCLUDE_DIRS}
+  ${OpenCV_INCLUDE_DIRS}
   ${PCL_INCLUDE_DIRS}
   ${GTSAM_INCLUDE_DIR}
   ${GTSAM_INCLUDE_DIRS}
 )
 
-# v2 自有核心：订阅驱动多线程建图（无外部包依赖）
+# ===== 第三方库 =====
+
+# DBoW2（词袋模型库）
+add_subdirectory(thirdparty/DBoW2)
+
+# ORBextractor（ORB 特征提取器）
+add_subdirectory(thirdparty/ORBextractor)
+
+# ===== v2 自有核心：订阅驱动多线程建图 =====
 add_library(slam_mapping_v2_core
   src/core/mapping_runtime.cpp
   src/core/keyframe_manager.cpp
@@ -46,6 +59,12 @@ add_library(slam_mapping_v2_core
   src/core/global_map.cpp
   src/core/map_saver.cpp
   src/core/types_impl.cpp
+  # ===== 视觉回环模块 =====
+  src/core/orb_feature_provider.cpp
+  src/core/visual_feature_buffer.cpp
+  src/core/visual_loop_detector.cpp
+  src/core/loop_detector_factory.cpp
+  # ===== ROS 适配层 =====
   src/ros/converters.cpp
   src/ros/config_loader.cpp
   src/ros/publishers.cpp
@@ -55,7 +74,10 @@ target_compile_options(slam_mapping_v2_core PRIVATE -O2)
 target_link_libraries(slam_mapping_v2_core
   gtsam
   glog
+  DBoW2
+  ORBextractor
   ${catkin_LIBRARIES}
+  ${OpenCV_LIBRARIES}
   ${PCL_LIBRARIES}
 )
 
@@ -69,7 +91,7 @@ target_link_libraries(slam_mapping_v2_node
   ${PCL_LIBRARIES}
 )
 
-install(TARGETS slam_mapping_v2_core slam_mapping_v2_node
+install(TARGETS slam_mapping_v2_core slam_mapping_v2_node DBoW2 ORBextractor
   ARCHIVE DESTINATION ${CATKIN_PACKAGE_LIB_DESTINATION}
   LIBRARY DESTINATION ${CATKIN_PACKAGE_LIB_DESTINATION}
   RUNTIME DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION}

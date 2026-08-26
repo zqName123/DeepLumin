@@ -55,12 +55,12 @@ map:
   load_voxel_leaf: 0.1        # 分片加载时体素降采样
   max_loaded_chunks: 64       # 内存中最多保留分片数（LRU 淘汰）
   cov_num_neighbors: 20       # 分片协方差估计近邻数（加载时一次性计算）
-  cov_num_threads: 2
+  cov_num_threads: 4
   # VGICP 预构建体素地图（仅 matcher.type 为 vgicp / fast_gicp_vgicp 时构建）
   vgicp_voxel_resolution: 0.5
   vgicp_coarse_scale: 10.0
   vgicp_fine_scale: 1.0
-  global_map_publish_voxel_leaf: 5.0   # 可视化用全局地图降采样
+  global_map_publish_voxel_leaf: 2.0   # 可视化用全局地图降采样
   global_map_publish_period: 0.0       # 全局地图重发周期（秒）
 
 # -------------------- 运行时 --------------------
@@ -111,9 +111,9 @@ matcher:
   # 鲁棒核：none | huber | cauchy（仅 small_gicp 的 gicp/vgicp/icp 生效）
   robust_kernel: none
   robust_kernel_scale: 5.0
-  num_threads: 4               # small_gicp 线程数
+  num_threads: 2               # small_gicp 线程数
   cov_num_neighbors: 20         # source 协方差估计近邻数
-  cov_num_threads: 4
+  cov_num_threads: 2
   fast_gicp_num_threads: 4
   fast_gicp_correspondence_randomness: 20
   vgicp_voxel_resolution: 0.5   # 与 map.vgicp_* 保持一致（记录用）
@@ -138,7 +138,7 @@ result:
 # -------------------- 发布开关（减少话题量） --------------------
 publish:
   global_map: true              # latch，仅有订阅者时发布
-  target_submap: true
+  target_submap: false
   aligned_scan: false
   source_initial_scan: false
   initial_guess: false

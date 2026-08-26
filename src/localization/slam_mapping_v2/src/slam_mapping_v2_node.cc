@@ -16,8 +16,12 @@
 #include <deeplumin_msgs/SaveMappingRuntime.h>
 #include <deeplumin_msgs/StartMappingRuntime.h>
 #include <deeplumin_msgs/StopMappingRuntime.h>
+#include <cv_bridge/cv_bridge.h>
 #include <nav_msgs/Odometry.h>
+#include <opencv2/imgcodecs.hpp>
 #include <ros/ros.h>
+#include <sensor_msgs/CompressedImage.h>
+#include <sensor_msgs/Image.h>
 #include <sensor_msgs/PointCloud2.h>
 #include <std_srvs/Trigger.h>
 #include <tf2_ros/transform_broadcaster.h>
@@ -43,6 +47,23 @@ class SlamMappingV2Node {
     odom_sub_ = nh.subscribe(cfg_.input.odom_topic, 200, &SlamMappingV2Node::onOdom, this);
     scan_sub_ = nh.subscribe(cfg_.input.scan_topic, 200, &SlamMappingV2Node::onScan, this);
     gnss_sub_ = nh.subscribe(cfg_.input.gnss_topic, 1000, &SlamMappingV2Node::onGnss, this);
+
+    // 视觉回环：条件订阅图像话题
+    if (cfg_.loop_closure.detector_type == "visual" ||
+        cfg_.loop_closure.detector_type == "hybrid") {
+      // 判断是否为压缩图像话题
+      if (cfg_.input.image_topic.find("compressed") != std::string::npos) {
+        image_compressed_sub_ = nh.subscribe(cfg_.input.image_topic, 10,
+                                             &SlamMappingV2Node::onCompressedImage, this);
+        ROS_INFO("[slam_mapping_v2] Subscribing to compressed image topic: %s",
+                 cfg_.input.image_topic.c_str());
+      } else {
+        image_sub_ = nh.subscribe(cfg_.input.image_topic, 10,
+                                  &SlamMappingV2Node::onImage, this);
+        ROS_INFO("[slam_mapping_v2] Subscribing to image topic: %s",
+                 cfg_.input.image_topic.c_str());
+      }
+    }
 
     start_srv_ = nh.advertiseService(cfg_.services.start, &SlamMappingV2Node::handleStart, this);
     stop_srv_ = nh.advertiseService(cfg_.services.stop, &SlamMappingV2Node::handleStop, this);
@@ -110,6 +131,32 @@ class SlamMappingV2Node {
   void onGnss(const deeplumin_msgs::Gpchc::ConstPtr& msg) {
     if (!cfg_.loop_closure.gnss.enable) return;
     runtime_.feedGnss(slam_mapping_v2_ros::fromGnssMsg(*msg));
+  }
+
+  void onImage(const sensor_msgs::Image::ConstPtr& msg) {
+    cv::Mat image;
+    try {
+      image = cv_bridge::toCvShare(msg, "mono8")->image;
+    } catch (const cv_bridge::Exception& e) {
+      ROS_ERROR("[slam_mapping_v2] cv_bridge exception: %s", e.what());
+      return;
+    }
+    runtime_.feedImage(image, msg->header.stamp.toSec());
+  }
+
+  void onCompressedImage(const sensor_msgs::CompressedImage::ConstPtr& msg) {
+    cv::Mat image;
+    try {
+      image = cv::imdecode(cv::Mat(msg->data), cv::IMREAD_GRAYSCALE);
+    } catch (const std::exception& e) {
+      ROS_ERROR("[slam_mapping_v2] Compressed image decode exception: %s", e.what());
+      return;
+    }
+    if (image.empty()) {
+      ROS_ERROR("[slam_mapping_v2] Failed to decode compressed image");
+      return;
+    }
+    runtime_.feedImage(image, msg->header.stamp.toSec());
   }
 
   void visualizationLoop() {
@@ -214,6 +261,8 @@ class SlamMappingV2Node {
   ros::Subscriber odom_sub_;
   ros::Subscriber scan_sub_;
   ros::Subscriber gnss_sub_;
+  ros::Subscriber image_sub_;
+  ros::Subscriber image_compressed_sub_;
   ros::ServiceServer start_srv_;
   ros::ServiceServer stop_srv_;
   ros::ServiceServer save_srv_;

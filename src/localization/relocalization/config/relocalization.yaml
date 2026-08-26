@@ -78,6 +78,7 @@ lidar_frame_id: "lidar_link"
 # auto 使用输入点云 header.frame_id；也可显式设置 base_link 或 lidar。
 query_cloud_frame: "auto"
 result_topic: "/localization/relocalization/result"
+command_topic: "/localization_v2/relocalization/command"
 map_id: "default"
 method: "scan_context_gicp"
 top_k: 20

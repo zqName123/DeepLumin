@@ -1,6 +1,7 @@
 # ========== ROS/Catkin Workspace ==========
 build/
 devel/
+.venv/
 
 
 

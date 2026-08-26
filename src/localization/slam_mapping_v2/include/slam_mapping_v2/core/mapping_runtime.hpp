@@ -15,9 +15,13 @@
 #include "slam_mapping_v2/core/global_map.hpp"
 #include "slam_mapping_v2/core/gnss_optimizer.hpp"
 #include "slam_mapping_v2/core/i_loop_detector.hpp"
+#include "slam_mapping_v2/core/i_visual_feature_provider.hpp"
 #include "slam_mapping_v2/core/keyframe_manager.hpp"
 #include "slam_mapping_v2/core/map_saver.hpp"
 #include "slam_mapping_v2/core/pose_graph_optimizer.hpp"
+#include "slam_mapping_v2/core/visual_feature_buffer.hpp"
+
+#include <opencv2/core.hpp>
 
 #include <condition_variable>
 #include <deque>
@@ -61,6 +65,7 @@ class MappingRuntime {
   void feedOdom(const FrameInput& odom);
   void feedScan(const FrameInput& scan);
   void feedGnss(const GnssObservation& gnss);
+  void feedImage(const cv::Mat& image, double timestamp);
 
   bool processOnce();
 
@@ -80,6 +85,7 @@ class MappingRuntime {
   bool popFrame(FrameInput* odom, FrameInput* scan);
   void associateGnssToKeyframe(Keyframe* kf);
   void backendLoop();
+  void visualFeatLoop();
   void updateLoopData(const Keyframe* latest_kf, const LoopResult& r);
   void updateStatusFromLoop(const LoopResult& r);
   RuntimeStatus statusSnapshot() const;
@@ -121,6 +127,14 @@ class MappingRuntime {
   std::thread backend_thread_;
   std::uint64_t frame_count_ = 0;
   bool loop_enabled_ = false;
+
+  // ===== 视觉回环相关 =====
+  std::thread visual_feat_thread_;
+  std::deque<std::pair<cv::Mat, double>> image_queue_;
+  std::mutex image_mutex_;
+  std::condition_variable image_cv_;
+  std::shared_ptr<VisualFeatureBuffer> feat_buffer_;
+  std::unique_ptr<IVisualFeatureProvider> feat_provider_;
 };
 
 }  // namespace slam_mapping_v2

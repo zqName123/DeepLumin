@@ -1,23 +1,26 @@
 # relocalization
 
-基于 Scan Context 和 GICP 的全局重定位模块，为 DeepLumin 定位系统提供全局位姿估计。
+基于 Scan Context / CSC 描述子和 GICP / VGICP 精配准的全局重定位模块，为 DeepLumin 定位系统提供全局位姿估计。
 
 ## 功能特性
 
-- **Scan Context 描述子**: 旋转不变的点云位置识别
-- **GICP 精配准**: 基于 Generalized ICP 的精确位姿估计
-- **子图匹配**: 支持基于半径或索引的局部子图构建
-- **在线重定位**: 实时接收查询点云，输出全局位姿
-- **离线评估**: 支持 bag 文件批量评估和可视化
-- **多模式建库**: 支持单帧/子图模式构建数据库
+- **多描述子支持**：Scan Context（单通道距离）与 CSC（4 通道：距离/密度/强度/高度）
+- **多匹配器支持**：PCL GICP 与 small_gicp VGICP（两级粗精配准）
+- **多种 target 来源**：全局地图朝向裁剪（crop）/ 关键帧子图拼接（submap）
+- **在线重定位**：实时接收 LiDAR 点云，输出 `map -> base_link` 全局位姿
+- **离线 bag 评估**：支持 rosbag 批量评估，可选 map_align / truth_compare 两种模式
+- **RViz 可视化**：评估过程多色点云与位姿箭头可视化
+- **启停控制**：通过 `/localization_v2/relocalization/command` 话题控制匹配流程（start/stop）
 
 ## 依赖
 
 - ROS Noetic
 - PCL (Point Cloud Library)
 - Eigen3
-- OpenMP (可选，用于并行加速)
+- OpenMP（并行加速）
+- small_gicp（VGICP 匹配器）
 - deeplumin_msgs
+- deeplumin_cmake
 
 ## 编译
 
@@ -34,285 +37,220 @@ catkin build relocalization
 roslaunch relocalization global_relocalization.launch
 ```
 
-### 2. Bag 评估
+订阅 `/localization/points`（或 yaml 中配置的 `lidar_topic`），发布：
+- `/localization/relocalization/result`：`deeplumin_msgs/RelocalizationResult`
+- `reloc_pose`：`geometry_msgs/PoseStamped`
+- `reloc_status`：`std_msgs/String`
+- `reloc_aligned_scan` / `reloc_target_submap`：`sensor_msgs/PointCloud2`
+
+### 2. Bag 离线评估 + RViz 可视化
 
 ```bash
-roslaunch relocalization bag_eval_viz.launch
+roslaunch relocalization bag_eval_viz.launch \
+  bag_file:=/path/to/your.bag \
+  bag_start_offset:=180.0 \
+  bag_cloud_stride:=10
 ```
 
-### 3. 构建 Scan Context 数据库
+### 3. 构建描述子数据库
 
-```bash
-# 单帧模式
-rosrun relocalization build_sc_database
-
-# 子图模式
-roslaunch relocalization build_sc_submap_database.launch
-```
+数据库由外部工具（如 `relocalization_framework` 的建库节点）生成 `.bin` 文件，本模块仅负责加载。
 
 ## 参数配置
 
-主要配置文件: `config/relocalization.yaml`
+主要配置文件：`config/relocalization.yaml`
 
-### 核心参数
+### 模块选择
 
-| 参数 | 说明 | 默认值 |
+| 参数 | 说明 | 可选值 |
 |------|------|--------|
-| `descriptor/type` | 描述子类型 | `scan_context` |
-| `matcher/type` | 匹配器类型 | `gicp` |
-| `keyframe_dir` | 关键帧目录 | - |
-| `pose_file` | 位姿文件 (TUM 格式) | - |
-| `global_map_pcd` | 全局地图 PCD | - |
-| `scan_context_db` | Scan Context 数据库 | - |
+| `descriptor/type` | 描述子类型 | `scan_context` / `csc` |
+| `matcher/type` | 匹配器类型 | `gicp` / `vgicp` |
+| `matcher/target_source` | target 点云来源 | `crop`（朝向裁剪全局地图）/ `submap`（关键帧子图） |
+
+### 路径配置
+
+| 参数 | 说明 |
+|------|------|
+| `keyframe_dir` | 关键帧 PCD 目录 |
+| `pose_file` | 位姿文件（TUM 格式：timestamp tx ty tz qx qy qz qw） |
+| `global_map_pcd` | 全局地图 PCD（crop 模式使用） |
+| `scan_context_db` | 描述子数据库 `.bin` 文件 |
 
 ### Scan Context 参数
 
 ```yaml
 scan_context:
-  num_rings: 20          # 径向环数
-  num_sectors: 60        # 角度扇区数
-  max_radius: 100.0      # 最大半径 (m)
-  min_range: 3.0         # 最小距离 (m)
-  ring_key_candidates: 100  # 候选帧数量
+  num_rings: 20
+  num_sectors: 60
+  max_radius: 100.0
+  min_range: 3.0
+  ring_key_candidates: 100
+```
+
+### CSC 参数
+
+```yaml
+csc:
+  num_sectors: 60
+  num_height_bins: 16
+  max_radius: 100.0
+  min_range: 3.0
+  num_channels: 4
+  channel_weights: [0.6, 0.5, 0.2, 0.3]
+  similarity: "l1"       # l1 / balanced
+  ring_key_candidates: 300
 ```
 
 ### GICP 参数
 
 ```yaml
 gicp:
-  max_iterations: 100
-  max_correspondence_distance: 10.5
-  transformation_epsilon: 0.00001
+  max_iterations: 64
+  max_correspondence_distance: 2.0
+  transformation_epsilon: 0.01
+  euclidean_fitness_epsilon: 0.01
   accept_fitness: 0.5
-  min_inlier_ratio: 0.7
-  max_inlier_rmse: 0.3
+  inlier_distance: 0.5
+  min_inlier_ratio: 0.6
+  max_inlier_rmse: 0.5
+```
+
+### VGICP 参数（small_gicp）
+
+```yaml
+vgicp:
+  voxel_resolution: 0.5
+  num_neighbors: 30
+  num_threads: 8
+  coarse_scale: 10.0
+  fine_scale: 1.0
+```
+
+### Crop 模式朝向裁剪参数
+
+```yaml
+matcher:
+  target_source: "crop"
+  crop:
+    forward: 70.0
+    backward: 50.0
+    left: 40.0
+    right: 40.0
+    down: 10.0
+    up: 10.0
 ```
 
 ### 子图参数
 
 ```yaml
 submap:
-  mode: radius           # radius/index/hybrid
-  radius: 20.0           # 子图半径 (m)
-  neighbor_keyframes: 20 # 邻居关键帧数
-  before_frames: 5       # 前方帧数
-  after_frames: 5        # 后方帧数
+  mode: radius           # radius / index / hybrid
+  radius: 50.0
+  neighbor_keyframes: 10
+  before_frames: 0
+  after_frames: 0
 ```
 
-## 输入输出
-
-### 输入话题
-
-| 话题 | 类型 | 说明 |
-|------|------|------|
-| `/localization/points` | `sensor_msgs/PointCloud2` | 查询点云 |
-
-### 输出话题
-
-| 话题 | 类型 | 说明 |
-|------|------|------|
-| `/localization/relocalization/result` | `deeplumin_msgs/RelocalizationResult` | 重定位结果 |
-
-### 结果消息格式
+### 预处理参数
 
 ```yaml
-header:
-  stamp: ...
-  frame_id: "map"
-child_frame_id: "base_link"
-pose:                    # 估计位姿 (协方差表示不确定性)
-  pose: ...
-  covariance: ...
-success: true/false      # 算法是否成功
-accepted: true/false     # 是否通过质量门限
-map_id: "default"
-method: "scan_context_gicp"
-score: 0.85              # 匹配得分
-fitness_score: 0.85
-inlier_ratio: 0.75
-inlier_rmse: 0.15
+preprocess:
+  voxel_leaf: 0.5
+  min_range: 3.0
+  max_range: 80.0
 ```
 
-## 节点说明
+> ⚠️ **一致性约束**：`preprocess.min_range` 应等于描述子 `min_range`，`preprocess.max_range` 应等于描述子 `max_radius`。修改后须重建数据库。
 
-### global_relocalization_node
+### 在线重定位参数
 
-在线重定位主节点，实时处理查询点云并输出全局位姿。
+| 参数 | 说明 | 默认值 |
+|------|------|--------|
+| `lidar_topic` | 输入 LiDAR 话题 | `/localization/points` |
+| `frame_id` | 输出坐标系 | `map` |
+| `child_frame_id` | 输出子坐标系 | `base_link` |
+| `lidar_frame_id` | LiDAR 坐标系名 | `lidar_link` |
+| `query_cloud_frame` | query 点云坐标系 | `auto`（使用输入 header.frame_id） |
+| `result_topic` | 结果话题 | `/localization/relocalization/result` |
+| `command_topic` | 启停命令话题 | `/localization_v2/relocalization/command` |
+| `top_k` | SC 候选数量 | 20 |
+| `extrinsics/base_to_lidar` | base_link -> lidar 外参 | 单位矩阵 |
+| `query_frame/yaw_deg` | query 点云额外 yaw 旋转 | 0.0 |
+| `query_frame/rotate_xy_y_negx` | query 点云 XY 轴交换（+ -90°） | false |
 
-```bash
-rosrun relocalization global_relocalization_node
-```
+### Bag 评估参数
 
-### bag_eval_node
+| 参数 | 说明 | 默认值 |
+|------|------|--------|
+| `bag_file` | rosbag 路径 | - |
+| `bag_lidar_topic` | bag 内 LiDAR 话题 | `/ouster/points` |
+| `bag_cloud_stride` | 每隔 N 帧评估一次 | 10 |
+| `max_queries` | 最多评估帧数 | 50 |
+| `bag_start_offset` | 跳过 bag 开头秒数 | 0.0 |
+| `bag_duration` | 只评估多少秒（0=到结束） | 0.0 |
+| `bag_use_truth_pose` | true=与 TUM 真值对比；false=地图贴合评估 | false |
+| `success_translation` | 成功判定平移阈值（m） | 1.0 |
+| `success_yaw_deg` | 成功判定 yaw 阈值（°） | 5.0 |
+| `log_topk_candidates` | 打印每帧 Top-K 候选 | true |
 
-Bag 文件评估节点，用于批量测试和评估重定位性能。
+## 坐标系与 TF
 
-```bash
-rosrun relocalization bag_eval_node
-```
+- **输入**：query 点云默认在 LiDAR 坐标系（如 `lidar_link`）
+- **输出**：`map -> base_link`（`RelocalizationResult.pose`）
+- **外参转换**：若 `query_cloud_frame == "lidar"`，自动应用 `extrinsics/base_to_lidar` 将点云转到 base_link 系后再匹配
+- **query 旋转**：支持 `query_frame_yaw_deg` 和 `rotate_xy_y_negx` 对输入点云做预处理旋转，用于 LiDAR 轴向与建库时不一致的场景
 
-### relocalization_node
-
-通用重定位节点，支持多种评估模式。
-
-```bash
-rosrun relocalization relocalization_node
-```
-
-## 架构
+## 核心架构
 
 ```
 ┌─────────────────────────────────────────────────────────────────┐
-│                    relocalization_node                           │
-├─────────────────────────────────────────────────────────────────┤
-│  ┌──────────────────────────────────────────────────────────┐  │
-│  │                    RelocalizationCore                     │  │
-│  │  - 关键帧数据库 (KeyframeDatabase)                         │  │
-│  │  - Scan Context 描述子 (ScanContextDescriptor)             │  │
-│  │  - GICP 匹配器 (GICPGlobalMatcher)                         │  │
-│  └──────────────────────────────────────────────────────────┘  │
-│                           │                                      │
-│         ┌─────────────────┼─────────────────┐                   │
-│         ▼                 ▼                 ▼                   │
-│  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐          │
-│  │   Stage 1    │  │   Stage 2    │  │   Stage 3    │          │
-│  │ Scan Context │→ │  Ring Key    │→ │    GICP      │          │
-│  │  粗定位      │  │  候选筛选    │  │  精配准      │          │
-│  └──────────────┘  └──────────────┘  └──────────────┘          │
-│                                                           │      │
-│  ┌──────────────────────────────────────────────────────────┐  │
-│  │              GlobalRelocalizationNode                     │  │
-│  │  - ROS 接口封装                                           │  │
-│  │  - 结果发布                                               │  │
-│  │  - 可视化                                                 │  │
-│  └──────────────────────────────────────────────────────────┘  │
+│  RelocalizationCore                                             │
+│  ├─ IRelocalizationDescriptor (ScanContextDescriptor / CscDescriptor) │
+│  │   └─ query() → Top-K DescriptorCandidate (pose + yaw_diff)   │
+│  ├─ IGlobalMatcher (GicpGlobalMatcher / VgicpGlobalMatcher)     │
+│  │   └─ alignCandidates() → MatchResult (success + transform)   │
+│  └─ KeyframeDatabase                                            │
+│      ├─ loadKeyframeCloud()                                     │
+│      ├─ buildSubmapAround() / cropOriented() / cropGlobalMap()  │
+│      └─ loadTumPoses()                                          │
 └─────────────────────────────────────────────────────────────────┘
 ```
 
-## 工作流程
+### 匹配流程
 
-### 在线重定位流程
+1. **描述子提取**：将 query 点云转为 Scan Context / CSC 描述子
+2. **粗检索**：Ring Key / Z-Key 粗筛 + Sector Key 精排，返回 Top-K 候选
+3. **候选门控**（可选）：只保留 Top-1 周围 `candidate_gate_radius` 内的候选
+4. **Target 构建**：根据 `target_source` 裁剪全局地图或拼接关键帧子图
+5. **精配准**：GICP / VGICP 配准，初值使用候选位姿 + `yaw_diff` 修正
+6. **质量判定**：converged + fitness + inlier_ratio + inlier_rmse 多阈值过滤
 
-1. **接收查询点云** → 预处理和降采样
-2. **Scan Context 描述** → 生成查询描述子
-3. **Ring Key 匹配** → 从数据库找出候选帧
-4. **子图构建** → 拼接候选帧附近点云
-5. **GICP 精配准** → 计算精确变换
-6. **质量验证** → 检查内点率和 RMSE
-7. **发布结果** → 输出位姿和置信度
+## 节点说明
 
-### 离线评估流程
+| 可执行文件 | 节点名 | 用途 |
+|-----------|--------|------|
+| `global_relocalization_node` | `global_relocalization` | 在线重定位 |
+| `bag_eval_node` | `bag_eval` | 离线 bag 评估 |
+| `relocalization_node` | - | 旧版节点（保留兼容） |
 
-1. 加载 bag 文件和真值位姿
-2. 按时间戳采样查询帧
-3. 执行重定位算法
-4. 计算与真值的误差
-5. 生成评估报告 (CSV)
+## 成功判定条件
 
-## 数据库构建
-
-### 1. 准备数据
-
-```bash
-# 关键帧目录结构
-key_point_frame/
-  ├── 000000.pcd
-  ├── 000001.pcd
-  └── ...
-
-# 位姿文件 (TUM 格式)
-# timestamp x y z qx qy qz qw
-optimized_poses_tum.txt
+```
+success = converged
+          && fitness <= accept_fitness
+          && inlier_ratio >= min_inlier_ratio
+          && inlier_rmse <= max_inlier_rmse
 ```
 
-### 2. 构建数据库
+失败时 `reject_reason` 字段说明：
+- `no_candidate`：无描述子候选
+- `gicp_not_converged`：GICP/VGICP 未收敛
+- `quality_gate_failed`：收敛但质量指标未通过
 
-```bash
-# 子图模式 (推荐)
-roslaunch relocalization build_sc_submap_database.launch
+## 注意事项
 
-# 参数配置
-sc_submap:
-  mode: index
-  before_frames: 3
-  after_frames: 10
-```
-
-### 3. 验证数据库
-
-```bash
-# 检查生成的 .bin 文件
-ls -lh scan_context_submap_db_*.bin
-```
-
-## 调试
-
-### RViz 配置
-
-```bash
-roslaunch relocalization bag_eval_viz.launch
-```
-
-显示内容:
-- 查询点云 (红色)
-- 配准后点云 (绿色)
-- 目标子图 (蓝色)
-- 真值位姿 (黄色箭头)
-
-### 常见问题
-
-1. **重定位失败率高**
-   - 检查建库参数与查询参数是否一致
-   - 调整 `min_inlier_ratio` 和 `max_inlier_rmse`
-   - 增大 `top_k` 候选帧数量
-
-2. **GICP 不收敛**
-   - 检查初始位姿是否偏差过大
-   - 调整 `max_correspondence_distance`
-   - 启用/禁用 `z_filter_enable`
-
-3. **数据库加载失败**
-   - 检查 `scan_context_db` 路径
-   - 确认参数与数据库一致 (`num_rings`, `num_sectors`, `max_radius`)
-
-### 性能优化
-
-1. **启用 OpenMP**
-   ```cmake
-   # CMakeLists.txt
-   find_package(OpenMP)
-   if(OpenMP_FOUND)
-     target_compile_options(... PRIVATE ${OpenMP_CXX_FLAGS})
-   endif()
-   ```
-
-2. **调整候选帧数量**
-   - 减小 `ring_key_candidates` 提高速度
-   - 增大 `ring_key_candidates` 提高召回率
-
-3. **子图参数调优**
-   - 减小 `neighbor_keyframes` 降低内存占用
-   - 使用 `hybrid` 模式平衡精度和速度
-
-## 评估指标
-
-| 指标 | 说明 | 目标值 |
-|------|------|--------|
-| Success Rate | 重定位成功率 | > 95% |
-| Translation Error | 平移误差 (m) | < 0.5m |
-| Yaw Error | 航向角误差 (deg) | < 3° |
-| Inlier Ratio | 内点比例 | > 0.7 |
-| RMSE | 均方根误差 | < 0.3m |
-
-## 维护者
-
-- DeepLumin Team
-
-## 许可证
-
-Apache-2.0
-
-## 参考
-
-- [Scan Context](https://github.com/irapkaist/scancontext): 原始 Scan Context 实现
-- [GICP](https://pointclouds.org/documentation/classpcl_1_1_generalized_iterative_closest_point.html): PCL GICP 文档
+1. **数据库一致性**：修改 `scan_context.num_rings/num_sectors/max_radius/min_range` 或 `preprocess.*` 后必须重建 `.bin` 数据库
+2. **CSC 数据库格式**：使用 magic header `SCR_CSC_DB_V2`，与 `relocalization_framework` 产出的 `.bin` 完全兼容
+3. **VGICP 无 PCL fitness**：VGICP 的 `fitness` 仅作报告参考，成功判定以内点率/RMSE 为主
+4. **坐标系对齐**：若 query 点云坐标系与建库时 key_point_frame 不一致，需通过 `query_frame_yaw_deg` 或 `rotate_xy_y_negx` 调整
