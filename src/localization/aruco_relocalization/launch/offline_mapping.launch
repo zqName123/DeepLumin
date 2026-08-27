@@ -1,0 +1,21 @@
+<!-- offline_mapping.launch -->
+<!-- ArUco 离线建图节点（需同时启动 slam_mapping_v2） -->
+<launch>
+  <!-- 参数文件 -->
+  <arg name="config_file" default="$(find aruco_relocalization)/config/aruco_relocalization.yaml"/>
+  <rosparam command="load" file="$(arg config_file)" ns="aruco_offline_mapping"/>
+
+  <!-- 覆盖参数 -->
+  <arg name="output_path" default="$(find aruco_relocalization)/config/marker_map.yaml"/>
+  <arg name="path_topic" default="/slam_mapping_v2/path"/>
+  <arg name="image_topic" default="/camera/image_raw"/>
+  <arg name="camera_info_topic" default="/camera/camera_info"/>
+
+  <!-- 离线建图节点 -->
+  <node pkg="aruco_relocalization" type="aruco_reloc_offline_mapping_node" name="aruco_offline_mapping" output="screen" respawn="false">
+    <param name="path_topic" value="$(arg path_topic)"/>
+    <param name="image_topic" value="$(arg image_topic)"/>
+    <param name="camera_info_topic" value="$(arg camera_info_topic)"/>
+    <param name="output_path" value="$(arg output_path)"/>
+  </node>
+</launch>

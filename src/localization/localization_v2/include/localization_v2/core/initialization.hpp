@@ -2,17 +2,17 @@
 
 /**
  * @file initialization.hpp
- * @brief 定位初始化状态机（纯 C++，不依赖 ROS）
+ * @brief 定位状态机（纯 C++，不依赖 ROS）
  *
- * 启动阶段策略（与需求对应）：
- * 1. 算法开始时若需要初始位姿，先启用 relocalization 获取初始位姿；
- * 2. 满足以下任一条件即视为初始化完成并停止 relocalization：
- *    - relocalization 成功（并可通过质量门限）；
- *    - 人工给出 initial pose；
- *    - 定位算法（global_matcher）自身匹配成功。
+ * 状态机管理整个定位生命周期：
+ * 1. 未初始化 → 重定位初始化 → 正常跟踪
+ * 2. 跟踪丢失 → 重定位恢复 → 正常跟踪
+ * 3. 恢复失败 → 定位失败 → 人工干预
  *
- * 状态机只输出"建议的重定位命令"（start/stop）与当前状态，实际的重定位
- * 通信由 relocalization 适配层实现，二者通过 IRelocalizationClient 解耦。
+ * 设计原则：
+ * - 人工定位在任何状态下都有效
+ * - 跟踪丢失时自动触发重定位恢复
+ * - 降级输出比完全无输出更安全
  */
 
 #include <string>
@@ -28,7 +28,7 @@ enum class RelocCommand {
 
 /// 初始化状态机配置
 struct InitConfig {
-  /// 是否必须获得初始位姿后才输出定位（false = ysw 原始行为：无初值也能以单位 map->odom 输出）
+  /// 是否必须获得初始位姿后才输出定位
   bool require_initial_pose = false;
   /// 是否允许使用 relocalization 作为初始位姿来源
   bool use_relocalization_init = true;
@@ -51,45 +51,86 @@ struct RelocalizationPolicy {
   bool stop_on_global_match = true;
 };
 
-class InitStateMachine {
+/// 跟踪失效检测配置
+struct TrackingFailureConfig {
+  /// GM 连续失败阈值，达到此值触发跟踪丢失
+  int gm_failure_threshold = 10;
+  /// 重定位连续失败阈值，达到此值触发定位失败
+  int reloc_failure_threshold = 5;
+  /// 重定位超时时间（秒）
+  double reloc_timeout_sec = 30.0;
+};
+
+class LocalizationStateMachine {
  public:
   enum class State {
-    kUninitialized = 0,  ///< 等待初始位姿
-    kRelocalizing,       ///< 重定位进行中（等待初始位姿）
-    kTracking,           ///< 已初始化，正常跟踪
+    kUninitialized = 0,      ///< 未初始化，等待初始位姿
+    kRelocalizing,           ///< 重定位初始化中
+    kTracking,               ///< 正常跟踪，定位有效
+    kTrackingLost,           ///< 跟踪丢失，尝试恢复中
+    kLocalizationFailure,    ///< 定位失败，需要人工干预
   };
 
-  void configure(const InitConfig& init, const RelocalizationPolicy& policy);
+  void configure(const InitConfig& init,
+                 const RelocalizationPolicy& policy,
+                 const TrackingFailureConfig& tracking_config);
 
+  // ========== 状态查询 ==========
   State state() const { return state_; }
-  bool initialized() const { return state_ == State::kTracking; }
+  bool initialized() const {
+    return state_ == State::kTracking ||
+           state_ == State::kTrackingLost ||
+           state_ == State::kLocalizationFailure;
+  }
   bool relocalizationRunning() const { return state_ == State::kRelocalizing; }
+  bool trackingLost() const { return state_ == State::kTrackingLost; }
+  bool localizationFailure() const { return state_ == State::kLocalizationFailure; }
   const std::string& stateName() const { return state_name_; }
 
+  // ========== 命令取走 ==========
   /// 每次事件处理后返回本周期应下发的重定位命令（取走后自动清零）
   RelocCommand takeCommand();
+
+  // ========== 事件处理 ==========
 
   /// slam 数据到达：未初始化且启用自动启动时触发重定位
   void onSlamOdom();
 
-  /// 人工 initial pose：完成初始化并停止重定位
+  /// 人工 initial pose：任何状态下都有效
   void onManualPose();
 
-  /// 重定位结果：成功（且通过外部门限）时完成初始化并停止重定位
+  /// 重定位结果：成功（且通过外部门限）时完成初始化或恢复
   void onRelocalizationResult(bool accepted);
 
-  /// global_matcher 自身匹配成功：完成初始化并停止重定位
+  /// global_matcher 自身匹配成功：完成初始化
   void onGlobalMatchSuccess();
+
+  /// 跟踪失败检测：GM 连续失败达到阈值
+  void onTrackingFailure();
+
+  /// 恢复失败检测：重定位超时或连续失败达到阈值
+  void onRecoveryFailed();
+
+  // ========== 计数器查询（用于状态发布） ==========
+  int getGmConsecutiveFailures() const { return gm_consecutive_failures_; }
+  int getRelocConsecutiveFailures() const { return reloc_consecutive_failures_; }
 
  private:
   void transitionTo(State state);
   void request(RelocCommand command) { pending_command_ = command; }
+  void resetCounters();
 
   InitConfig init_;
   RelocalizationPolicy policy_;
+  TrackingFailureConfig tracking_config_;
+
   State state_ = State::kUninitialized;
   std::string state_name_ = "UNINITIALIZED";
   RelocCommand pending_command_ = RelocCommand::kNone;
+
+  // 失效检测计数器
+  int gm_consecutive_failures_ = 0;
+  int reloc_consecutive_failures_ = 0;
 };
 
 }  // namespace localization_v2

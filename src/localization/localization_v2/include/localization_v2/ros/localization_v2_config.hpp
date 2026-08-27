@@ -71,6 +71,18 @@ struct LocalizationV2Config {
   bool initial_pose_z_completion = true;
   double initial_pose_z_search_radius = 5.0;
   std::string initial_pose_map_pcd_path;
+
+  // ---- 跟踪失效检测 ----
+  int gm_failure_threshold = 10;           ///< GM 连续失败阈值，达到此值触发跟踪丢失
+  double gm_min_inlier_ratio = 0.3;        ///< GM inlier 比率下限
+  double gm_max_inlier_rmse = 0.8;         ///< GM inlier RMSE 上限
+
+  // ---- 重定位恢复 ----
+  int reloc_failure_threshold = 5;         ///< 重定位连续失败阈值，达到此值触发定位失败
+  double reloc_timeout_sec = 30.0;         ///< 重定位超时时间（秒）
+
+  // ---- 降级输出 ----
+  bool allow_degraded_output = true;       ///< TRACKING_LOST 时是否继续输出
 };
 
 /// 从节点私有命名空间（~）加载全部配置

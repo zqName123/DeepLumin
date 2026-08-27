@@ -191,11 +191,14 @@ class MarkerDetector {
 
 ---
 
-### 4.2 模块 2：离线建图子模块
+### 4.2 模块 2：离线建图子模块（在线订阅位姿）
 
 #### 4.2.1 职责
 
-- 使用全局优化位姿（map 坐标系）和图像，计算每个 marker 在 map 坐标系下的位姿
+- **同时运行** slam_mapping_v2 和本节点
+- 实时订阅 slam_mapping_v2 发布的位姿（关键帧轨迹）
+- 订阅图像，检测 ArUco marker
+- 将图像匹配到最近的位姿，计算 marker 在 map 坐标系下的位姿
 - 收集多帧观测，聚合得到最优 marker 位姿
 - 输出 marker_map.yaml
 
@@ -213,86 +216,252 @@ struct MarkerItem {
 
 /// marker 地图
 using MarkerMap = std::unordered_map<int, MarkerItem>;
+
+/// 关键帧位姿缓存
+struct KeyframePose {
+  double timestamp;
+  Eigen::Isometry3d T_map_base;
+};
 ```
 
-#### 4.2.3 离线建图流程（使用全局优化位姿）
+#### 4.2.3 离线建图流程（在线订阅）
 
 ```
 ┌─────────────────────────────────────────────────────────────────┐
-│                     离线建图流程（map 坐标系）                    │
+│                     离线建图流程（一次回放）                      │
 ├─────────────────────────────────────────────────────────────────┤
 │                                                                 │
-│  输入：                                                         │
-│    1. 图像 bag：/camera/image_raw, /camera/camera_info          │
-│    2. 位姿文件：slam_mapping_v2 优化后的 TUM 轨迹               │
-│       或 /localization/slam_mapping/optimized_poses 话题        │
+│  启动：                                                         │
+│    1. rosbag play eee_02.bag                                    │
+│    2. rosrun slam_mapping_v2 slam_mapping_v2_node               │
+│    3. rosrun aruco_relocalization offline_mapping_node          │
 │                                                                 │
-│  步骤：                                                         │
-│  1. 解析位姿文件，按时间戳索引 T_map_base                       │
-│                                                                 │
-│  2. 回放图像 bag                                                │
-│     └── MarkerDetector → 检测结果                               │
-│                                                                 │
-│  3. 时间同步                                                    │
-│     └── 检测结果 与 T_map_base 按时间戳最近邻匹配               │
-│                                                                 │
-│  4. 坐标系转换                                                  │
-│     ├── T_map_cam = T_map_base × T_base_cam (相机外参)         │
-│     └── T_map_marker = T_map_cam × T_cam_marker                │
-│                                                                 │
-│  5. 多帧聚合（同一个 marker ID）                                │
-│     ├── 过滤：重投影误差 > 阈值的观测丢弃                       │
-│     ├── 聚合：四元数 + 位置加权平均                             │
-│     └── 统计：观测帧数、均值误差                                │
-│                                                                 │
-│  6. 输出 marker_map.yaml                                        │
-│     └── id + x y z qw qx qy qz + size + stats                 │
+│  运行时：                                                       │
+│  ┌─────────────────────────────────────────────────────────┐   │
+│  │ slam_mapping_v2                                         │   │
+│  │   ├── 订阅 /localization/slam_odom (LIO 输出)          │   │
+│  │   ├── 建图 + 回环优化                                   │   │
+│  │   └── 发布 /slam_mapping_v2/path (nav_msgs::Path)      │   │
+│  │           ↓                                             │   │
+│  │           ↓ 全量关键帧轨迹（map 坐标系）                │   │
+│  │           ↓                                             │   │
+│  │ offline_mapping_node                                    │   │
+│  │   ├── 订阅 /slam_mapping_v2/path → 缓存关键帧位姿      │   │
+│  │   ├── 订阅 /camera/image_raw → 检测 marker             │   │
+│  │   ├── 时间匹配：找最近的关键帧位姿                      │   │
+│  │   ├── 计算 T_map_marker，聚合到内存                     │   │
+│  │   └── 退出时输出 marker_map.yaml                        │   │
+│  └─────────────────────────────────────────────────────────┘   │
 │                                                                 │
 └─────────────────────────────────────────────────────────────────┘
 ```
 
-#### 4.2.4 位姿来源说明
+#### 4.2.4 关键实现：位姿订阅与匹配
 
-**方案 A（推荐）：使用 slam_mapping_v2 全局优化位姿**
+```cpp
+class OfflineMappingNode {
+ public:
+  OfflineMappingNode() : pnh_("~") {
+    // 订阅 slam_mapping_v2 的关键帧轨迹
+    path_sub_ = nh_.subscribe("/slam_mapping_v2/path", 10,
+                              &OfflineMappingNode::onPath, this);
+
+    // 订阅图像
+    image_sub_ = nh_.subscribe("/camera/image_raw", 10,
+                               &OfflineMappingNode::onImage, this);
+
+    // 退出时保存
+    ros::registerSigintCallback(sigintHandler);
+  }
+
+ private:
+  /// 接收关键帧轨迹，更新位姿缓存
+  void onPath(const nav_msgs::Path::ConstPtr& msg) {
+    std::lock_guard<std::mutex> lock(mutex_);
+
+    // 全量更新：清空旧缓存，重建
+    keyframe_poses_.clear();
+    for (const auto& pose_stamped : msg->poses) {
+      KeyframePose kf;
+      kf.timestamp = pose_stamped.header.stamp.toSec();
+      kf.T_map_base = poseToIsometry(pose_stamped.pose);
+      keyframe_poses_.push_back(kf);
+    }
+
+    // 按时间戳排序（确保二分查找正确）
+    std::sort(keyframe_poses_.begin(), keyframe_poses_.end(),
+              [](const auto& a, const auto& b) { return a.timestamp < b.timestamp; });
+
+    ROS_INFO_THROTTLE(1.0, "[offline_mapping] received %zu keyframe poses",
+                      keyframe_poses_.size());
+  }
+
+  /// 接收图像，检测 marker 并匹配位姿
+  void onImage(const sensor_msgs::Image::ConstPtr& msg) {
+    std::lock_guard<std::mutex> lock(mutex_);
+
+    if (keyframe_poses_.empty()) {
+      ROS_WARN_THROTTLE(2.0, "[offline_mapping] no keyframe poses yet, skip image");
+      return;
+    }
+
+    // 1. 检测 marker
+    cv::Mat image = cv_bridge::toCvCopy(msg)->image;
+    auto detection = detector_.detect(image, msg->header.stamp);
+
+    if (detection.markers.empty()) {
+      return;  // 没有检测到 marker
+    }
+
+    // 2. 找最近的关键帧位姿
+    double image_time = msg->header.stamp.toSec();
+    auto it = std::lower_bound(keyframe_poses_.begin(), keyframe_poses_.end(),
+                               image_time,
+                               [](const auto& kf, double t) { return kf.timestamp < t; });
+
+    // 比较前后两个关键帧，取最近的
+    const KeyframePose* best_kf = nullptr;
+    if (it == keyframe_poses_.end()) {
+      best_kf = &keyframe_poses_.back();
+    } else if (it == keyframe_poses_.begin()) {
+      best_kf = &keyframe_poses_.front();
+    } else {
+      auto prev = std::prev(it);
+      if (std::abs(prev->timestamp - image_time) < std::abs(it->timestamp - image_time)) {
+        best_kf = &(*prev);
+      } else {
+        best_kf = &(*it);
+      }
+    }
+
+    // 3. 检查时间差
+    double time_diff = std::abs(best_kf->timestamp - image_time);
+    if (time_diff > config_.time_sync_tolerance) {
+      ROS_WARN_THROTTLE(2.0, "[offline_mapping] time diff too large: %.3f sec, skip",
+                        time_diff);
+      return;
+    }
+
+    // 4. 计算每个 marker 在 map 下的位姿并聚合
+    for (const auto& obs : detection.markers) {
+      Eigen::Isometry3d T_map_cam = best_kf->T_map_base * T_base_cam_;
+      Eigen::Isometry3d T_map_marker = T_map_cam * obs.T_cam_marker;
+
+      // 聚合到内存
+      aggregateMarker(obs.id, T_map_marker, obs.reprojection_error);
+    }
+
+    ROS_INFO_THROTTLE(5.0, "[offline_mapping] processed %zu markers, %zu unique IDs",
+                      detection.markers.size(), marker_observations_.size());
+  }
+
+  /// 聚合单个 marker 的观测
+  void aggregateMarker(int id, const Eigen::Isometry3d& T_map_marker,
+                       double reproj_error) {
+    // 过滤低质量观测
+    if (reproj_error > config_.max_reproj_error) {
+      return;
+    }
+
+    auto& obs_list = marker_observations_[id];
+    obs_list.push_back({T_map_marker, reproj_error});
+  }
+
+  /// 退出时保存 marker_map.yaml
+  void saveMarkerMap() {
+    MarkerMap final_map;
+    for (const auto& [id, obs_list] : marker_observations_) {
+      if (obs_list.size() < config_.min_observations) {
+        ROS_WARN("[offline_mapping] marker %d has only %zu observations (min %d), skip",
+                 id, obs_list.size(), config_.min_observations);
+        continue;
+      }
+
+      // 加权平均
+      MarkerItem item;
+      item.id = id;
+      item.size = config_.marker_size;
+      item.observation_count = obs_list.size();
+
+      // 位置加权平均
+      Eigen::Vector3d pos_sum = Eigen::Vector3d::Zero();
+      double weight_sum = 0.0;
+      for (const auto& obs : obs_list) {
+        double weight = 1.0 / std::max(0.1, obs.reproj_error);
+        pos_sum += obs.T_map_marker.translation() * weight;
+        weight_sum += weight;
+      }
+      Eigen::Vector3d pos_avg = pos_sum / weight_sum;
+
+      // 旋转加权平均（四元数）
+      Eigen::Quaterniond q_avg = obs_list[0].T_map_marker.rotation();
+      // ... 加权平均逻辑 ...
+
+      item.T_map_marker = Eigen::Isometry3d::Identity();
+      item.T_map_marker.translation() = pos_avg;
+      item.T_map_marker.rotate(q_avg);
+
+      // 计算平均重投影误差
+      double error_sum = 0.0;
+      for (const auto& obs : obs_list) {
+        error_sum += obs.reproj_error;
+      }
+      item.mean_reproj_error = error_sum / obs_list.size();
+
+      final_map[id] = item;
+    }
+
+    // 写入 YAML
+    writeToYaml(final_map);
+    ROS_INFO("[offline_mapping] saved %zu markers to marker_map.yaml", final_map.size());
+  }
+
+  // 成员变量
+  ros::NodeHandle nh_;
+  ros::NodeHandle pnh_;
+  ros::Subscriber path_sub_;
+  ros::Subscriber image_sub_;
+  std::mutex mutex_;
+
+  MarkerDetector detector_;
+  Eigen::Isometry3d T_base_cam_ = Eigen::Isometry3d::Identity();
+
+  std::vector<KeyframePose> keyframe_poses_;
+  std::unordered_map<int, std::vector<MarkerObservation>> marker_observations_;
+};
+```
+
+#### 4.2.5 slam_mapping_v2 话题说明
+
+| 话题 | 类型 | 说明 |
+|------|------|------|
+| `/slam_mapping_v2/path` | nav_msgs::Path | **全量关键帧轨迹**（map 坐标系） |
+| `/slam_mapping_v2/status` | MappingStatus | 建图状态 |
+
+**注意**：`/slam_mapping_v2/path` 是全量更新的，每次有新关键帧或回环优化后都会重新发布整条轨迹。
+
+#### 4.2.6 位姿匹配策略
 
 ```
-slam_mapping_v2 输出：
-  优化后的轨迹文件（TUM 格式）：timestamp tx ty tz qx qy qz qw
-  坐标系：map（经过 loop closure 全局优化）
+图像时间戳: 100.123s
+关键帧轨迹: [99.8, 100.0, 100.2, 100.5, ...]
+                   ↑
+            最近的关键帧：100.0s（diff = 0.123s）
 
-读取方式：
-  - 直接读取 TUM 文件
-  - 或订阅 /localization/slam_mapping/optimized_poses 话题
-
-优点：
-  - 位姿在 map 坐标系下，与系统一致
-  - 经过全局优化，精度高
-  - 无累积漂移
+匹配逻辑：
+1. 二分查找找到 >= image_time 的第一个关键帧
+2. 比较前后两个关键帧，取时间差最小的
+3. 如果时间差 > 容差（如 0.5s），丢弃该图像
 ```
 
-**方案 B：使用 slam_odometry_v2 + T_map_odom（备选）**
-
-```
-如果无法获取全局优化位姿，可用 LIO 输出 + 校正：
-  T_map_base = T_map_odom × T_odom_base
-
-需要：
-  - 订阅 /localization/slam_odom（LIO 输出）
-  - 订阅 T_map_odom（如 pose_fusion 输出的 map→odom 校正）
-
-缺点：
-  - 在线校正可能不精确
-  - 建图和使用时的 T_map_odom 可能不一致
-```
-
-#### 4.2.5 YAML 输出格式
+#### 4.2.7 YAML 输出格式
 
 ```yaml
 # marker_map.yaml
 # 坐标系：map（全局坐标系，经 loop closure 优化）
 frame_id: "map"
 source_bag: "eee_02.bag"
-source_pose_file: "eee_02_optimized_poses.txt"  # TUM 格式
+source_pose_topic: "/slam_mapping_v2/path"
 camera_extrinsic:
   base_to_camera:
     translation: [0.5, 0.0, 1.2]
@@ -325,30 +494,33 @@ markers:
     mean_reproj_error: 0.98
 ```
 
-#### 4.2.6 实现要点
+#### 4.2.8 实现要点
 
-1. **位姿文件读取**：
-   - 支持 TUM 格式：`timestamp tx ty tz qx qy qz qw`
-   - 按时间戳排序，支持最近邻查询
-   - 时间戳单位：秒（float64）
+1. **订阅方式**：
+   - 订阅 `/slam_mapping_v2/path`（nav_msgs::Path）
+   - 每次收到 path 更新本地缓存（全量替换）
+   - 缓存按时间戳排序，支持二分查找
 
 2. **时间同步**：
-   - 图像时间戳与位姿时间戳最近邻匹配
-   - 容差：50ms（可配置）
+   - 图像时间戳与最近关键帧匹配
+   - 容差：0.5s（可配置）
+   - 超过容差的图像丢弃
 
-3. **外参获取**：
-   - 从配置文件加载（推荐，精确）
-   - 或从 TF 树查询 `base_link → camera_link`（需静态 TF）
-
-4. **聚合算法**：
+3. **聚合算法**：
    - 位置：加权平均（权重 = 1 / reproj_error）
    - 旋转：四元数加权平均（需处理双覆盖问题）
 
-5. **质量过滤**：
+4. **质量过滤**：
    - 单帧重投影误差 > 5 pixels 丢弃
    - 观测帧数 < 5 的 marker 不输出（可配置）
 
-6. **去重策略**：同一 ID 只保留最终聚合结果
+5. **退出保存**：
+   - 注册 SIGINT 回调
+   - 退出时自动保存 marker_map.yaml
+
+6. **实时监控**：
+   - 定期打印统计信息（marker 数量、观测帧数）
+   - 可选：发布调试图像
 
 ---
 
@@ -765,15 +937,12 @@ extrinsic:
     rotation: [0.0, 0.0, 0.0, 1.0]  # qw, qx, qy, qz
   use_tf: true  # 是否从 TF 树获取外参（优先级高于配置文件）
 
-# 离线建图配置（使用全局优化位姿）
+# 离线建图配置（订阅 slam_mapping_v2 位姿）
 offline_mapping:
-  image_bag_path: ""  # 图像 bag 文件
-  pose_file: ""  # 位姿文件（TUM 格式：timestamp tx ty tz qx qy qz qw）
-  # 或者从话题获取位姿（如 slam_mapping_v2 优化后的轨迹）
-  pose_topic: ""  # 可选，如 /localization/slam_mapping/optimized_poses
+  path_topic: "/slam_mapping_v2/path"  # slam_mapping_v2 发布的关键帧轨迹
   output_path: "$(find aruco_relocalization)/config/marker_map.yaml"
-  time_sync_tolerance: 0.05  # 秒
-  min_observations: 5
+  time_sync_tolerance: 0.5  # 秒，图像与最近关键帧的时间差容差
+  min_observations: 5  # 最少观测帧数
   max_reproj_error: 5.0  # pixels
 
 # 求解配置
@@ -959,21 +1128,26 @@ aruco_relocalization/
 
 | 方案 | 位姿来源 | 坐标系 | 优点 | 缺点 |
 |------|----------|--------|------|------|
-| **A（推荐）** | slam_mapping_v2 全局优化位姿 | **map** | 与系统一致，精度高 | 需要 loop closure 后的位姿 |
+| **A（推荐）** | 订阅 `/slam_mapping_v2/path` | **map** | 一次回放，实时获取，精度高 | 需同时运行建图节点 |
 | B | slam_odometry_v2 + T_map_odom | map | 可用原始 LIO | 需额外维护 T_map_odom |
 | C | slam_odometry_v2（假设 odom≈map） | odom | 简单 | 长期漂移，不精确 |
 
-**推荐方案 A**：使用 `slam_mapping_v2` 输出的全局优化位姿（经过 loop closure）
+**推荐方案 A**：在线订阅 `slam_mapping_v2` 发布的关键帧轨迹
 
 ```
-离线建图（方案 A）：
-  位姿来源：slam_mapping_v2 输出的全局位姿文件（TUM 格式）
-  T_map_base ← 从位姿文件读取
-  T_base_cam ← 相机外参（标定）
-  T_map_cam  = T_map_base × T_base_cam
-  T_map_marker = T_map_cam × T_cam_marker
+离线建图（方案 A，一次回放）：
+  1. rosbag play eee_02.bag
+  2. 启动 slam_mapping_v2（建图 + 回环优化）
+  3. 启动 aruco offline_mapping_node
 
-  marker_map.yaml 存储：T_map_marker（map 坐标系下）
+  运行时：
+    slam_mapping_v2 → 发布 /slam_mapping_v2/path（map 坐标系）
+    offline_mapping_node → 订阅 path，缓存关键帧位姿
+    offline_mapping_node → 订阅图像，检测 marker
+    offline_mapping_node → 时间匹配 + 坐标转换 + 聚合
+
+  结束后：
+    Ctrl+C 退出 offline_mapping_node → 自动保存 marker_map.yaml
 ```
 
 ### 7.4 在线重定位：输出 map → base_link
@@ -1021,19 +1195,22 @@ extrinsic:
   tf_timeout: 0.1
 ```
 
-### 7.7 离线建图位姿文件格式
+### 7.7 离线建图位姿来源
 
-建议使用 TUM 格式（与项目其他工具一致）：
+**直接订阅 slam_mapping_v2 话题**，无需预先生成位姿文件：
+
 ```
-# timestamp tx ty tz qx qy qz qw
-1629847200.123 1.234 2.345 0.567 0.0 0.0 0.707 0.707
-1629847200.223 1.256 2.367 0.568 0.0 0.0 0.708 0.706
-...
+订阅话题：/slam_mapping_v2/path
+消息类型：nav_msgs::Path
+坐标系：map（经 loop closure 全局优化）
+更新方式：全量更新（每次有新关键帧或回环优化后重新发布）
 ```
 
-**来源**：
-- `slam_mapping_v2` 优化后的轨迹文件
-- 或从 `/localization/slam_mapping/optimized_poses` 话题提取
+**使用方式**：
+1. 同时启动 slam_mapping_v2 和 aruco 离线建图节点
+2. aruco 节点订阅 `/slam_mapping_v2/path`，维护关键帧位姿缓存
+3. 图像到达时，查找最近的关键帧位姿进行匹配
+4. 无需预先跑一遍数据生成位姿文件
 
 ---
 
@@ -1133,11 +1310,11 @@ relocalization_command_topic: "/aruco_reloc/command" # 启停命令
 
 坐标系变换链：
 
-离线建图（建立 marker 地图）：
-  T_map_base ← 全局优化位姿（slam_mapping_v2）
+离线建图（建立 marker 地图，一次回放完成）：
+  T_map_base ← /slam_mapping_v2/path（实时订阅，map 坐标系）
   T_map_cam  = T_map_base × T_base_cam
   T_map_marker = T_map_cam × T_cam_marker
-  → 存储 T_map_marker 到 marker_map.yaml
+  → 聚合后存储 T_map_marker 到 marker_map.yaml
 
 在线重定位（求解相机位姿）：
   T_map_marker ← marker_map.yaml（已知）
@@ -1168,10 +1345,24 @@ relocalization_command_topic: "/aruco_reloc/command" # 启停命令
 
 1. 实现 OfflineMapper（模块 2）
 2. 离线建图节点：
-   - 读取全局优化位姿文件（TUM 格式）
-   - 回放图像 bag，检测 marker
-   - 计算 T_map_marker，聚合输出 marker_map.yaml
+   - 订阅 `/slam_mapping_v2/path` 接收关键帧轨迹
+   - 订阅图像，检测 marker
+   - 时间匹配 + 坐标转换 + 多帧聚合
+   - 退出时输出 marker_map.yaml
 3. 验证 marker 位姿在 map 坐标系下正确
+4. 测试流程：
+   ```bash
+   # 终端 1：回放数据
+   rosbag play eee_02.bag
+
+   # 终端 2：启动建图
+   roslaunch slam_mapping_v2 slam_mapping_v2.launch
+
+   # 终端 3：启动 ArUco 离线建图
+   roslaunch aruco_relocalization offline_mapping.launch
+
+   # Ctrl+C 退出 terminal 3，自动保存 marker_map.yaml
+   ```
 
 ### 8.4 阶段 4：集成测试（3 天）
 
@@ -1304,7 +1495,12 @@ relocalization_command_topic: "/aruco_reloc/command" # 启停命令
 
 **结论**：使用 map 坐标系，与 relocalization/global_matcher 保持一致。
 
-**位姿来源**：离线建图时使用 slam_mapping_v2 输出的全局优化位姿（经过 loop closure）。
+**位姿来源**：离线建图时**在线订阅** slam_mapping_v2 发布的关键帧轨迹（`/slam_mapping_v2/path`），该轨迹在 map 坐标系下，经过 loop closure 全局优化。
+
+**优势**：
+- 只需运行一次数据（同时启动建图和 ArUco 建图节点）
+- 无需预先生成位姿文件
+- 实时获取优化后的位姿（包括回环校正）
 
 ### A.2 为什么解耦集成到 localization_v2？
 
@@ -1387,6 +1583,80 @@ aruco_relocalization/
         ├── node.cpp
         ├── online_node.cpp              # main: 在线重定位
         └── offline_mapping_node.cpp     # main: 离线建图
+```
+
+### Launch 文件示例
+
+**offline_mapping.launch**：
+```xml
+<launch>
+  <!-- 离线建图节点 -->
+  <node pkg="aruco_relocalization" type="offline_mapping_node" name="aruco_offline_mapping" output="screen">
+    <!-- 订阅 slam_mapping_v2 的关键帧轨迹 -->
+    <param name="path_topic" value="/slam_mapping_v2/path"/>
+
+    <!-- 图像话题 -->
+    <param name="image_topic" value="/camera/image_raw"/>
+    <param name="camera_info_topic" value="/camera/camera_info"/>
+
+    <!-- ArUco 配置 -->
+    <param name="aruco/dictionary" value="DICT_4X4_50"/>
+    <param name="aruco/marker_size" value="0.2"/>
+
+    <!-- 相机外参 -->
+    <rosparam param="extrinsic/base_to_camera">
+      translation: [0.5, 0.0, 1.2]
+      rotation: [0.0, 0.0, 0.0, 1.0]
+    </rosparam>
+
+    <!-- 输出 -->
+    <param name="output_path" value="$(find aruco_relocalization)/config/marker_map.yaml"/>
+
+    <!-- 同步容差 -->
+    <param name="time_sync_tolerance" value="0.5"/>
+    <param name="min_observations" value="5"/>
+    <param name="max_reproj_error" value="5.0"/>
+  </node>
+</launch>
+```
+
+**aruco_relocalization.launch**（在线重定位）：
+```xml
+<launch>
+  <!-- 在线重定位节点 -->
+  <node pkg="aruco_relocalization" type="online_node" name="aruco_relocalization" output="screen">
+    <!-- marker 地图 -->
+    <param name="marker_map_path" value="$(find aruco_relocalization)/config/marker_map.yaml"/>
+
+    <!-- 订阅话题 -->
+    <param name="image_topic" value="/camera/image_raw"/>
+    <param name="camera_info_topic" value="/camera/camera_info"/>
+    <param name="slam_odom_topic" value="/localization/slam_odom"/>
+
+    <!-- 发布话题 -->
+    <param name="result_topic" value="/aruco_reloc/result"/>
+    <param name="pose_topic" value="/aruco_reloc/pose"/>
+    <param name="command_topic" value="/aruco_reloc/command"/>
+
+    <!-- ArUco 配置 -->
+    <param name="aruco/dictionary" value="DICT_4X4_50"/>
+    <param name="aruco/marker_size" value="0.2"/>
+
+    <!-- 相机外参 -->
+    <rosparam param="extrinsic/base_to_camera">
+      translation: [0.5, 0.0, 1.2]
+      rotation: [0.0, 0.0, 0.0, 1.0]
+    </rosparam>
+
+    <!-- 坐标系 -->
+    <param name="frame_id" value="map"/>
+    <param name="child_frame_id" value="base_link"/>
+
+    <!-- 校验配置 -->
+    <param name="validator/min_markers" value="2"/>
+    <param name="validator/max_reproj_error" value="10.0"/>
+  </node>
+</launch>
 ```
 
 ---

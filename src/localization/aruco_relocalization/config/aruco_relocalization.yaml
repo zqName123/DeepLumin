@@ -1,0 +1,57 @@
+# aruco_relocalization 配置文件
+
+# 话题配置
+image_topic: "/camera/image_raw"
+camera_info_topic: "/camera/camera_info"
+slam_odom_topic: "/localization/slam_odom"
+result_topic: "/aruco_reloc/result"
+pose_topic: "/aruco_reloc/pose"
+status_topic: "/aruco_reloc/status"
+command_topic: "/aruco_reloc/command"
+
+# 坐标系
+frame_id: "map"
+child_frame_id: "base_link"
+
+# marker 地图路径
+marker_map_path: "$(find aruco_relocalization)/config/marker_map.yaml"
+
+# 相机外参（base_link -> camera_link）
+extrinsic:
+  base_to_camera:
+    translation: [0.0, 0.0, 0.0]
+    rotation: [1.0, 0.0, 0.0, 0.0]  # qw, qx, qy, qz
+
+# 是否从 TF 获取外参（优先级高于配置文件）
+use_tf_extrinsic: false
+
+# ArUco 配置
+aruco:
+  dictionary: "DICT_4X4_50"
+  marker_size: 0.2  # meters
+  corner_subpix: true
+
+# 求解器配置
+solver:
+  min_markers: 1
+  use_ransac: true
+  ransac_iterations: 100
+  ransac_reproj_error: 8.0
+  ransac_confidence: 0.99
+
+# 校验器配置
+validator:
+  max_reproj_error: 10.0  # pixels
+  max_marker_distance_error: 0.1  # meters
+  max_translation_jump: 2.0  # meters
+  max_rotation_jump: 30.0  # degrees
+  use_motion_check: true
+  min_markers: 2  # 推荐 >=2
+
+# 离线建图配置
+offline_mapping:
+  path_topic: "/slam_mapping_v2/path"
+  output_path: "$(find aruco_relocalization)/config/marker_map.yaml"
+  time_sync_tolerance: 0.5  # 秒
+  min_observations: 5
+  max_reproj_error: 5.0  # pixels

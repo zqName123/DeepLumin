@@ -9,6 +9,8 @@
 - **高频平滑输出**：以 100Hz 输出融合位姿，满足控制闭环需求
 - **全局一致性**：通过低频全局匹配结果修正 `map->odom`，消除里程计累积漂移
 - **多源初始化**：支持重定位、人工初值、全局匹配三种初始化来源，带仲裁机制
+- **跟踪失效检测**：GM 连续失败自动触发跟踪丢失，重定位恢复失败进入定位失败
+- **降级输出**：跟踪丢失期间可选择继续输出，保障安全
 - **解耦可测试**：核心融合逻辑纯 C++，不依赖 ROS，便于单元测试与跨平台复用
 
 ### 1.3 术语定义
@@ -21,6 +23,8 @@
 | map->base | 车辆在全局地图中的位姿，本节点最终输出 |
 | odom->base | 局部里程计位姿，由 slam_odometry_v2 高频输出 |
 | jump guard | 跳变门限，防止单次全局匹配结果导致位姿突变 |
+| tracking lost | 跟踪丢失，GM 连续失败达到阈值 |
+| localization failure | 定位失败，重定位恢复超时或连续失败 |
 
 ---
 
@@ -37,8 +41,9 @@
 │  │ • slam_odom     │  │ • UNINITIALIZED │  │ • fused_odom        │  │
 │  │ • global_match  │→ │ • RELOCALIZING  │→ │ • map_to_odom       │  │
 │  │ • initial_pose  │  │ • TRACKING      │  │ • path              │  │
-│  │ • relocalization│  │                 │  │ • status            │  │
-│  │ • source_cloud  │  │                 │  │ • tf (map->odom)    │  │
+│  │ • relocalization│  │ • TRACKING_LOST │  │ • status            │  │
+│  │ • source_cloud  │  │ • LOCALIZATION_ │  │ • tf (map->odom)    │  │
+│  │                 │  │   FAILURE       │  │ • gm_anchor         │  │
 │  └─────────────────┘  └─────────────────┘  └─────────────────────┘  │
 │           │                    │                      │              │
 │           ▼                    ▼                      ▼              │
@@ -68,7 +73,7 @@
 | ROS 节点层 | 话题订阅/发布、TF 广播、参数加载、定时器 | `src/ros/localization_v2_node.cpp` |
 | 配置加载 | 从 ROS 参数服务器加载全部配置 | `src/ros/localization_v2_config.cpp` |
 | 融合核心 | 位姿融合数学、跳变门控 | `src/core/fusion_core.cpp` |
-| 初始化状态机 | 启动阶段状态切换、重定位命令决策 | `src/core/initialization.cpp` |
+| 初始化状态机 | 启动阶段状态切换、重定位命令决策、跟踪失效检测 | `src/core/initialization.cpp` |
 | 重定位接口 | 抽象接口 + ROS 默认实现 | `src/ros/relocalization_ros_adapter.cpp` |
 | 数据类型 | 位姿数学工具、通用结构体 | `include/localization_v2/core/types.hpp` |
 
@@ -99,11 +104,12 @@
   - `FusionCore` 类：融合计算与门控逻辑
 
 #### `include/localization_v2/core/initialization.hpp` / `src/core/initialization.cpp`
-- **作用**：初始化状态机，管理启动阶段的状态流转
+- **作用**：初始化状态机，管理整个定位生命周期
 - **关键内容**：
   - `InitConfig`：初始化策略配置
   - `RelocalizationPolicy`：重定位启停策略
-  - `InitStateMachine` 类：三状态状态机
+  - `TrackingFailureConfig`：跟踪失效检测配置
+  - `LocalizationStateMachine` 类：五状态状态机
 
 ### 3.2 接口层（interface/）
 
@@ -238,6 +244,12 @@ struct RelocalizationPolicy {
   bool stop_on_manual_pose = true;
   bool stop_on_global_match = true;
 };
+
+struct TrackingFailureConfig {
+  int gm_failure_threshold = 10;      // GM 连续失败阈值，达到此值触发跟踪丢失
+  int reloc_failure_threshold = 5;    // 重定位连续失败阈值，达到此值触发定位失败
+  double reloc_timeout_sec = 30.0;    // 重定位超时时间（秒）
+};
 ```
 
 **含义**：
@@ -248,6 +260,9 @@ struct RelocalizationPolicy {
 - `enabled`：重定位功能总开关
 - `auto_start`：未初始化时是否自动请求启动重定位
 - `stop_on_success` / `stop_on_manual_pose` / `stop_on_global_match`：对应事件发生后是否停止重定位
+- `gm_failure_threshold`：GM 连续失败阈值
+- `reloc_failure_threshold`：重定位连续失败阈值
+- `reloc_timeout_sec`：重定位超时时间
 
 ### 4.6 重定位信号（relocalization_interface.hpp）
 
@@ -287,20 +302,22 @@ struct LocalizationV2Config {
   std::string fused_path_topic = "/localization_v2/path";
   std::string status_topic = "/localization_v2/status";
   std::string current_scan_in_map_topic = "/localization_v2/current_scan_in_map";
+  std::string relocalization_result_topic = "/localization/relocalization/result";
+  std::string relocalization_command_topic = "/localization_v2/relocalization/command";
   std::string gm_anchor_topic = "/localization_v2/gm_anchor";
 
   // 运行时
   double output_rate_hz = 100.0;
-  int max_path_size = 5000;
+  int max_path_size = 50000;
   bool publish_tf = true;
   bool publish_map_to_odom_tf = true;
-  bool publish_odom_to_base_tf = true;
-  bool publish_path = false;
-  bool publish_current_scan_in_map = false;
+  bool publish_odom_to_base_tf = false;  // slam_odometry_v2 默认已发布 odom->base，避免重复
+  bool publish_path = true;
+  bool publish_current_scan_in_map = true;
 
   // global_matcher 结果语义与门控
   std::string gm_result_pose_frame = "odom";
-  bool enable_jump_guard = true;
+  bool enable_jump_guard = false;
   double max_jump_translation = 5.0;
   double max_jump_yaw_deg = 50.0;
 
@@ -326,6 +343,18 @@ struct LocalizationV2Config {
   bool initial_pose_z_completion = true;
   double initial_pose_z_search_radius = 5.0;
   std::string initial_pose_map_pcd_path;
+
+  // 跟踪失效检测
+  int gm_failure_threshold = 10;
+  double gm_min_inlier_ratio = 0.3;
+  double gm_max_inlier_rmse = 0.8;
+
+  // 重定位恢复
+  int reloc_failure_threshold = 5;
+  double reloc_timeout_sec = 30.0;
+
+  // 降级输出
+  bool allow_degraded_output = true;
 };
 ```
 
@@ -350,20 +379,26 @@ struct LocalizationV2Config {
 | `fusedPose` | - | Pose3d | 输出融合位姿 map->base |
 | `isInitialized` | - | bool | 是否已初始化（有 map->odom） |
 
-### 5.2 InitStateMachine 接口（initialization.hpp）
+### 5.2 LocalizationStateMachine 接口（initialization.hpp）
 
 | 接口 | 参数 | 返回值 | 说明 |
 |------|------|--------|------|
-| `configure` | `const InitConfig&, const RelocalizationPolicy&` | void | 配置状态机 |
+| `configure` | `const InitConfig&, const RelocalizationPolicy&, const TrackingFailureConfig&` | void | 配置状态机 |
 | `state` | - | State | 获取当前状态 |
-| `initialized` | - | bool | 是否已初始化（TRACKING） |
+| `initialized` | - | bool | 是否已初始化（TRACKING / TRACKING_LOST / LOCALIZATION_FAILURE） |
 | `relocalizationRunning` | - | bool | 是否处于重定位阶段 |
+| `trackingLost` | - | bool | 是否处于跟踪丢失状态 |
+| `localizationFailure` | - | bool | 是否处于定位失败状态 |
 | `stateName` | - | `const std::string&` | 获取状态名字符串 |
 | `takeCommand` | - | RelocCommand | 取走并清零待下发的重定位命令 |
 | `onSlamOdom` | - | void | slam 数据到达事件 |
 | `onManualPose` | - | void | 人工初值到达事件 |
 | `onRelocalizationResult` | bool | void | 重定位结果事件 |
 | `onGlobalMatchSuccess` | - | void | GM 匹配成功事件 |
+| `onTrackingFailure` | - | void | 跟踪失败事件（GM 连续失败） |
+| `onRecoveryFailed` | - | void | 恢复失败事件（重定位超时/连续失败） |
+| `getGmConsecutiveFailures` | - | int | 获取 GM 连续失败计数 |
+| `getRelocConsecutiveFailures` | - | int | 获取重定位连续失败计数 |
 
 ### 5.3 IRelocalizationClient 接口（relocalization_interface.hpp）
 
@@ -421,18 +456,27 @@ struct LocalizationV2Config {
 | `/localization_v2/current_scan_in_map` | `sensor_msgs/PointCloud2` | RViz | 当前帧点云在 map 系 | 100Hz（可选） |
 | `/localization_v2/gm_anchor` | `geometry_msgs/PoseWithCovarianceStamped` | global_matcher | 初始化仲裁重定位胜出时通知 GM 重锚 | 事件触发 |
 | `TF: map->odom` | `geometry_msgs/TransformStamped` | TF 树 | 全局到局部坐标系修正 | 100Hz |
-| `TF: odom->base` | `geometry_msgs/TransformStamped` | TF 树 | 局部里程计（可选，避免重复） | 100Hz |
+| `TF: odom->base` | `geometry_msgs/TransformStamped` | TF 树 | 局部里程计（默认关闭，避免与 slam_odometry_v2 重复） | 100Hz |
 
 **FusionStatus 字段含义**：
-- `level`：状态等级（NORMAL / WARNING / ERROR）
-- `state`：当前状态字符串（UNINITIALIZED / RELOCALIZING / TRACKING）
+- `header`：消息头（stamp, frame_id）
+- `level`：状态等级（NORMAL=0 / WARNING=1 / DEGRADED=2 / ERROR=3 / FAILURE=4）
+- `state`：当前状态字符串（UNINITIALIZED / RELOCALIZING / TRACKING / TRACKING_LOST / LOCALIZATION_FAILURE）
 - `initialized`：是否已完成初始化
 - `output_valid`：当前输出是否有效
 - `current_map_id`：当前地图标识
-- `is_slam_available`：slam 数据是否可用
-- `is_global_matcher_available`：GM 是否可用
-- `is_relocalization_available`：重定位是否可用
+- `failure_reason`：失败原因描述
+- `position_std` / `velocity_std` / `roll_std` / `pitch_std` / `yaw_std`：各维度标准差
+- `last_slam_age`：SLAM 数据年龄（有 slam 数据时为 0，否则为 1e9）
+- `last_global_matcher_age`：GM 数据年龄（有 GM 候选时为 0，否则为 1e9）
+- `last_relocalization_age`：重定位数据年龄（RELOCALIZING / TRACKING_LOST 状态下为距 `relocalizing_since_` 的秒数，否则为 1e9）
+- `last_dr_age` / `last_gnss_age`：未使用，固定为 1e9
+- `last_can_age` / `last_imu_age`：固定为 0（表示始终可用）
+- `last_lidar_age`：与 `last_slam_age` 相同
 - `used_sources`：当前使用的数据源列表
+- `rejected_sources`：被拒绝的数据源列表
+- `reject_reasons`：拒绝原因列表
+- `is_slam_available` / `is_global_matcher_available` / `is_relocalization_available` / `is_dr_available` / `is_gnss_available` / `is_can_available` / `is_imu_available` / `is_lidar_available`：各数据源可用性
 
 ---
 
@@ -459,6 +503,8 @@ struct LocalizationV2Config {
 | `topics/fused_path` | string | "/localization_v2/path" | 轨迹输出 |
 | `topics/status` | string | "/localization_v2/status" | 状态输出 |
 | `topics/current_scan_in_map` | string | "/localization_v2/current_scan_in_map" | 点云 map 系输出 |
+| `topics/relocalization_result` | string | "/localization/relocalization/result" | 重定位结果输入 |
+| `topics/relocalization_command` | string | "/localization_v2/relocalization/command" | 重定位启停命令输出 |
 | `topics/gm_anchor` | string | "/localization_v2/gm_anchor" | GM 锚点通知 |
 
 ### 7.3 运行时（runtime）
@@ -466,19 +512,19 @@ struct LocalizationV2Config {
 | 参数 | 类型 | 默认值 | 说明 |
 |------|------|--------|------|
 | `runtime/output_rate_hz` | double | 100.0 | 输出频率（Hz） |
-| `runtime/max_path_size` | int | 5000 | 轨迹最大保留点数 |
+| `runtime/max_path_size` | int | 50000 | 轨迹最大保留点数 |
 | `runtime/publish_tf` | bool | true | 是否发布 TF |
 | `runtime/publish_map_to_odom_tf` | bool | true | 是否发布 map->odom TF |
-| `runtime/publish_odom_to_base_tf` | bool | true | 是否发布 odom->base TF |
-| `runtime/publish_path` | bool | false | 是否发布轨迹 |
-| `runtime/publish_current_scan_in_map` | bool | false | 是否发布 map 系点云 |
+| `runtime/publish_odom_to_base_tf` | bool | false | 是否发布 odom->base TF（默认关闭，避免与 slam_odometry_v2 重复） |
+| `runtime/publish_path` | bool | true | 是否发布轨迹 |
+| `runtime/publish_current_scan_in_map` | bool | true | 是否发布 map 系点云 |
 
 ### 7.4 全局匹配结果（global_matcher）
 
 | 参数 | 类型 | 默认值 | 说明 |
 |------|------|--------|------|
 | `global_matcher/result_pose_frame` | string | "odom" | GM 结果坐标系（"odom" 或 "base"） |
-| `global_matcher/enable_jump_guard` | bool | true | 是否启用跳变门限 |
+| `global_matcher/enable_jump_guard` | bool | false | 是否启用跳变门限 |
 | `global_matcher/max_jump_translation` | double | 5.0 | 最大平移跳变（米） |
 | `global_matcher/max_jump_yaw_deg` | double | 50.0 | 最大偏航跳变（度） |
 
@@ -514,6 +560,17 @@ struct LocalizationV2Config {
 | `initial_pose/z_search_radius` | double | 5.0 | z 补全搜索半径（米） |
 | `initial_pose/map_pcd_path` | string | "" | 地图 PCD 路径（留空关闭） |
 
+### 7.8 跟踪失效检测（tracking_failure）
+
+| 参数 | 类型 | 默认值 | 说明 |
+|------|------|--------|------|
+| `tracking_failure/gm_failure_threshold` | int | 10 | GM 连续失败阈值，达到此值触发跟踪丢失 |
+| `tracking_failure/gm_min_inlier_ratio` | double | 0.3 | GM inlier 比率下限 |
+| `tracking_failure/gm_max_inlier_rmse` | double | 0.8 | GM inlier RMSE 上限 |
+| `tracking_failure/reloc_failure_threshold` | int | 5 | 重定位连续失败阈值，达到此值触发定位失败 |
+| `tracking_failure/reloc_timeout_sec` | double | 30.0 | 重定位超时时间（秒） |
+| `tracking_failure/allow_degraded_output` | bool | true | TRACKING_LOST 时是否继续输出 |
+
 ---
 
 ## 8. 详细运行流程
@@ -524,7 +581,7 @@ struct LocalizationV2Config {
 1. 节点启动
    ├── 加载配置（loadLocalizationV2Config）
    ├── 初始化 FusionCore（设置 jump guard）
-   ├── 初始化 InitStateMachine（配置初始化策略与重定位策略）
+   ├── 初始化 LocalizationStateMachine（配置初始化策略、重定位策略、跟踪失效检测）
    ├── 创建 IRelocalizationClient（默认 RelocalizationRosAdapter）
    ├── 注册订阅（slam_odom, global_match, initial_pose, source_cloud）
    ├── 注册发布（fused_odom, map_to_odom, path, status, gm_anchor, current_scan_in_map）
@@ -536,23 +593,29 @@ struct LocalizationV2Config {
 ```
 slam_odom 回调（高频）
   ├── 更新 odom_base（FusionCore::setOdomBase）
-  ├── 触发状态机事件（InitStateMachine::onSlamOdom，TRACKING 状态无动作）
+  ├── 触发状态机事件（LocalizationStateMachine::onSlamOdom，TRACKING 状态无动作）
   ├── 发布当前帧点云到 map 系（可选）
   └── 发布输出（融合位姿、TF、状态）
 
 global_match 回调（低频）
   ├── 解析 GM 结果
-  ├── 若 success=false，直接忽略
+  ├── 若 success=false：
+  │   ├── TRACKING 状态：增加 GM 失败计数
+  │   │   └── 达到阈值 → 触发 onTrackingFailure → 进入 TRACKING_LOST
+  │   └── 其他状态：直接忽略
   ├── 转换坐标系（若 GM 输出 map->base，用当前 odom_base 反推 map->odom）
+  ├── GM 质量检查（inlier_ratio, inlier_rmse）
+  ├── 质量好：重置失败计数
+  ├── 质量差：增加失败计数，可能触发跟踪丢失
   ├── 缓存候选（初始化阶段）
-  ├── TRACKING 阶段：
-  │   ├── 跳变门限检查（FusionCore::updateFromGlobalMatch）
-  │   ├── 若通过：更新 map_odom，发布 map_to_odom
-  │   └── 若拒绝：记录日志，保持当前 map_odom
-  └── 初始化阶段：交由初始化仲裁处理
+  └── TRACKING 阶段：
+      ├── 跳变门限检查（FusionCore::updateFromGlobalMatch）
+      ├── 若通过：更新 map_odom，发布 map_to_odom
+      └── 若拒绝：记录日志，保持当前 map_odom
 
 timer 回调（100Hz）
   ├── 若无 slam 数据：发布单位 map->odom TF，等待 slam
+  ├── 恢复超时检查（TRACKING_LOST 状态）
   ├── 尝试初始化仲裁（若在 RELOCALIZING 状态）
   ├── 发布当前帧点云到 map 系（可选）
   └── 发布输出（融合位姿、TF、状态）
@@ -582,12 +645,53 @@ timer 回调（100Hz）
   ├── 设置 map_odom
   ├── 状态切换为 TRACKING
   ├── 下发 stop 命令给重定位模块
-  └── 若重定位胜出：发布 gm_anchor 通知 GM 重锚
+  └── 若重定位胜出：发布 gm_anchor 通知 GM 重锚（一次性，仅初始化阶段）
 ```
 
-### 8.4 融合公式与最终定位结果 map->base
+**GM 回调中的状态分支处理**（`onGlobalMatch` 函数）：
 
-#### 8.4.1 核心融合公式
+| 当前状态 | GM 结果 | 处理逻辑 |
+|----------|---------|----------|
+| UNINITIALIZED | success=false | 忽略 |
+| RELOCALIZING（单源 GM） | success=true | 直接设置 map_odom，进入 TRACKING |
+| RELOCALIZING（双源） | success=true | 缓存候选，触发仲裁 |
+| TRACKING | success=false | 增加失败计数，可能触发 TRACKING_LOST |
+| TRACKING | success=true, quality_good | 重置失败计数，应用 jump guard 更新 map_odom |
+| TRACKING | success=true, quality_bad | 增加失败计数，可能触发 TRACKING_LOST |
+| TRACKING_LOST | success=true, quality_good | 直接设置 map_odom，恢复到 TRACKING |
+| LOCALIZATION_FAILURE | success=true | 直接设置 map_odom，恢复到 TRACKING |
+
+### 8.4 跟踪丢失与恢复流程
+
+```
+TRACKING 状态
+  │
+  ▼ GM 连续失败达到 gm_failure_threshold
+状态：TRACKING_LOST
+  │   └── 下发 start 命令启动重定位恢复
+  │
+  ├── GM 成功且质量好 ──→ 直接恢复到 TRACKING（不经过重定位）
+  ├── 重定位成功 ───────→ 恢复到 TRACKING
+  │
+  ▼ 重定位超时（reloc_timeout_sec）或连续失败达到 reloc_failure_threshold
+状态：LOCALIZATION_FAILURE
+  │   └── 需要人工干预
+  │
+  ├── GM 成功 ─────────→ 恢复到 TRACKING（GM 可直接从失败状态恢复）
+  └── 人工初值 ────────→ 恢复到 TRACKING
+```
+
+**恢复路径说明**：
+- **TRACKING_LOST 恢复**：
+  - GM 成功且质量好：直接通过 `setMapOdom` 设置修正量，不走 jump guard
+  - 重定位成功：通过 `updateMapOdomFromMapBase` 反推 map_odom
+- **LOCALIZATION_FAILURE 恢复**：
+  - GM 成功：直接通过 `setMapOdom` 设置修正量（不要求 quality_good）
+  - 人工初值：通过 `onManualPose` 进入 TRACKING，不下发 stop 命令（`request(RelocCommand::kNone)`）
+
+### 8.5 融合公式与最终定位结果 map->base
+
+#### 8.5.1 核心融合公式
 
 ```
 // 全局修正（低频，GM / 人工初值 / 重定位 更新）
@@ -602,7 +706,7 @@ map_base = map_odom ⊕ odom_base
 - `odom_base`：局部里程计位姿，由 slam_odometry_v2 高频输出
 - `map_base`：车辆在全局地图中的位姿，本节点最终输出
 
-#### 8.4.2 最终定位结果 map->base 详解
+#### 8.5.2 最终定位结果 map->base 详解
 
 `map->base`（即 `map_base`）是 localization_v2 的**最终定位输出**，表示车辆在全局地图坐标系中的实时位姿。
 
@@ -663,7 +767,7 @@ fused_odom.twist = latest_twist_;             // 速度：保留 slam_odom 的 t
 - 若 `require_initial_pose = true`：未初始化时不发布 `fused_odom`，仅发布 `map->odom` TF（identity）
 - 状态机进入 `TRACKING` 后，`output_valid` 置为 `true`，`fused_odom` 开始携带有效位姿
 
-### 8.5 跳变门限流程
+### 8.6 跳变门限流程
 
 ```
 GM 结果到达（TRACKING 状态）
@@ -701,9 +805,21 @@ GM 结果到达（TRACKING 状态）
                         │
                         ▼
                  ┌─────────────┐
-                 │  TRACKING   │
-                 │  (正常运行)  │
-                 └─────────────┘
+                 │  TRACKING   │◄─────────────────────────┐
+                 │  (正常运行)  │                          │
+                 └──────┬──────┘                          │
+                        │                                 │
+                        │ onTrackingFailure()             │
+                        │ (GM连续失败)                     │
+                        ▼                                 │
+                 ┌─────────────┐     onRecoveryFailed()   │
+                 │ TRACKING_LOST│ ────────────────────────→│
+                 │  (跟踪丢失)  │ (重定位超时/连续失败)      │
+                 └──────┬──────┘                          │
+                        │                                 │
+                        │ onRelocalizationResult(accepted)│
+                        │ onGlobalMatchSuccess()          │
+                        └─────────────────────────────────┘
 ```
 
 ### 9.2 状态转换表
@@ -715,8 +831,14 @@ GM 结果到达（TRACKING 状态）
 | UNINITIALIZED | onGlobalMatchSuccess | init.use_global_matcher_init | TRACKING | 下发 stop 命令（若启用） |
 | RELOCALIZING | onManualPose | init.use_manual_initialpose | TRACKING | 下发 stop 命令 |
 | RELOCALIZING | onRelocalizationResult | accepted=true | TRACKING | 下发 stop 命令 |
-| RELOCALIZING | onGlobalMatchSuccess | init.use_global_matcher_init | TRACKING | 下发 stop 命令 |
-| TRACKING | （任意） | - | TRACKING | 无状态切换 |
+| RELOCALIZING | onGlobalMatchSuccess | init.use_global_matcher_init && !init.use_relocalization_init | TRACKING | 下发 stop 命令（仅单源 GM 模式） |
+| RELOCALIZING | onGlobalMatchSuccess | init.use_global_matcher_init && init.use_relocalization_init | RELOCALIZING | 缓存候选，等待仲裁（双源模式） |
+| TRACKING | onTrackingFailure | gm_consecutive_failures >= gm_failure_threshold | TRACKING_LOST | 下发 start 命令 |
+| TRACKING_LOST | onRelocalizationResult | accepted=true | TRACKING | 下发 stop 命令 |
+| TRACKING_LOST | onGlobalMatchSuccess | gm_quality_good | TRACKING | 下发 stop 命令（GM 直接恢复） |
+| TRACKING_LOST | onRecoveryFailed | reloc_consecutive_failures >= reloc_failure_threshold 或超时 | LOCALIZATION_FAILURE | 下发 stop 命令 |
+| LOCALIZATION_FAILURE | onGlobalMatchSuccess | gm_quality_good | TRACKING | 下发 stop 命令（GM 直接恢复） |
+| LOCALIZATION_FAILURE | onManualPose | init.use_manual_initialpose | TRACKING | 不下发命令（从失败恢复） |
 
 ### 9.3 重定位命令决策
 
@@ -725,6 +847,8 @@ GM 结果到达（TRACKING 状态）
 | UNINITIALIZED | kNone | 无命令 |
 | RELOCALIZING | kStart（进入时） | 请求启动重定位 |
 | TRACKING | kStop（进入时） | 请求停止重定位 |
+| TRACKING_LOST | kStart（进入时） | 请求启动重定位恢复 |
+| LOCALIZATION_FAILURE | kStop（进入时） | 请求停止重定位 |
 
 ---
 
@@ -781,31 +905,46 @@ if (reloc_better) {
 | inlier_rmse | `relocalization/max_inlier_rmse` | 0.8 | 内点 RMSE 上限 |
 | accepted | `relocalization/require_accepted` | false | 是否要求 accepted=true |
 
-### 11.2 GM 结果跳变门限（TRACKING 阶段）
+### 11.2 GM 结果质量门限（TRACKING 阶段）
+
+| 指标 | 参数 | 默认值 | 说明 |
+|------|------|--------|------|
+| inlier_ratio | `tracking_failure/gm_min_inlier_ratio` | 0.3 | 内点比率下限 |
+| inlier_rmse | `tracking_failure/gm_max_inlier_rmse` | 0.8 | 内点 RMSE 上限 |
+
+### 11.3 GM 结果跳变门限（TRACKING 阶段）
 
 | 指标 | 参数 | 默认值 | 说明 |
 |------|------|--------|------|
 | 平移跳变 | `global_matcher/max_jump_translation` | 5.0m | 单次修正最大平移 |
 | 偏航跳变 | `global_matcher/max_jump_yaw_deg` | 50.0° | 单次修正最大偏航 |
 
-### 11.3 初始化仲裁超时
+### 11.4 初始化仲裁超时
 
 | 参数 | 默认值 | 说明 |
 |------|--------|------|
 | `relocalization/fallback_timeout` | 8.0s | 双源等待超时后取已就绪源 |
 
-### 11.4 重定位结果时效窗
+### 11.5 重定位结果时效窗
 
 | 常量 | 值 | 说明 |
 |------|-----|------|
 | `kRelocResultMaxAge` | 3.0s | 重定位结果在仲裁中的有效时间 |
+
+### 11.6 跟踪失效检测阈值
+
+| 参数 | 默认值 | 说明 |
+|------|--------|------|
+| `tracking_failure/gm_failure_threshold` | 10 | GM 连续失败阈值 |
+| `tracking_failure/reloc_failure_threshold` | 5 | 重定位连续失败阈值 |
+| `tracking_failure/reloc_timeout_sec` | 30.0s | 重定位超时时间 |
 
 ---
 
 ## 12. 线程安全
 
 - **无显式线程**：localization_v2 为单线程 ROS 节点，所有回调在 ROS spinner 线程中串行执行
-- **状态一致性**：FusionCore 和 InitStateMachine 的内部状态由 ROS 回调串行访问，无需额外锁
+- **状态一致性**：FusionCore 和 LocalizationStateMachine 的内部状态由 ROS 回调串行访问，无需额外锁
 - **TF 广播**：使用 `tf2_ros::TransformBroadcaster`，线程安全
 
 ---
@@ -849,7 +988,7 @@ if (reloc_better) {
 
 ### 14.2 核心层可测试性
 
-`FusionCore` 和 `InitStateMachine` 纯 C++，不依赖 ROS：
+`FusionCore` 和 `LocalizationStateMachine` 纯 C++，不依赖 ROS：
 - 可直接编写 gtest 单元测试
 - 可跨平台复用（非 ROS 环境）
 
@@ -868,12 +1007,15 @@ if (reloc_better) {
 | 重定位结果拒绝 | WARN | 质量指标、门限值 |
 | 等待 slam | WARN | 等待话题名 |
 | 初始化超时 | WARN | 超时时间、保持初始化状态 |
+| 跟踪丢失 | WARN | GM 连续失败次数 |
+| 定位失败 | ERROR | 恢复超时/重定位连续失败 |
+| 从失败恢复 | INFO | 恢复来源、map_id |
 
 ### 15.2 调试话题
 
 | 话题 | 用途 |
 |------|------|
 | `/localization_v2/map_to_odom` | 观察 map->odom 修正量变化 |
-| `/localization_v2/status` | 观察状态机状态、数据源可用性 |
+| `/localization_v2/status` | 观察状态机状态、数据源可用性、失败原因 |
 | `/localization_v2/path` | 观察融合轨迹 |
 | `/localization_v2/current_scan_in_map` | 观察点云在 map 系的对齐效果 |

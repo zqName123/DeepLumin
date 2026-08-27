@@ -85,3 +85,21 @@ install(DIRECTORY include/${PROJECT_NAME}/
 install(DIRECTORY config launch
   DESTINATION ${CATKIN_PACKAGE_SHARE_DESTINATION}
 )
+
+# ---------------------------------------------------------------------------
+# 测试
+# ---------------------------------------------------------------------------
+if(CATKIN_ENABLE_TESTING)
+  find_package(rostest REQUIRED)
+  find_package(GTest REQUIRED)
+
+  include_directories(${GTEST_INCLUDE_DIRS})
+
+  # 状态机单元测试
+  catkin_add_gtest(test_state_machine test/test_state_machine.cpp)
+  target_link_libraries(test_state_machine
+    localization_v2_core
+    ${GTEST_LIBRARIES}
+    pthread
+  )
+endif()

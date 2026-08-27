@@ -1,0 +1,13 @@
+<!-- aruco_relocalization.launch -->
+<!-- 在线 ArUco 重定位节点 -->
+<launch>
+  <!-- 参数文件 -->
+  <arg name="config_file" default="$(find aruco_relocalization)/config/aruco_relocalization.yaml"/>
+  <rosparam command="load" file="$(arg config_file)" ns="aruco_reloc"/>
+
+  <!-- 在线重定位节点 -->
+  <node pkg="aruco_relocalization" type="aruco_reloc_online_node" name="aruco_reloc_online" output="screen" respawn="false">
+    <!-- 覆盖参数（可选） -->
+    <param name="marker_map_path" value="$(find aruco_relocalization)/config/marker_map.yaml"/>
+  </node>
+</launch>

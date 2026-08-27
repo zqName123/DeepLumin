@@ -125,7 +125,13 @@ class LocalizationV2Node {
     policy.stop_on_success = config_.relocalization_stop_on_success;
     policy.stop_on_manual_pose = config_.relocalization_stop_on_manual_pose;
     policy.stop_on_global_match = config_.relocalization_stop_on_global_match;
-    state_machine_.configure(init, policy);
+
+    TrackingFailureConfig tracking_config;
+    tracking_config.gm_failure_threshold = config_.gm_failure_threshold;
+    tracking_config.reloc_failure_threshold = config_.reloc_failure_threshold;
+    tracking_config.reloc_timeout_sec = config_.reloc_timeout_sec;
+
+    state_machine_.configure(init, policy, tracking_config);
 
     // ---- 重定位接口（默认 ROS 适配层，可替换其他实现） ----
     relocalization_ = std::make_unique<RelocalizationRosAdapter>(
@@ -178,7 +184,7 @@ class LocalizationV2Node {
 
     // slam 到达：若处于未初始化状态，触发（可选）自动启动重定位
     state_machine_.onSlamOdom();
-    if (state_machine_.state() == InitStateMachine::State::kRelocalizing &&
+    if (state_machine_.state() == LocalizationStateMachine::State::kRelocalizing &&
         relocalizing_since_.isZero()) {
       relocalizing_since_ = ros::Time::now();
     }
@@ -200,8 +206,19 @@ class LocalizationV2Node {
     update.inlier_ratio = msg->inlier_ratio;
 
     if (!update.success) {
-      ROS_WARN_THROTTLE(2.0, "[localization_v2] ignore rejected global matcher result: %s",
-                        msg->reject_reason.c_str());
+      // 跟踪失败检测
+      if (state_machine_.state() == LocalizationStateMachine::State::kTracking) {
+        gm_consecutive_failures_++;
+        ROS_WARN_THROTTLE(1.0, "[localization_v2] GM consecutive failures=%d/%d",
+                          gm_consecutive_failures_, config_.gm_failure_threshold);
+
+        if (gm_consecutive_failures_ >= config_.gm_failure_threshold) {
+          state_machine_.onTrackingFailure();
+          dispatchRelocalizationCommand();
+          tracking_lost_since_ = ros::Time::now();
+          ROS_WARN("[localization_v2] tracking lost, starting relocalization recovery");
+        }
+      }
       return;
     }
 
@@ -210,6 +227,35 @@ class LocalizationV2Node {
     gm_candidate_inlier_ratio_ = msg->inlier_ratio;
     gm_candidate_inlier_rmse_ = msg->inlier_rmse;
     gm_candidate_map_id_ = msg->map_id;
+
+    // GM 质量检查（使用 inlier_ratio 和 inlier_rmse）
+    bool gm_quality_good = true;
+    if (msg->inlier_ratio < config_.gm_min_inlier_ratio) {
+      gm_quality_good = false;
+      ROS_WARN_THROTTLE(2.0, "[localization_v2] GM inlier ratio %.3f below limit %.3f",
+                        msg->inlier_ratio, config_.gm_min_inlier_ratio);
+    }
+    if (msg->inlier_rmse > config_.gm_max_inlier_rmse) {
+      gm_quality_good = false;
+      ROS_WARN_THROTTLE(2.0, "[localization_v2] GM inlier rmse %.3f above limit %.3f",
+                        msg->inlier_rmse, config_.gm_max_inlier_rmse);
+    }
+
+    // TRACKING 状态下：质量好时重置失败计数，质量差时增加失败计数
+    if (state_machine_.state() == LocalizationStateMachine::State::kTracking) {
+      if (gm_quality_good) {
+        gm_consecutive_failures_ = 0;
+      } else {
+        gm_consecutive_failures_++;
+        if (gm_consecutive_failures_ >= config_.gm_failure_threshold) {
+          state_machine_.onTrackingFailure();
+          dispatchRelocalizationCommand();
+          tracking_lost_since_ = ros::Time::now();
+          ROS_WARN("[localization_v2] tracking lost due to poor GM quality, starting relocalization");
+        }
+        return;
+      }
+    }
     if (update.pose_is_map_base) {
       if (!fusion_.hasSlam()) {
         return;
@@ -220,7 +266,36 @@ class LocalizationV2Node {
     }
 
     // 未进入 TRACKING：不应用 jump guard（门限仅 TRACKING 生效）
-    if (state_machine_.state() != InitStateMachine::State::kTracking) {
+    if (state_machine_.state() != LocalizationStateMachine::State::kTracking) {
+      // LOCALIZATION_FAILURE 状态：GM 成功时恢复到 TRACKING
+      if (state_machine_.state() == LocalizationStateMachine::State::kLocalizationFailure) {
+        if (!fusion_.setMapOdom(gm_candidate_map_odom_)) {
+          return;
+        }
+        state_machine_.onGlobalMatchSuccess();
+        dispatchRelocalizationCommand();
+        latest_map_id_ = msg->map_id;
+        publishMapToOdom();
+        ROS_INFO("[localization_v2] recovered from localization failure via global matcher "
+                 "map_id=%s inlier=%.3f rmse=%.3f",
+                 msg->map_id.c_str(), msg->inlier_ratio, msg->inlier_rmse);
+        return;
+      }
+
+      // TRACKING_LOST 状态：GM 成功时也可以恢复（如果质量足够好）
+      if (state_machine_.state() == LocalizationStateMachine::State::kTrackingLost) {
+        if (gm_quality_good && fusion_.setMapOdom(gm_candidate_map_odom_)) {
+          state_machine_.onGlobalMatchSuccess();
+          dispatchRelocalizationCommand();
+          latest_map_id_ = msg->map_id;
+          publishMapToOdom();
+          ROS_INFO("[localization_v2] recovered from tracking lost via global matcher "
+                   "map_id=%s inlier=%.3f rmse=%.3f",
+                   msg->map_id.c_str(), msg->inlier_ratio, msg->inlier_rmse);
+          return;
+        }
+      }
+
       if (config_.use_global_matcher_init && !config_.use_relocalization_init) {
         // 仅 GM 初始化：GM 成功即完成初始化
         if (!fusion_.setMapOdom(gm_candidate_map_odom_)) {
@@ -303,25 +378,31 @@ class LocalizationV2Node {
   }
 
   void onRelocalizationResult(const RelocalizationSignal& signal) {
-    // 仅在重定位阶段消费结果；进入 TRACKING 后忽略（避免旧结果反复重置）
-    if (!state_machine_.relocalizationRunning()) {
+    // 允许在 RELOCALIZING 和 TRACKING_LOST 状态下处理重定位结果
+    const auto state = state_machine_.state();
+    if (state != LocalizationStateMachine::State::kRelocalizing &&
+        state != LocalizationStateMachine::State::kTrackingLost) {
       return;
     }
     if (!signal.success) {
-      ROS_INFO_THROTTLE(2.0, "[localization_v2] relocalization not ready: %s",
-                        signal.method.c_str());
+      // TRACKING_LOST 状态下重定位失败，增加计数
+      if (state == LocalizationStateMachine::State::kTrackingLost) {
+        reloc_consecutive_failures_++;
+        ROS_WARN_THROTTLE(2.0, "[localization_v2] relocalization failed, consecutive=%d/%d",
+                          reloc_consecutive_failures_, config_.reloc_failure_threshold);
+        if (reloc_consecutive_failures_ >= config_.reloc_failure_threshold) {
+          state_machine_.onRecoveryFailed();
+          dispatchRelocalizationCommand();
+          ROS_ERROR("[localization_v2] recovery failed, localization failure");
+        }
+      }
       return;
     }
     if (config_.relocalization_require_accepted && !signal.accepted) {
       ROS_WARN_THROTTLE(2.0, "[localization_v2] relocalization result not accepted");
       return;
     }
-    // 质量门限
-    if (signal.fitness_score > config_.relocalization_max_fitness_score) {
-      ROS_WARN_THROTTLE(2.0, "[localization_v2] relocalization fitness %.3f above limit %.3f",
-                        signal.fitness_score, config_.relocalization_max_fitness_score);
-      return;
-    }
+    // 质量门限（只使用 inlier_ratio 和 inlier_rmse，不使用 fitness_score）
     if (signal.inlier_ratio < config_.relocalization_min_inlier_ratio) {
       ROS_WARN_THROTTLE(2.0, "[localization_v2] relocalization inlier ratio %.3f below limit %.3f",
                         signal.inlier_ratio, config_.relocalization_min_inlier_ratio);
@@ -341,6 +422,12 @@ class LocalizationV2Node {
     reloc_result_map_id_ = signal.map_id;
     reloc_result_method_ = signal.method;
     reloc_result_stamp_ = ros::Time::now();
+
+    // TRACKING_LOST 状态下重定位成功，重置失败计数
+    if (state == LocalizationStateMachine::State::kTrackingLost) {
+      reloc_consecutive_failures_ = 0;
+    }
+
     tryCompleteInitialization();
   }
 
@@ -349,7 +436,7 @@ class LocalizationV2Node {
   // ===================================================================
 
   void tryCompleteInitialization() {
-    if (state_machine_.state() != InitStateMachine::State::kRelocalizing) {
+    if (state_machine_.state() != LocalizationStateMachine::State::kRelocalizing) {
       return;
     }
     const bool reloc_fresh =
@@ -452,6 +539,18 @@ class LocalizationV2Node {
                         config_.slam_odom_topic.c_str());
       return;
     }
+
+    // 恢复超时检查
+    if (state_machine_.state() == LocalizationStateMachine::State::kTrackingLost) {
+      const double elapsed = (ros::Time::now() - tracking_lost_since_).toSec();
+      if (elapsed >= config_.reloc_timeout_sec) {
+        state_machine_.onRecoveryFailed();
+        dispatchRelocalizationCommand();
+        ROS_ERROR("[localization_v2] recovery timeout (%.1fs >= %.1fs), localization failure",
+                  elapsed, config_.reloc_timeout_sec);
+      }
+    }
+
     // 初始化仲裁：双源等待超时后取已就绪的一源，防止状态切换被阻塞
     tryCompleteInitialization();
     publishCurrentScanInMap();
@@ -550,21 +649,144 @@ class LocalizationV2Node {
     deeplumin_msgs::FusionStatus msg;
     msg.header.stamp = stamp;
     msg.header.frame_id = config_.map_frame;
-    msg.level = deeplumin_msgs::FusionStatus::LEVEL_NORMAL;
-    msg.state = state_machine_.stateName();
-    msg.initialized = state_machine_.initialized();
-    msg.output_valid = output_valid;
     msg.current_map_id = latest_map_id_;
+
+    // ========== 计算数据源年龄 ==========
+    const double slam_age = fusion_.hasSlam() ? 0.0 : 1e9;  // SLAM 数据实时性
+    const double gm_age = have_gm_candidate_ ? 0.0 : 1e9;   // GM 数据实时性
+    const double reloc_age = (state_machine_.state() == LocalizationStateMachine::State::kRelocalizing ||
+                               state_machine_.state() == LocalizationStateMachine::State::kTrackingLost)
+                                  ? (ros::Time::now() - relocalizing_since_).toSec()
+                                  : 1e9;
+
+    msg.last_slam_age = slam_age;
+    msg.last_global_matcher_age = gm_age;
+    msg.last_relocalization_age = reloc_age;
+    msg.last_dr_age = 1e9;  // 未使用 DR
+    msg.last_gnss_age = 1e9;  // 未使用 GNSS
+    msg.last_can_age = 0.0;
+    msg.last_imu_age = 0.0;
+    msg.last_lidar_age = slam_age;
+
+    // ========== 根据状态机设置 level 和 failure_reason ==========
+    switch (state_machine_.state()) {
+      case LocalizationStateMachine::State::kUninitialized:
+        msg.level = deeplumin_msgs::FusionStatus::LEVEL_WARNING;
+        msg.state = "UNINITIALIZED";
+        msg.initialized = false;
+        msg.output_valid = false;
+        msg.failure_reason = "waiting for initial pose";
+        msg.position_std = 100.0;
+        msg.velocity_std = 10.0;
+        msg.roll_std = 90.0;
+        msg.pitch_std = 90.0;
+        msg.yaw_std = 180.0;
+        break;
+
+      case LocalizationStateMachine::State::kRelocalizing:
+        msg.level = deeplumin_msgs::FusionStatus::LEVEL_WARNING;
+        msg.state = "RELOCALIZING";
+        msg.initialized = false;
+        msg.output_valid = false;
+        msg.failure_reason = "relocalization in progress for initial pose";
+        msg.position_std = 50.0;
+        msg.velocity_std = 5.0;
+        msg.roll_std = 45.0;
+        msg.pitch_std = 45.0;
+        msg.yaw_std = 90.0;
+        break;
+
+      case LocalizationStateMachine::State::kTracking:
+        msg.level = deeplumin_msgs::FusionStatus::LEVEL_NORMAL;
+        msg.state = "TRACKING";
+        msg.initialized = true;
+        msg.output_valid = true;
+        msg.failure_reason = "";
+        msg.position_std = 0.1;
+        msg.velocity_std = 0.5;
+        msg.roll_std = 0.5;
+        msg.pitch_std = 0.5;
+        msg.yaw_std = 1.0;
+        break;
+
+      case LocalizationStateMachine::State::kTrackingLost:
+        msg.level = deeplumin_msgs::FusionStatus::LEVEL_DEGRADED;
+        msg.state = "TRACKING_LOST";
+        msg.initialized = true;
+        msg.output_valid = config_.allow_degraded_output;
+        msg.failure_reason = "tracking lost, GM consecutive failures=" +
+                             std::to_string(gm_consecutive_failures_) +
+                             ", relocalization attempting recovery";
+        msg.position_std = 5.0;
+        msg.velocity_std = 2.0;
+        msg.roll_std = 5.0;
+        msg.pitch_std = 5.0;
+        msg.yaw_std = 10.0;
+        break;
+
+      case LocalizationStateMachine::State::kLocalizationFailure:
+        msg.level = deeplumin_msgs::FusionStatus::LEVEL_FAILURE;
+        msg.state = "LOCALIZATION_FAILURE";
+        msg.initialized = true;
+        msg.output_valid = false;
+        msg.failure_reason = std::string("localization failure: recovery timeout") +
+                             ", reloc failures=" + std::to_string(reloc_consecutive_failures_);
+        msg.position_std = 100.0;
+        msg.velocity_std = 10.0;
+        msg.roll_std = 90.0;
+        msg.pitch_std = 90.0;
+        msg.yaw_std = 180.0;
+        break;
+    }
+
+    // ========== 设置 used_sources ==========
+    msg.used_sources.clear();
+    msg.rejected_sources.clear();
+    msg.reject_reasons.clear();
+
+    if (fusion_.hasSlam()) {
+      msg.used_sources.push_back("slam_odometry_v2");
+    }
+
+    switch (state_machine_.state()) {
+      case LocalizationStateMachine::State::kTracking:
+        if (fusion_.hasMapOdom()) {
+          msg.used_sources.push_back("global_matcher");
+        }
+        break;
+
+      case LocalizationStateMachine::State::kTrackingLost:
+        msg.rejected_sources.push_back("global_matcher");
+        msg.reject_reasons.push_back("GM consecutive failures exceeded threshold");
+        if (config_.relocalization_enabled) {
+          msg.used_sources.push_back("relocalization_attempting");
+        }
+        break;
+
+      case LocalizationStateMachine::State::kLocalizationFailure:
+        msg.rejected_sources.push_back("global_matcher");
+        msg.rejected_sources.push_back("relocalization");
+        msg.reject_reasons.push_back("GM tracking lost");
+        msg.reject_reasons.push_back("relocalization recovery failed");
+        break;
+
+      default:
+        if (state_machine_.relocalizationRunning()) {
+          msg.used_sources.push_back("relocalization");
+        }
+        break;
+    }
+
+    // ========== 数据源可用性 ==========
     msg.is_slam_available = fusion_.hasSlam();
-    msg.is_global_matcher_available = true;
+    msg.is_global_matcher_available = gm_age < 10.0;  // GM 数据 10 秒内可用
     msg.is_relocalization_available = config_.relocalization_enabled;
-    msg.used_sources.push_back("slam_odometry_v2");
-    if (fusion_.hasMapOdom()) {
-      msg.used_sources.push_back("global_matcher");
-    }
-    if (state_machine_.relocalizationRunning()) {
-      msg.used_sources.push_back("relocalization");
-    }
+    msg.is_dr_available = false;
+    msg.is_gnss_available = false;
+    msg.is_can_available = true;
+    msg.is_imu_available = true;
+    msg.is_lidar_available = fusion_.hasSlam();
+
     status_pub_.publish(msg);
   }
 
@@ -633,7 +855,7 @@ class LocalizationV2Node {
   LocalizationV2Config config_;
 
   FusionCore fusion_;
-  InitStateMachine state_machine_;
+  LocalizationStateMachine state_machine_;
   std::unique_ptr<IRelocalizationClient> relocalization_;
 
   ros::Subscriber slam_sub_;
@@ -667,6 +889,11 @@ class LocalizationV2Node {
   double gm_candidate_inlier_rmse_ = std::numeric_limits<double>::infinity();
   Pose3d gm_candidate_map_odom_ = Pose3d();
   std::string gm_candidate_map_id_;
+
+  // 跟踪失效检测
+  int gm_consecutive_failures_ = 0;
+  int reloc_consecutive_failures_ = 0;
+  ros::Time tracking_lost_since_;
 };
 
 }  // namespace localization_v2

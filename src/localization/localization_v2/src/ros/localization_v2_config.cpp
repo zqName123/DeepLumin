@@ -116,6 +116,24 @@ LocalizationV2Config loadLocalizationV2Config(ros::NodeHandle& pnh) {
   cfg.initial_pose_map_pcd_path =
       loadString(pnh, "initial_pose/map_pcd_path", cfg.initial_pose_map_pcd_path);
 
+  // 跟踪失效检测
+  cfg.gm_failure_threshold =
+      loadInt(pnh, "tracking_failure/gm_failure_threshold", cfg.gm_failure_threshold);
+  cfg.gm_min_inlier_ratio =
+      loadDouble(pnh, "global_matcher/min_inlier_ratio", cfg.gm_min_inlier_ratio);
+  cfg.gm_max_inlier_rmse =
+      loadDouble(pnh, "global_matcher/max_inlier_rmse", cfg.gm_max_inlier_rmse);
+
+  // 重定位恢复
+  cfg.reloc_failure_threshold =
+      loadInt(pnh, "recovery/reloc_failure_threshold", cfg.reloc_failure_threshold);
+  cfg.reloc_timeout_sec =
+      loadDouble(pnh, "recovery/reloc_timeout_sec", cfg.reloc_timeout_sec);
+
+  // 降级输出
+  cfg.allow_degraded_output =
+      loadBool(pnh, "degraded/allow_degraded_output", cfg.allow_degraded_output);
+
   return cfg;
 }
 
