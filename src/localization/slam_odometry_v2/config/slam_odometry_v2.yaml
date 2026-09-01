@@ -70,13 +70,37 @@ common:
 
 # 轮速/GNSS 辅助：唯一来源（核心 yaml 读取 + 节点订阅开关共用）
 vel_gnss:
-  use_vel: true    # 与 faster_lio_ws ouster64.yaml 对齐：启用 CAN 轮速约束
+  use_vel: false    # 与 faster_lio_ws ouster64.yaml 对齐：启用 CAN 轮速约束
   use_gnss_attitude: false
   can_vel_diff_thresh_kmh: 2.0
-  can_timeout_sec: 0.2
-  gnss_attitude_timeout_sec: 1.0
+  can_timeout_sec: 0.1
+  gnss_attitude_timeout_sec: 0.2
   attitude_diff_thresh_deg: 2.0
   attitude_correction_gain: 0.7
+
+  # 观测更新参数（卡尔曼滤波观测噪声）
+  wheel_velocity_noise: 0.001        # 轮速观测噪声方差 (m²/s²)
+  non_holonomic_noise: 0.0001         # 非完整性约束噪声方差 (m²/s²)，横向/垂向速度约束
+  gnss_attitude_noise_rad2: 0.001  # GNSS 姿态观测噪声方差 (rad²)，与 lm_slam 对齐 0.03
+  min_gnss_status: 33               # 最小 GNSS 状态（RTK 固定解）
+  min_gnss_nsv: 0                   # 最小 GNSS 卫星数量
+  min_lidar_points: 100             # 最小点云数量
+
+  # IMU 重力方向观测参数（利用加速度计测量重力方向，约束 roll 和 pitch）
+  # 在隧道等GNSS失效场景中，此观测是唯一能约束roll/pitch的信息源
+  use_imu_gravity: false             # 是否使用IMU重力方向观测
+  imu_gravity_noise: 0.05           # IMU重力观测噪声方差 (m²/s²)²，0.02对应~0.01rad roll/pitch误差
+  imu_gravity_acc_threshold: 0.2    # 低加速检测阈值 (m/s²)，|acc_norm - 9.81| < threshold
+
+dcreg:
+  use_dcreg_degeneracy: false        # 启用/禁用整个 DCReg 功能
+  use_huber_weight: true            # 启用/禁用 Huber 鲁棒损失
+  use_degeneracy_weight: true       # 启用/禁用退化方向降权
+  dcreg_condition_threshold: 10.0   # DCReg 退化条件数阈值
+  huber_k: 0.5                      # Huber 损失阈值 (m)
+  degeneracy_weight_alpha: 0.7      # 退化方向降权强度
+
+
 
 preprocess:
   lidar_type: 3          # 1: Livox AVIA, 2: Velodyne, 3: Ouster, 4: Hesai, 5: Robosense, 6: Livox(PointCloud2)
@@ -85,8 +109,8 @@ preprocess:
   time_scale: 1e-3
 
 mapping:
-  acc_cov: 0.1
-  gyr_cov: 0.1
+  acc_cov: 0.5
+  gyr_cov: 1.0
   b_acc_cov: 0.0001
   b_gyr_cov: 0.0001
   extrinsic_est_en: false
@@ -102,9 +126,9 @@ mapping:
   #               0.0, 1.0, 0.0,
   #               0.0, 0.0, 1.0]
 
-point_filter_num: 3
+point_filter_num: 2
 max_iteration: 3
-filter_size_surf: 0.2
+filter_size_surf: 0.35
 filter_size_map: 0.35
 
 ivox_grid_resolution: 0.5

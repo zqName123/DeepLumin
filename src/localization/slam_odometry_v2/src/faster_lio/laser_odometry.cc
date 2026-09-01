@@ -49,7 +49,13 @@ bool LaserOdometry::InitWithoutROS(const std::string &config_yaml) {
     std::vector<double> epsi(23, 0.001);
     kf_.init_dyn_share(
         get_f, df_dx, df_dw,
-        [this](state_ikfom &s, esekfom::dyn_share_datastruct<double> &ekfom_data) { ObsModel(s, ekfom_data); },
+        [this](state_ikfom &s, esekfom::dyn_share_datastruct<double> &ekfom_data) {
+            if (use_dcreg_degeneracy_) {
+                ObsModelWithDCReg(s, ekfom_data);
+            } else {
+                ObsModel(s, ekfom_data);
+            }
+        },
         options::NUM_MAX_ITERATIONS, epsi.data());
 
     if (std::is_same<IVoxType, IVox<3, IVoxNodeType::PHC, pcl::PointXYZI>>::value == true) {
@@ -100,6 +106,21 @@ bool LaserOdometry::LoadParamsFromYAML(const std::string &yaml_file) {
         gnss_attitude_timeout_sec_ = yaml["vel_gnss"]["gnss_attitude_timeout_sec"].as<double>(1.0);
         attitude_diff_thresh_deg_ = yaml["vel_gnss"]["attitude_diff_thresh_deg"].as<double>(2.0);
         attitude_correction_gain_ = yaml["vel_gnss"]["attitude_correction_gain"].as<double>(0.7);
+
+        // IMU 重力方向观测参数
+        use_imu_gravity_ = yaml["vel_gnss"]["use_imu_gravity"].as<bool>(true);
+        imu_gravity_noise_ = yaml["vel_gnss"]["imu_gravity_noise"].as<double>(0.02);
+        imu_gravity_acc_threshold_ = yaml["vel_gnss"]["imu_gravity_acc_threshold"].as<double>(0.5);
+
+        // DCReg 退化检测 + 鲁棒估计参数
+        if (YAML::Node dcreg = yaml["dcreg"]) {
+            use_dcreg_degeneracy_ = dcreg["use_dcreg_degeneracy"].as<bool>(use_dcreg_degeneracy_);
+            use_huber_weight_ = dcreg["use_huber_weight"].as<bool>(use_huber_weight_);
+            use_degeneracy_weight_ = dcreg["use_degeneracy_weight"].as<bool>(use_degeneracy_weight_);
+            dcreg_condition_threshold_ = dcreg["dcreg_condition_threshold"].as<double>(dcreg_condition_threshold_);
+            huber_k_ = dcreg["huber_k"].as<double>(huber_k_);
+            degeneracy_weight_alpha_ = dcreg["degeneracy_weight_alpha"].as<double>(degeneracy_weight_alpha_);
+        }
 
         ivox_options_.resolution_ = yaml["ivox_grid_resolution"].as<float>();
         ivox_nearby_type = yaml["ivox_nearby_type"].as<int>();
@@ -176,6 +197,684 @@ void LaserOdometry::SetVelocityGnssParams(bool use_vel, bool use_gnss_attitude,
     gnss_attitude_timeout_sec_ = gnss_attitude_timeout_sec;
     attitude_diff_thresh_deg_ = attitude_diff_thresh_deg;
     attitude_correction_gain_ = attitude_correction_gain;
+}
+
+void LaserOdometry::SetObservationParams(double wheel_velocity_noise, double non_holonomic_noise,
+                                         double gnss_attitude_noise_rad2,
+                                         int min_gnss_status, int min_gnss_nsv, int min_lidar_points) {
+    wheel_velocity_noise_ = wheel_velocity_noise;
+    non_holonomic_noise_ = non_holonomic_noise;
+    gnss_attitude_noise_rad2_ = gnss_attitude_noise_rad2;
+    min_gnss_status_ = min_gnss_status;
+    min_gnss_nsv_ = min_gnss_nsv;
+    min_lidar_points_ = min_lidar_points;
+    LOG(INFO) << "[Obs] params: wheel_noise=" << wheel_velocity_noise_
+              << " nhc_noise=" << non_holonomic_noise_
+              << " gnss_noise_rad2=" << gnss_attitude_noise_rad2_
+              << " min_gnss_status=" << min_gnss_status_
+              << " min_gnss_nsv=" << min_gnss_nsv_
+              << " min_lidar_points=" << min_lidar_points_;
+}
+
+SensorHealth LaserOdometry::GetSensorHealth() const {
+    std::lock_guard<std::mutex> lock(health_mutex_);
+    return sensor_health_;
+}
+
+void LaserOdometry::UpdateSensorHealth() {
+    std::lock_guard<std::mutex> lock(health_mutex_);
+    double current_time = measures_.lidar_bag_time_;
+
+    // 轮速超时检查
+    if (sensor_health_.has_can_data) {
+        sensor_health_.can_age = current_time - sensor_health_.can_last_update;
+        if (sensor_health_.can_age > can_timeout_sec_) {
+            if (sensor_health_.can_healthy) {
+                LOG_FIRST_N(WARNING, 1) << "[Health] wheel speed timeout: age="
+                                        << sensor_health_.can_age;
+            }
+            sensor_health_.can_healthy = false;
+        }
+    }
+
+    // GNSS 超时检查
+    if (sensor_health_.has_gnss_data) {
+        sensor_health_.gnss_age = current_time - sensor_health_.gnss_last_update;
+        if (sensor_health_.gnss_age > gnss_attitude_timeout_sec_) {
+            if (sensor_health_.gnss_healthy) {
+                LOG_FIRST_N(WARNING, 1) << "[Health] GNSS timeout: age="
+                                        << sensor_health_.gnss_age;
+            }
+            sensor_health_.gnss_healthy = false;
+        }
+    }
+
+    // LiDAR 健康检查
+    sensor_health_.lidar_points = scan_undistort_ ? scan_undistort_->size() : 0;
+    sensor_health_.lidar_healthy = static_cast<int>(sensor_health_.lidar_points) >= min_lidar_points_;
+}
+
+DegeneracyInfo LaserOdometry::DetectDegeneracy() const {
+    DegeneracyInfo info;
+    int num_points = effect_feat_num_;
+    Eigen::Matrix<double, 23, 23> P = kf_.get_P();
+
+    if (num_points < 10) {
+        info.is_degenerate = true;
+        info.degeneracy_ratio = 0.0;
+        LOG_FIRST_N(WARNING, 5) << "[Degeneracy] too few points: " << num_points;
+        return info;
+    }
+    // if (num_points <1000) {
+    //     double scale = std::max(1.0, 1000.0 / num_points);
+    //     P.block<3, 3>(3,3) *= scale;
+    //     P.block<3, 3>(12,12) *= scale;
+    //     kf_.change_P(P);
+    //     LOG(INFO) << "[Degeneracy] scale P: " << scale;
+    // }
+
+    // 1. 收集所有有效点的法向量
+    Eigen::Matrix<double, Eigen::Dynamic, 3> normals(num_points, 3);
+    for (int i = 0; i < num_points; i++) {
+        normals.row(i) = corr_norm_[i].head<3>().cast<double>();
+    }
+
+    // 2. 计算法向量协方差矩阵 C = (1/N) * sum((n_i - mean) * (n_i - mean)^T)
+    Eigen::Vector3d mean = normals.colwise().mean();
+    Eigen::Matrix3d C = Eigen::Matrix3d::Zero();
+    for (int i = 0; i < num_points; i++) {
+        Eigen::Vector3d diff = normals.row(i).transpose() - mean;
+        C += diff * diff.transpose();
+    }
+    C /= num_points;
+
+    // 3. 特征值分解（升序：λ₀ ≤ λ₁ ≤ λ₂）
+    Eigen::SelfAdjointEigenSolver<Eigen::Matrix3d> es(C);
+    Eigen::Vector3d lambda = es.eigenvalues();
+    Eigen::Matrix3d V = es.eigenvectors();
+
+    double ratio = lambda(0) / lambda(2);
+    info.is_degenerate = ratio < 0.1;
+    info.degeneracy_ratio = ratio;
+    info.degenerate_axis = V.col(0);  // 最小特征值对应的方向 = 退化轴
+
+    // 4. 将退化轴映射到姿态空间
+    //   退化轴沿哪个坐标轴，对应的旋转自由度退化
+    info.is_rot_degenerate[0] = std::abs(info.degenerate_axis(0)) > 0.7;  // roll
+    info.is_rot_degenerate[1] = std::abs(info.degenerate_axis(1)) > 0.7;  // pitch
+    info.is_rot_degenerate[2] = std::abs(info.degenerate_axis(2)) > 0.7;  // yaw
+
+    if (info.is_degenerate) {
+        LOG(WARNING) << "[Degeneracy] DETECTED! ratio=" << info.degeneracy_ratio
+                     << " axis=(" << info.degenerate_axis.transpose() << ")"
+                     << " rot_degen=(" << info.is_rot_degenerate[0] << ","
+                     << info.is_rot_degenerate[1] << "," << info.is_rot_degenerate[2] << ")"
+                     << " lambda=(" << lambda.transpose() << ")";
+    }
+
+    return info;
+}
+
+void LaserOdometry::InflateDegenerateP(const DegeneracyInfo& info) {
+    // 1. 获取当前 P 矩阵 (23×23)
+    Eigen::Matrix<double, 23, 23> P = kf_.get_P();
+
+    if (effect_feat_num_ <1500) {
+        double scale = std::max(1.0, 2.0 * 1500.0 / effect_feat_num_);
+        P.block<3, 3>(3,3) *= scale;
+        P.block<3, 3>(12,12) *= scale;
+        kf_.change_P(P);
+        LOG(INFO) << "[Degeneracy] scale P: " << scale;
+    }
+
+    if (!info.is_degenerate) return;
+
+    
+
+    // 2. 提取旋转块 (3×3, 索引 3-5)
+    Eigen::Matrix3d P_rot = P.block<3,3>(3,3);
+
+    // 3. 特征值分解
+    Eigen::SelfAdjointEigenSolver<Eigen::Matrix3d> es(P_rot);
+    Eigen::Vector3d lambda = es.eigenvalues();  // 升序
+    Eigen::Matrix3d V = es.eigenvectors();
+
+    // 4. 膨胀策略
+    //   - 正常方向：保持 LiDAR 更新后的 P
+    //   - 退化方向：膨胀到 σ_min = 2.0° 的不确定性
+    constexpr double TARGET_SIGMA = 2.0 * M_PI / 180.0;  // 2.0°
+    constexpr double TARGET_VAR = TARGET_SIGMA * TARGET_SIGMA;  // ~1.22e-3
+
+    // ★ 速度协方差膨胀目标：允许轮速观测有效修正
+    //   速度标准差膨胀到 1.0 m/s，与轮速噪声量级匹配
+    constexpr double VEL_TARGET_SIGMA = 1.0;  // 1.0 m/s
+    constexpr double VEL_TARGET_VAR = VEL_TARGET_SIGMA * VEL_TARGET_SIGMA;  // 1.0
+
+    bool inflated = false;
+    for (int i = 0; i < 3; i++) {
+        // 检查该方向是否退化：通过特征向量与退化轴的对齐程度
+        double alignment = std::abs(V.col(i).dot(info.degenerate_axis));
+        bool is_this_degenerate = alignment > 0.5;
+
+        if (is_this_degenerate) {
+            LOG(WARNING) << "[Degeneracy] inflating P_rot direction " << i
+                         << " from " << lambda(i) << " to " << TARGET_VAR
+                         << " (sigma=" << TARGET_SIGMA * 180.0 / M_PI << " deg)"
+                         << " alignment=" << alignment;
+            lambda(i) = std::max(lambda(i), TARGET_VAR);
+            inflated = true;
+        }
+    }
+
+    if (inflated) {
+        // 5. 重建 P_rot 并写回
+        P.block<3,3>(3,3) = V * lambda.asDiagonal() * V.transpose();
+
+        // 6. ★ 同时膨胀速度协方差 (索引 12-14)
+        //    IMU 传播中，速度与旋转强耦合 (vel_dot = R*(acc-ba) + grav)，
+        //    当旋转退化时，旋转误差会导致速度积分误差。
+        //    只膨胀旋转协方差而不膨胀速度协方差，会导致：
+        //      - 滤波器对错误的速度过于自信 (协方差小)
+        //      - 轮速观测的卡尔曼增益太小，无法有效修正速度
+        //      - 速度误差持续累积，最终导致 LiDAR 匹配失败 (No Effective Points)
+        //    因此，将速度协方差也膨胀到 1.0 m/s 的方差，使轮速观测能够有效修正。
+        Eigen::Matrix3d P_vel = P.block<3,3>(12,12);
+        Eigen::SelfAdjointEigenSolver<Eigen::Matrix3d> es_vel(P_vel);
+        Eigen::Vector3d lambda_vel = es_vel.eigenvalues();
+        Eigen::Matrix3d V_vel = es_vel.eigenvectors();
+        for (int i = 0; i < 3; i++) {
+            if (lambda_vel(i) < VEL_TARGET_VAR) {
+                LOG(WARNING) << "[Degeneracy] inflating P_vel direction " << i
+                             << " from " << lambda_vel(i) << " to " << VEL_TARGET_VAR
+                             << " (sigma=" << VEL_TARGET_SIGMA << " m/s)";
+                lambda_vel(i) = VEL_TARGET_VAR;
+            }
+        }
+        P.block<3,3>(12,12) = V_vel * lambda_vel.asDiagonal() * V_vel.transpose();
+
+        kf_.change_P(P);
+    }
+}
+
+// ====================================================================
+// DCReg 退化检测 + Huber 鲁棒估计
+// ====================================================================
+
+void LaserOdometry::ObsModelWithDCReg(
+    state_ikfom &s,
+    esekfom::dyn_share_datastruct<double> &ekfom_data) {
+
+    // ① 调用原观测模型
+    ObsModel(s, ekfom_data);
+
+    // ② 后处理：DCReg 诊断 + 鲁棒加权
+    if (ekfom_data.valid) {
+        ApplyDCRegAndWeights(ekfom_data);
+    }
+}
+
+void LaserOdometry::ApplyDCRegAndWeights(
+    esekfom::dyn_share_datastruct<double> &ekfom_data) {
+
+    if (effect_feat_num_ < 1) return;
+
+    // 1. 提取 6-DOF Jacobian (N×6) 并计算 Hessian (6×6)
+    //    h_x 的列: [pos_x, pos_y, pos_z, rot_x, rot_y, rot_z, off_R, off_T]
+    Eigen::MatrixXd J_6 = ekfom_data.h_x.leftCols(6);
+    Eigen::Matrix<double, 6, 6> H_6 = J_6.transpose() * J_6;
+
+    // 2. DCReg 退化诊断
+    if (use_dcreg_degeneracy_) {
+        dcreg_result_ = ComputeDCReg(H_6, dcreg_condition_threshold_);
+    }
+
+    // 3. 逐点计算权重并应用到 h_x 和 h
+    for (int i = 0; i < effect_feat_num_; i++) {
+        double w = 1.0;
+
+        // Huber 鲁棒权重
+        if (use_huber_weight_) {
+            w *= HuberWeight(ekfom_data.h(i), huber_k_);
+        }
+
+        // 退化方向降权
+        if (use_degeneracy_weight_ && dcreg_result_.is_degenerate) {
+            Eigen::Matrix<double, 1, 6> J_row = J_6.row(i);
+            w *= DegeneracyWeight(J_row, dcreg_result_.degeneracy_scores,
+                                  degeneracy_weight_alpha_);
+        }
+
+        // 应用权重 (IRLS: w → √w)
+        // 框架内部组装 HTH = h_x^T * h_x，乘以 √w 等价于对每行加权重 w
+        double sqrt_w = std::sqrt(w);
+        ekfom_data.h_x.row(i) *= sqrt_w;
+        ekfom_data.h(i) *= sqrt_w;
+    }
+}
+
+void LaserOdometry::InflateDegeneratePFromDCReg(const DCRegResult& dc_result) {
+    Eigen::Matrix<double, 23, 23> P = kf_.get_P();
+
+    constexpr double ROT_TARGET_SIGMA = 2.0 * M_PI / 180.0;  // 2.0°
+    constexpr double ROT_TARGET_VAR = ROT_TARGET_SIGMA * ROT_TARGET_SIGMA;
+    constexpr double POS_TARGET_SIGMA = 0.5;                  // 0.5m
+    constexpr double POS_TARGET_VAR = POS_TARGET_SIGMA * POS_TARGET_SIGMA;
+    constexpr double VEL_TARGET_SIGMA = 1.0;                  // 1.0 m/s
+    constexpr double VEL_TARGET_VAR = VEL_TARGET_SIGMA * VEL_TARGET_SIGMA;
+
+    bool any_rot_degenerate = false;
+
+    // 旋转膨胀 (索引 3-5)
+    // if (dc_result.degenerate_mask[0] || dc_result.degenerate_mask[1] ||
+    //     dc_result.degenerate_mask[2]) {
+    //     any_rot_degenerate = true;
+    //     Eigen::Matrix3d P_rot = P.block<3,3>(3,3);
+    //     Eigen::SelfAdjointEigenSolver<Eigen::Matrix3d> es(P_rot);
+    //     Eigen::Vector3d lambda = es.eigenvalues();
+    //     Eigen::Matrix3d V = es.eigenvectors();
+
+    //     // for (int i = 0; i < 3; i++) {
+    //     //     if (lambda(i) < ROT_TARGET_VAR) {
+    //     //         lambda(i) = ROT_TARGET_VAR;
+    //     //     }
+    //     // }
+
+    //     for (int i = 0; i < 3; i++) {
+    //         double score = dc_result.degeneracy_scores[i];
+    //         if (score > 0.01 || lambda[i] < ROT_TARGET_VAR) {
+    //             // 动态
+    //             double dynamic_target = ROT_TARGET_VAR * (1.0 + score * 9.0);
+    //             double alpha = 0.5 + score * 0.5;
+    //             lambda(i) = std::pow(lambda(i), 1.0 - alpha) * std::pow(dynamic_target, alpha);
+    //         }
+    //     }
+        
+
+
+    //     P.block<3,3>(3,3) = V * lambda.asDiagonal() * V.transpose();
+    // }
+    // 直接膨胀物理轴
+    if (dc_result.degenerate_mask[0]) {  // roll degenerate
+        double score = dc_result.degeneracy_scores[0];
+        double target_sigma = 2.0 * M_PI / 180.0 + (5.0 * M_PI / 180.0 - 2.0 * M_PI / 180.0) * score;
+        P(3, 3) = std::max(P(3, 3), target_sigma * target_sigma);
+    }
+    if (dc_result.degenerate_mask[1]) {  // pitch degenerate
+        double score = dc_result.degeneracy_scores[1];
+        double target_sigma = 2.0 * M_PI / 180.0 + (5.0 * M_PI / 180.0 - 2.0 * M_PI / 180.0) * score;
+        P(4, 4) = std::max(P(4, 4), target_sigma * target_sigma);
+    }
+    if (dc_result.degenerate_mask[2]) {  // yaw degenerate
+        double score = dc_result.degeneracy_scores[2];
+        double target_sigma = 2.0 * M_PI / 180.0 + (5.0 * M_PI / 180.0 - 2.0 * M_PI / 180.0) * score;
+        P(5, 5) = std::max(P(5, 5), target_sigma * target_sigma);
+    }
+
+    // 平移膨胀 (索引 0-2)
+    // if (dc_result.degenerate_mask[3] || dc_result.degenerate_mask[4] ||
+    //     dc_result.degenerate_mask[5]) {
+    //     Eigen::Matrix3d P_pos = P.block<3,3>(0,0);
+    //     Eigen::SelfAdjointEigenSolver<Eigen::Matrix3d> es(P_pos);
+    //     Eigen::Vector3d lambda = es.eigenvalues();
+    //     Eigen::Matrix3d V = es.eigenvectors();
+
+    //     for (int i = 0; i < 3; i++) {
+    //         if (lambda(i) < POS_TARGET_VAR) {
+    //             lambda(i) = POS_TARGET_VAR;
+    //         }
+    //     }
+    //     P.block<3,3>(0,0) = V * lambda.asDiagonal() * V.transpose();
+    // }
+    // 在 InflateDegeneratePFromDCReg 中，平移膨胀块之后新增：
+    // ===== yaw 退化 → heading 漂移 → 通过 IMU 传播影响 Z 位置 =====
+    if (dc_result.degenerate_mask[1]) {  // pitch degenerate
+        // 单独膨胀 Z 位置 P(2,2)，让 NHC 和轮速观测能修正 Z
+        // P(2,2) = std::max(P(2,2), POS_TARGET_VAR);
+        P(14, 14) = std::max(P(14, 14), VEL_TARGET_VAR);
+    }
+    
+
+    // 速度膨胀 (索引 12-14)：旋转退化时连带膨胀
+    // IMU 传播中速度与旋转强耦合，旋转退化会导致速度积分误差累积
+    if (any_rot_degenerate) {
+        Eigen::Matrix3d P_vel = P.block<3,3>(12,12);
+        Eigen::SelfAdjointEigenSolver<Eigen::Matrix3d> es(P_vel);
+        Eigen::Vector3d lambda = es.eigenvalues();
+        Eigen::Matrix3d V = es.eigenvectors();
+
+        for (int i = 0; i < 3; i++) {
+            if (lambda(i) < VEL_TARGET_VAR) {
+                lambda(i) = VEL_TARGET_VAR;
+            }
+        }
+        P.block<3,3>(12,12) = V * lambda.asDiagonal() * V.transpose();
+    }
+
+    kf_.change_P(P);
+
+    LOG(WARNING) << "[DCReg] P inflated: mask=["
+                 << dc_result.degenerate_mask[0] << ","
+                 << dc_result.degenerate_mask[1] << ","
+                 << dc_result.degenerate_mask[2] << ","
+                 << dc_result.degenerate_mask[3] << ","
+                 << dc_result.degenerate_mask[4] << ","
+                 << dc_result.degenerate_mask[5] << "]"
+                 << " cond_rot=" << dc_result.cond_schur_rot
+                 << " cond_trans=" << dc_result.cond_schur_trans
+                 << " scores=["
+                 << dc_result.degeneracy_scores[0] << ","
+                 << dc_result.degeneracy_scores[1] << ","
+                 << dc_result.degeneracy_scores[2] << ","
+                 << dc_result.degeneracy_scores[3] << ","
+                 << dc_result.degeneracy_scores[4] << ","
+                 << dc_result.degeneracy_scores[5] << "]";
+}
+
+void LaserOdometry::ApplyWheelSpeedObservation() {
+    // 获取当前状态
+    state_ikfom state = kf_.get_x();
+
+    Eigen::Matrix3d R_wl = state.rot.toRotationMatrix();
+    double v_x = last_can_.speed_kmh / 3.6;  // km/h -> m/s
+    Eigen::Vector3d can_body_vel(v_x, 0.0, 0.0);
+
+    // ===== 观测 1: 前向速度约束 (3D) =====
+    // 虚拟测量: h(x) = R * [v_x, 0, 0]^T - state.vel = 0
+    // residual = 0 - h(x) = state.vel - R * [v_x, 0, 0]^T
+    // H = ∂h/∂x: H_rot = R * hat([v_x, 0, 0]^T), H_vel = -I
+    Eigen::Vector3d residual_vel = state.vel - R_wl * can_body_vel;
+
+    Eigen::MatrixXd H1 = Eigen::MatrixXd::Zero(3, 23);
+    H1.block<3, 3>(0, 3) = -R_wl * SKEW_SYM_MATRIX(can_body_vel);  // ∂h/∂rot = -R * hat(v_body)
+    H1.block<3, 3>(0, 12) = -Eigen::Matrix3d::Identity();          // ∂h/∂vel = -I
+
+    // ===== 观测 2: 非完整性约束 (2D) =====
+    // 车体系下横向和垂向速度应为零
+    Eigen::Vector3d v_body_actual = R_wl.transpose() * state.vel;
+    Eigen::Vector2d residual_nhc;
+    residual_nhc(0) = 0.0 - v_body_actual(1);  // 横向速度应为 0
+    residual_nhc(1) = 0.0 - v_body_actual(2);  // 垂向速度应为 0
+
+    Eigen::MatrixXd H2 = Eigen::MatrixXd::Zero(2, 23);
+    // ★ 非完整性约束观测模型：h(x) = R^T[1:2, :] * state.vel (车体系横向/垂向速度)
+    //    EKF 残差: residual = z - h(x), H = ∂h/∂x (不是残差的雅可比!)
+    //    ∂h/∂vel = +R^T[1:2, :]  (正号!)
+    H2.block<2, 3>(0, 12) = R_wl.transpose().block<2, 3>(1, 0);
+    //    ∂h/∂rot = hat(R^T * vel) = hat(v_body)
+    //    推导: R → R * exp(hat(δθ)), R_new^T ≈ (I - hat(δθ)) * R^T
+    //          h_new = R_new^T * vel = R^T * vel - hat(δθ) * R^T * vel
+    //          hat(δθ) * (R^T * vel) = -hat(R^T * vel) * δθ
+    //          h_new = R^T * vel + hat(R^T * vel) * δθ
+    //          ∂h/∂rot = hat(R^T * vel) = hat(v_body)  (正号!)
+    H2.block<2, 3>(0, 3) = SKEW_SYM_MATRIX(v_body_actual).block<2, 3>(1, 0);
+
+    // ===== ★ 残差合理性检查 =====
+    // 当 LiDAR 退化导致旋转/速度估计严重错误时，轮速残差会异常增大。
+    // 此时直接进行 EKF 更新会因残差过大而破坏状态（特别是旋转估计），
+    // 进而导致下一帧 LiDAR 匹配失败（No Effective Points）。
+    // 策略：跳过本次更新，等待下一帧 LiDAR 观测恢复或退化消失。
+    const double VEL_RESIDUAL_THRESHOLD = 2.0;   // 5 m/s：正常轮速残差应 < 2 m/s
+    const double NHC_RESIDUAL_THRESHOLD = 1.0;   // 5 m/s：正常 NHC 残差应 < 1 m/s
+    if (residual_vel.norm() > VEL_RESIDUAL_THRESHOLD || residual_nhc.norm() > NHC_RESIDUAL_THRESHOLD) {
+        LOG(WARNING) << "[Obs] Wheel speed residual too large, skip update:"
+                     << " vel_norm=" << residual_vel.norm()
+                     << " nhc_norm=" << residual_nhc.norm();
+        return;
+    }
+
+    // ===== 合并观测 (5D) =====
+    Eigen::MatrixXd H(5, 23);
+    H << H1, H2;
+
+    Eigen::VectorXd residual(5);
+    residual << residual_vel, residual_nhc;
+
+    // ===== 噪声矩阵 (5×5) =====
+    Eigen::MatrixXd R = Eigen::MatrixXd::Zero(5, 5);
+    R.block<3, 3>(0, 0) = wheel_velocity_noise_ * Eigen::Matrix3d::Identity();  // 速度方差
+    R.block<2, 2>(3, 3) = non_holonomic_noise_ * Eigen::Matrix2d::Identity();   // 非完整性约束方差
+
+    // 打印轮速更新前的 P 矩阵（用于调试）
+    {
+        auto P = kf_.get_P();
+        LOG(INFO) << "[Obs] Wheel pre-update P diag: pos=" << P.diagonal().segment<3>(0).transpose()
+                  << " rot=" << P.diagonal().segment<3>(3).transpose()
+                  << " vel=" << P.diagonal().segment<3>(12).transpose()
+                  << " bg=" << P.diagonal().segment<3>(15).transpose()
+                  << " ba=" << P.diagonal().segment<3>(18).transpose()
+                  << " grav=" << P.diagonal().segment<2>(21).transpose();
+    }
+
+    // 单次更新
+    kf_.update_single_observation(H, residual, R);
+
+    LOG(INFO) << "[Obs] wheel speed update: residual_norm=" << residual.norm()
+              << " vel_norm=" << residual_vel.norm()
+              << " nhc_norm=" << residual_nhc.norm()
+              << " speed_ms=" << v_x;
+}
+
+void LaserOdometry::ApplyGnssAttitudeObservation() {
+    // if (!isGnssAttitudeValid()) {
+    //     LOG(INFO) << "[Obs] GNSS attitude not valid, skip update";
+    //     return;
+    // }
+    // 获取当前状态
+    state_ikfom state = kf_.get_x();
+
+    // 1. 将 GNSS 欧拉角（度）转为弧度
+    double heading_rad = last_gnss_attitude_.heading_deg * M_PI / 180.0;
+    double pitch_rad = last_gnss_attitude_.pitch_deg * M_PI / 180.0;
+    double roll_rad = last_gnss_attitude_.roll_deg * M_PI / 180.0;
+
+    // 2. 构建 GNSS 旋转矩阵（ZYX 欧拉角：R = Rz(yaw) * Ry(pitch) * Rx(roll)）
+    double cy = std::cos(heading_rad);
+    double sy = std::sin(heading_rad);
+    double cp = std::cos(pitch_rad);
+    double sp = std::sin(pitch_rad);
+    double cr = std::cos(roll_rad);
+    double sr = std::sin(roll_rad);
+
+    Eigen::Matrix3d R_gnss;
+    R_gnss << cy * cp, cy * sp * sr - sy * cr, cy * sp * cr + sy * sr,
+              sy * cp, sy * sp * sr + cy * cr, sy * sp * cr - cy * sr,
+              -sp,     cp * sr,                cp * cr;
+
+    // 3. 计算 Lie 代数残差（3 维，在 SO3 切空间上）
+    //    residual = log(R_est^T * R_gnss) = log(R_est.inverse() * R_gnss)
+    Eigen::Matrix3d R_est = state.rot.toRotationMatrix();
+    Eigen::Matrix3d R_diff = R_est.transpose() * R_gnss;
+    Eigen::AngleAxisd aa(R_diff);
+    Eigen::Vector3d residual = aa.angle() * aa.axis();
+
+    // 4. 零化 heading（yaw）分量，只使用 roll 和 pitch 更新姿态
+    //    单天线 GNSS 的 heading 来自速度方向（course over ground），不可靠
+    residual[2] = 0.0;
+
+    // 5. 残差门限检查（只检查 roll-pitch 分量，0.5 弧度 ≈ 28.6 度）
+    if (residual.head<2>().norm() > 0.8) {
+        LOG(WARNING) << "[Obs] GNSS attitude residual too large: " << residual.head<2>().norm()
+                     << " rad (roll-pitch), skip update";
+        return;
+    }
+
+    // 6. 打印 GNSS 更新前的 P 矩阵（用于调试）
+    {
+        auto P = kf_.get_P();
+        LOG(INFO) << "[Obs] GNSS pre-update P diag: pos=" << P.diagonal().segment<3>(0).transpose()
+                  << " rot=" << P.diagonal().segment<3>(3).transpose()
+                  << " vel=" << P.diagonal().segment<3>(12).transpose()
+                  << " bg=" << P.diagonal().segment<3>(15).transpose()
+                  << " ba=" << P.diagonal().segment<3>(18).transpose()
+                  << " grav=" << P.diagonal().segment<2>(21).transpose();
+    }
+
+    // 7. 构建 H 矩阵（3x23，旋转在索引 3-5）
+    //    只更新 roll (index 3) 和 pitch (index 4)，不更新 yaw (index 5)
+    //    零化 yaw 对应的 H 行，避免 EKF 虚假降低 yaw 协方差
+    //    因为 residual[2] = 0，但 H.row(2) 非零会导致 EKF 在 yaw 维度上
+    //    进行"零残差更新"，人为压缩 yaw 不确定度，造成虚假置信
+    Eigen::MatrixXd H = Eigen::MatrixXd::Zero(3, 23);
+    H.block<2, 3>(0, 3) = Eigen::Matrix3d::Identity().topRows<2>();
+    H.row(2).setZero();
+
+    // 8. 噪声矩阵（与 lm_slam 对齐：方差 = 0.03 rad²）
+    double variance = gnss_attitude_noise_rad2_;
+    Eigen::MatrixXd R = variance * Eigen::Matrix3d::Identity();
+
+    // 8. 单次更新
+    kf_.update_single_observation(H, residual, R);
+
+    LOG(INFO) << "[Obs] GNSS attitude update: residual_norm=" << residual.norm()
+              << " rad, (roll-pitch)=" << residual.head<2>().norm() << " rad, heading=0 (ignored)"
+              << " heading=" << last_gnss_attitude_.heading_deg
+              << " pitch=" << last_gnss_attitude_.pitch_deg
+              << " roll=" << last_gnss_attitude_.roll_deg
+              << " nsv=" << last_gnss_attitude_.nsv;
+}
+
+bool LaserOdometry::isGnssAttitudeValid() const {
+    std::lock_guard<std::mutex> lock(health_mutex_);
+
+    // 1. 数据可用性
+    if (!sensor_health_.has_gnss_data || !sensor_health_.gnss_healthy) {
+        LOG_FIRST_N(WARNING, 5) << "[Obs] GNSS not available: has_data="
+                                << sensor_health_.has_gnss_data
+                                << " healthy=" << sensor_health_.gnss_healthy;
+        return false;
+    }
+
+    // 2. nsv 检查
+    if (sensor_health_.gnss_nsv < min_gnss_nsv_) {
+        LOG_FIRST_N(WARNING, 5) << "[Obs] GNSS nsv too low: " << sensor_health_.gnss_nsv
+                                << " < " << min_gnss_nsv_;
+        return false;
+    }
+
+    // 3. 数据新鲜度
+    if (sensor_health_.gnss_age > gnss_attitude_timeout_sec_) {
+        LOG_FIRST_N(WARNING, 5) << "[Obs] GNSS data too old: " << sensor_health_.gnss_age
+                                << " > " << gnss_attitude_timeout_sec_;
+        return false;
+    }
+
+    return true;
+}
+
+bool LaserOdometry::isLowAcceleration() const {
+    if (!has_imu_data_) return false;
+    double acc_norm = last_acc_.norm();
+    double diff = std::abs(acc_norm - common::G_m_s2);
+    return diff < imu_gravity_acc_threshold_;
+}
+
+void LaserOdometry::ApplyImuGravityObservation() {
+    static int call_count = 0;
+    call_count++;
+    if (call_count < 100) {
+        LOG(INFO) << "[Obs] IMU gravity called: use_imu_gravity=" << use_imu_gravity_
+                  << " has_imu_data=" << has_imu_data_
+                  << " acc_norm=" << (has_imu_data_ ? last_acc_.norm() : -1);
+    }
+    if (!use_imu_gravity_ || !has_imu_data_) {
+        return;
+    }
+
+    // 低加速检测：只有当车辆不加速时才应用重力方向观测
+    // 因为加速度计测量值 = 重力 + 加速度，加速时会污染重力方向观测
+    double acc_norm = last_acc_.norm();
+    double diff_from_g = std::abs(acc_norm - common::G_m_s2);
+    if (!isLowAcceleration()) {
+        // 每100帧打印一次调试信息，了解加速度计状态
+        static int skip_count = 0;
+        skip_count++;
+        if (skip_count % 100 == 0 && skip_count < 1000) {
+            LOG(INFO) << "[Obs] IMU gravity SKIP: acc_norm=" << acc_norm
+                      << " diff_from_g=" << diff_from_g
+                      << " threshold=" << imu_gravity_acc_threshold_;
+        }
+        return;
+    }
+
+    // 获取当前状态
+    state_ikfom state = kf_.get_x();
+
+    // 提取重力向量（3D），grav 是 S2 流形，内部存储为 3D 向量
+    Eigen::Vector3d grav_vec;
+    for (int i = 0; i < 3; i++) grav_vec(i) = state.grav[i];
+
+    // 提取旋转矩阵 R_wb (body -> world)
+    Eigen::Matrix3d R = state.rot.toRotationMatrix();
+
+    // 提取加速度计偏置
+    Eigen::Vector3d ba;
+    for (int i = 0; i < 3; i++) ba(i) = state.ba[i];
+
+    // ===== 残差: r = (z_acc - ba) + R^T * grav =====
+    // 加速度计测量模型: z_acc = -R^T * g + ba + noise （a_true ≈ 0 时）
+    // 其中 g 是重力向量在世界坐标系下（指向地心，[0,0,-9.81]）
+    // 当车辆不加速时: z_acc - ba ≈ -R^T * g
+    // 因此残差: r = (z_acc - ba) + R^T * grav = 0 （当状态正确时）
+    // 残差反映重力方向与实测方向的差异 → 约束 roll 和 pitch
+    Eigen::Vector3d Rt_grav = R.transpose() * grav_vec;
+    Eigen::Vector3d residual = (last_acc_ - ba) + Rt_grav;
+
+    // 残差门限检查：如果残差太大（> 10 m/s²），可能是车辆在加速
+    if (residual.norm() > 2.0) {
+        LOG_FIRST_N(WARNING, 5) << "[Obs] IMU gravity residual too large: "
+                                << residual.norm() << " m/s², skip update (vehicle may be accelerating)";
+        return;
+    }
+
+    // ===== 打印更新前的 P 矩阵 =====
+    {
+        auto P = kf_.get_P();
+        LOG(INFO) << "[Obs] IMU grav pre-update P diag: pos="
+                  << P.diagonal().segment<3>(0).transpose()
+                  << " rot=" << P.diagonal().segment<3>(3).transpose()
+                  << " vel=" << P.diagonal().segment<3>(12).transpose()
+                  << " bg=" << P.diagonal().segment<3>(15).transpose()
+                  << " ba=" << P.diagonal().segment<3>(18).transpose()
+                  << " grav=" << P.diagonal().segment<2>(21).transpose();
+    }
+
+    // ===== 构建 H 矩阵 (3×23) =====
+    // 重要：只更新 rot (3-5) 和 ba (18-20)，不更新 grav (21-22)
+    // grav 是世界坐标系下的重力向量，在初始化时已经确定，不应频繁更新
+    // 更新 grav 会导致 Z 轴位置漂移（因为 grav 用于 IMU 传播中的速度导数）
+    Eigen::MatrixXd H = Eigen::MatrixXd::Zero(3, 23);
+
+    // ∂r/∂rot (3-5): hat(R^T * grav)
+    // 推导: R_new = R * Exp(δθ), R_new^T ≈ (I - hat(δθ)) * R^T
+    //       R_new^T * grav ≈ R^T * grav - hat(δθ) * R^T * grav
+    //       = R^T * grav + hat(R^T * grav) * δθ
+    //       ∂(R^T * grav)/∂δθ = hat(R^T * grav)
+    //       r = (z_acc - ba) + R^T * grav
+    //       ∂r/∂δθ = hat(R^T * grav)
+    // 这个雅可比矩阵将 3D 残差映射到旋转切空间，使得 roll/pitch 可观测
+    // 注意：hat(R^T * grav) 的第三列为零向量，因此 heading (yaw) 不可观测
+    H.block<3, 3>(0, 3) = SKEW_SYM_MATRIX(Rt_grav);
+
+    // ∂r/∂ba (18-20): -I
+    // 加速度计偏置也更新，因为偏置会影响 IMU 传播的精度
+    // 注意：雅可比矩阵应为 -I（残差 r = (z_acc - ba) + R^T * grav 对 ba 的导数），
+    // 之前使用 -0.1*I 导致 ba 欠校正，长期累积使 IMU 传播速度积分产生漂移。
+    H.block<3, 3>(0, 18) = -Eigen::Matrix3d::Identity();
+
+    // ⚠️ 不更新 grav (21-22) 状态！
+    // 更新 grav 会导致 Z 轴位置通过 IMU 传播产生漂移
+    // 因为 vel_dot = R * (in.acc - ba) + grav
+
+    // ===== 噪声矩阵 (3×3) =====
+    // 噪声在 m/s² 单位，imu_gravity_noise_ 是方差
+    Eigen::Matrix3d R_mat = imu_gravity_noise_ * Eigen::Matrix3d::Identity();
+
+    // ===== 单次更新 =====
+    kf_.update_single_observation(H, residual, R_mat);
+
+    LOG(INFO) << "[Obs] IMU gravity update: residual_norm=" << residual.norm()
+              << " m/s², acc_norm=" << last_acc_.norm()
+              << " diff_from_g=" << std::abs(last_acc_.norm() - common::G_m_s2);
 }
 
 bool LaserOdometry::ApplyVelocityGnssAid() {
@@ -258,7 +957,7 @@ bool LaserOdometry::Run() {
     }
 
     /// 轮速/GNSS 辅助校正
-    ApplyVelocityGnssAid();
+    // ApplyVelocityGnssAid();
 
     /// the first scan
     if (flg_first_scan_) {
@@ -296,10 +995,63 @@ bool LaserOdometry::Run() {
     // ICP and iterated Kalman filter update
     Timer::Evaluate(
         [&, this]() {
+            
+            // {
+            //     auto P = kf_.get_P();
+            //     LOG(INFO) << "[Obs] lidar pre-update P diag: pos=" << P.diagonal().segment<3>(0).transpose()
+            //       << " rot=" << P.diagonal().segment<3>(3).transpose()
+            //       << " vel=" << P.diagonal().segment<3>(12).transpose()
+            //       << " bg=" << P.diagonal().segment<3>(15).transpose()
+            //       << " ba=" << P.diagonal().segment<3>(18).transpose()
+            //       << " grav=" << P.diagonal().segment<2>(21).transpose();
+            // }
+
+
+
             // iterated state estimation
             double solve_H_time = 0;
             // update the observation model, will call nn and point-to-plane residual computation
             kf_.update_iterated_dyn_share_modified(options::LASER_POINT_COV, solve_H_time);
+
+            // ===== DCReg P 矩阵定向膨胀 =====
+            // DCReg 检测到退化时，在退化方向膨胀 P 矩阵，
+            // 让后续轮速/GNSS/IMU 重力观测有足够话语权修正退化方向的状态
+            if (use_dcreg_degeneracy_ && dcreg_result_.is_degenerate) {
+                InflateDegeneratePFromDCReg(dcreg_result_);
+            }
+
+            // ===== 退化检测 & P 矩阵膨胀（原法向量方案，已注释） =====
+            // 检测 LiDAR 观测是否退化（如隧道场景），在退化方向上膨胀 P 矩阵，
+            // 让后续的轮速（非完整性约束）和 GNSS 观测有足够的话语权
+            // {
+            //     DegeneracyInfo degeneracy = DetectDegeneracy();
+            //     if (degeneracy.is_degenerate) {
+            //         InflateDegenerateP(degeneracy);
+            //     }
+            // }
+
+            /// 更新传感器健康状态（检查超时）
+            // UpdateSensorHealth();
+
+            /// 轮速观测更新（5D：前向速度 + 非完整性约束）
+            if (use_vel_ && sensor_health_.can_healthy) {
+                ApplyWheelSpeedObservation();
+            }
+
+            // GNSS 姿态观测更新（单次更新，只观测 roll 和 pitch）
+            // if (use_gnss_attitude_ && sensor_health_.gnss_healthy) {
+            //     ApplyGnssAttitudeObservation();
+            // }
+
+            if (use_gnss_attitude_) {
+                ApplyGnssAttitudeObservation();
+            }
+
+            
+
+            // IMU 加速度计重力方向观测（单次更新，约束 roll 和 pitch）
+            // ApplyImuGravityObservation();
+
             // save the state
             state_point_ = kf_.get_x();
             euler_cur_ = SO3ToEuler(state_point_.rot);
@@ -470,6 +1222,13 @@ void LaserOdometry::IMUCallBack(const sensor_msgs::Imu::ConstPtr &msg_in) {
 
     last_timestamp_imu_ = timestamp;
     imu_buffer_.emplace_back(msg);
+
+    // 保存最新的加速度计读数（用于重力方向观测）
+    last_acc_ = Eigen::Vector3d(msg->linear_acceleration.x,
+                                msg->linear_acceleration.y,
+                                msg->linear_acceleration.z);
+    has_imu_data_ = true;
+
     mtx_buffer_.unlock();
 }
 
@@ -477,12 +1236,31 @@ void LaserOdometry::FeedCanVelocity(const CanVelocityData &can) {
     std::lock_guard<std::mutex> lock(mtx_buffer_);
     last_can_ = can;
     has_can_ = true;
+
+    // 立即更新健康状态
+    {
+        std::lock_guard<std::mutex> health_lock(health_mutex_);
+        sensor_health_.has_can_data = true;
+        sensor_health_.can_last_update = can.timestamp;
+        sensor_health_.can_healthy = true;  // 收到数据即认为健康
+    }
 }
 
 void LaserOdometry::FeedGnssAttitude(const GnssAttitudeData &gnss) {
     std::lock_guard<std::mutex> lock(mtx_buffer_);
     last_gnss_attitude_ = gnss;
     has_gnss_attitude_ = true;
+
+    // 立即更新健康状态
+    {
+        std::lock_guard<std::mutex> health_lock(health_mutex_);
+        sensor_health_.has_gnss_data = true;
+        sensor_health_.gnss_last_update = gnss.timestamp;
+        sensor_health_.gnss_status = gnss.status;
+        sensor_health_.gnss_nsv = gnss.nsv;
+        // 根据 status 判断健康状态（默认 33 为 RTK 固定解）
+        sensor_health_.gnss_healthy = (gnss.status >= min_gnss_status_);
+    }
 }
 
 bool LaserOdometry::SyncPackages() {

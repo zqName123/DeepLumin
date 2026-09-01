@@ -6,7 +6,8 @@
       "Bash(mkdir *)",
       "Read(//home/hhy/2004ros/ORB_SLAM3/include/**)",
       "Read(//home/hhy/2004ros/ORB_SLAM3/src/**)",
-      "Bash(catkin_make --pkg localization_v2)"
+      "Bash(catkin_make --pkg localization_v2)",
+      "Bash(catkin_make -DCMAKE_BUILD_TYPE=Release)"
     ]
   }
 }

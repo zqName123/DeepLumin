@@ -1824,12 +1824,103 @@ class esekf {
                 // }
                 // else
                 //{
-                P_ = L_ - K_x.template block<n, 12>(0, 0) * P_.template block<12, n>(0, 0);
+                // P_ = L_ - K_x.template block<n, 12>(0, 0) * P_.template block<12, n>(0, 0);
+                P_ = L_ - K_x * P_;
+
                 //}
                 // solve_time += omp_get_wtime() - solve_start;
                 return;
             }
             // solve_time += omp_get_wtime() - solve_start;
+        }
+    }
+
+    /**
+     * @brief 单次观测更新（支持完整 n 维状态）
+     *
+     * 用于轮速、GNSS 等非 LiDAR 观测的更新，不进行迭代。
+     * H 矩阵可以是任意维度，支持完整的 n 维状态更新。
+     *
+     * @param H 观测雅可比矩阵（dof_measurement x n）
+     * @param residual 观测残差（dof_measurement x 1）
+     * @param R 观测噪声协方差（dof_measurement x dof_measurement）
+     */
+    void update_single_observation(
+        const Eigen::Matrix<scalar_type, Eigen::Dynamic, Eigen::Dynamic>& H,
+        const Eigen::Matrix<scalar_type, Eigen::Dynamic, 1>& residual,
+        const Eigen::Matrix<scalar_type, Eigen::Dynamic, Eigen::Dynamic>& R) {
+
+        // 计算卡尔曼增益：K = P * H^T * (H * P * H^T + R)^-1
+        Eigen::Matrix<scalar_type, Eigen::Dynamic, Eigen::Dynamic> HPHR =
+            H * P_ * H.transpose() + R;
+        Eigen::Matrix<scalar_type, Eigen::Dynamic, Eigen::Dynamic> K =
+            P_ * H.transpose() * HPHR.inverse();
+
+        // 状态增量：dx = K * residual
+        vectorized_state dx = K * residual;
+
+        // ===== 第1步：保存 SO3/S2 流形雅可比矩阵（在 boxplus 之前计算）=====
+        // 存储每个 SO3 块的雅可比矩阵及索引
+        std::vector<Matrix<scalar_type, 3, 3>> SO3_J;
+        std::vector<int> SO3_idx;
+        for (auto it = x_.SO3_state.begin(); it != x_.SO3_state.end(); it++) {
+            int idx = (*it).first;
+            MTK::vect<3, scalar_type> seg_SO3;
+            for (int i = 0; i < 3; i++) seg_SO3(i) = dx(i + idx);
+            Matrix<scalar_type, 3, 3> J = MTK::A_matrix(seg_SO3).transpose();
+            SO3_J.push_back(J);
+            SO3_idx.push_back(idx);
+            // 修正 dx 的 SO3 块
+            dx.template block<3, 1>(idx, 0) = J * dx.template block<3, 1>(idx, 0);
+        }
+
+        // 存储每个 S2 块的雅可比矩阵及索引
+        std::vector<Matrix<scalar_type, 2, 2>> S2_J;
+        std::vector<int> S2_idx;
+        for (auto it = x_.S2_state.begin(); it != x_.S2_state.end(); it++) {
+            int idx = (*it).first;
+            MTK::vect<2, scalar_type> seg_S2;
+            for (int i = 0; i < 2; i++) seg_S2(i) = dx(i + idx);
+            Eigen::Matrix<scalar_type, 2, 3> Nx;
+            Eigen::Matrix<scalar_type, 3, 2> Mx;
+            x_.S2_Nx_yy(Nx, idx);
+            state x_before = x_;
+            x_before.S2_Mx(Mx, seg_S2, idx);
+            Matrix<scalar_type, 2, 2> J = Nx * Mx;
+            S2_J.push_back(J);
+            S2_idx.push_back(idx);
+            // 修正 dx 的 S2 块
+            dx.template block<2, 1>(idx, 0) = J * dx.template block<2, 1>(idx, 0);
+        }
+
+        // ===== 第2步：更新状态（在原始切空间计算 dx，然后 boxplus 到流形）=====
+        x_.boxplus(dx);
+
+        // ===== 第3步：协方差更新（在原始切空间进行）=====
+        // 注意：K 是用原始 P 计算的，P = (I - K*H) * P 也是在原始切空间
+        P_ = P_ - K * H * P_;
+
+        // ===== 第4步：将协方差转换到更新后的切空间 =====
+        // P_new = J * P_old * J^T，其中 J 是 boxplus 的雅可比
+        for (size_t k = 0; k < SO3_idx.size(); k++) {
+            int idx = SO3_idx[k];
+            const Matrix<scalar_type, 3, 3>& J = SO3_J[k];
+            for (int i = 0; i < n; i++) {
+                P_.template block<3, 1>(idx, i) = J * (P_.template block<3, 1>(idx, i));
+            }
+            for (int i = 0; i < n; i++) {
+                P_.template block<1, 3>(i, idx) = (P_.template block<1, 3>(i, idx)) * J.transpose();
+            }
+        }
+        for (size_t k = 0; k < S2_idx.size(); k++) {
+            int idx = S2_idx[k];
+            const Matrix<scalar_type, 2, 2>& J = S2_J[k];
+            for (int i = 0; i < n; i++) {
+                P_.template block<2, 1>(idx, i) = J * (P_.template block<2, 1>(idx, i));
+            }
+            for (int i = 0; i < n; i++) {
+                P_.template block<1, 2>(i, idx) = (P_.template block<1, 2>(i, idx)) * J.transpose();
+            }
         }
     }
 

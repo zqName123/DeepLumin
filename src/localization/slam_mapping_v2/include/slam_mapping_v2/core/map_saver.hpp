@@ -34,6 +34,8 @@ class MapSaver {
   bool saveLoopSubmap(const std::string& path, const PointCloudPtr& cloud) const;
   void transformCloud(const PointCloud& in, const Pose& pose_map, const Pose& pose_odom,
                       PointCloud* out) const;
+  void transformCloud(const PointCloud& in, const Eigen::Matrix4f& tf,
+                      PointCloud* out) const;
 
   MapSaverConfig config_;
 };

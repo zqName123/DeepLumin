@@ -82,6 +82,7 @@ bool KdtreeGicpLoopDetector::shouldCheck(const std::vector<Keyframe>& kfs, int c
       (current_idx - last_loop_check_index_) < cfg_.loop_kf_gap) {
     return false;
   }
+  std::cout << "[Loop] shouldCheck: " << current_idx << std::endl;
   return true;
 }
 
@@ -224,6 +225,7 @@ bool KdtreeGicpLoopDetector::alignCandidateSubmaps(const std::vector<Keyframe>& 
   icp_->setInputTarget(hist_norm);
   icp_->align(aligned, Eigen::Matrix4f::Identity());
   *score = icp_->getFitnessScore();
+  std::cout << "[Loop] ICP fitness score: " << *score << " converged: " << icp_->hasConverged() << std::endl;
   if (!icp_->hasConverged() || !std::isfinite(*score) || *score > cfg_.icp_fitness_thresh) {
     return false;
   }

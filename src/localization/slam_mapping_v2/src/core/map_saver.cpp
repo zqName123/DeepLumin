@@ -87,10 +87,18 @@ bool MapSaver::saveKeyframes(const std::string& dir,
   std::filesystem::create_directories(dir);
   bool ok = true;
   for (const auto& kf : keyframes) {
-    if (!kf.cloud) continue;
+    if (!kf.cloud || kf.cloud->empty()) continue;
+    // 关键帧点云在 odom 系，保存时变换到 base_link 系
+    // 拼接时只需 T(pose_map) 即可还原到 map 全局坐标
+    Eigen::Matrix4d t_odom = Eigen::Matrix4d::Identity();
+    t_odom.block<3, 3>(0, 0) = kf.pose_odom.orientation.normalized().toRotationMatrix();
+    t_odom.block<3, 1>(0, 3) = kf.pose_odom.position;
+    const Eigen::Matrix4f tf_odom_inv = t_odom.inverse().cast<float>();
+    PointCloud cloud_base;
+    transformCloud(*kf.cloud, tf_odom_inv, &cloud_base);
     const auto path =
         (std::filesystem::path(dir) / (std::to_string(kf.id) + ".pcd")).string();
-    ok = savePcd(path, *kf.cloud) && ok;
+    ok = savePcd(path, cloud_base) && ok;
   }
   return ok;
 }
@@ -157,6 +165,14 @@ bool MapSaver::saveGnssAlignment(const std::string& path, const Mat3d& rot_map_e
   return true;
 }
 
+void MapSaver::transformCloud(const PointCloud& in, const Eigen::Matrix4f& tf,
+                              PointCloud* out) const {
+  if (!out) return;
+  PointCloud temp;
+  pcl::transformPointCloud(in, temp, tf);
+  *out += temp;
+}
+
 void MapSaver::transformCloud(const PointCloud& in, const Pose& pose_map, const Pose& pose_odom,
                               PointCloud* out) const {
   if (!out) return;
@@ -168,9 +184,7 @@ void MapSaver::transformCloud(const PointCloud& in, const Pose& pose_map, const 
   t_odom.block<3, 3>(0, 0) = pose_odom.orientation.normalized().toRotationMatrix();
   t_odom.block<3, 1>(0, 3) = pose_odom.position;
   const Eigen::Matrix4f tf = (t_map * t_odom.inverse()).cast<float>();
-  PointCloud temp;
-  pcl::transformPointCloud(in, temp, tf);
-  *out += temp;
+  transformCloud(in, tf, out);
 }
 
 }  // namespace slam_mapping_v2

@@ -103,6 +103,12 @@ class SlamOdometryV2Node {
             config_.slam.gnss_attitude_timeout_sec, config_.slam.attitude_diff_thresh_deg,
             config_.slam.attitude_correction_gain);
 
+        // 设置观测参数
+        odom_->SetObservationParams(
+            config_.slam.wheel_velocity_noise, config_.slam.non_holonomic_noise,
+            config_.slam.gnss_attitude_noise_rad2,
+            config_.slam.min_gnss_status, config_.slam.min_gnss_nsv, config_.slam.min_lidar_points);
+
         // 3. 订阅传感器
         imu_sub_ = nh_.subscribe(config_.sensors.imu, 200000, &SlamOdometryV2Node::onImu, this);
         lidar_sub_ = nh_.subscribe(config_.sensors.lidar, 200000, &SlamOdometryV2Node::onLidar, this);
@@ -254,8 +260,15 @@ class SlamOdometryV2Node {
         gnss.heading_deg = msg->heading;
         gnss.pitch_deg = msg->pitch;
         gnss.roll_deg = msg->roll;
+        gnss.status = msg->status;  // GNSS 状态
+        gnss.nsv = msg->nsv1 + msg->nsv2;  // 可见卫星数量
         gnss.valid = true;
         odom_->FeedGnssAttitude(gnss);
+
+        // 调试日志
+        LOG_FIRST_N(INFO, 20) << "[GNSS] received: heading=" << msg->heading
+                              << " pitch=" << msg->pitch << " roll=" << msg->roll
+                              << " status=" << msg->status << " nsv=" << gnss.nsv;
     }
 
     void publishCloud(const PointCloudType::Ptr& cloud, double stamp,

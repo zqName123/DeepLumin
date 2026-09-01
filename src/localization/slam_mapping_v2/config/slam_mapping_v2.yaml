@@ -6,7 +6,7 @@
 runtime:
   auto_start: true
   task_name: "manual_mapping"
-  output_root: "/home/hhy/2004ros/deeplumin_mapping"
+  output_root: "/home/hhy/2004ros/deeplumin_mapping_2"
   publish_tf: true           # 发布 map→odom（有关键帧后即发布）
   process_rate_hz: 100.0
 
@@ -16,15 +16,15 @@ frames:
   base_link: "base_link"
 
 input:
-  # odom_topic: "/localization/slam_odom"
-  # scan_topic: "/localization/cloud_registered"
-  # gnss_topic: "/gnss_chc_data"
-  # image_topic: "/camera/image_raw"  # 视觉回环用
-
   odom_topic: "/localization/slam_odom"
-  scan_topic: "/localization/cloud_registered_effect"
+  scan_topic: "/localization/cloud_registered"
   gnss_topic: "/gnss_chc_data"
-  image_topic: "/camera/color/image_raw/compressed"  # 视觉回环用
+  image_topic: "/camera/image_raw"  # 视觉回环用
+
+  # odom_topic: "/localization/slam_odom"
+  # scan_topic: "/localization/cloud_registered_effect"
+  # gnss_topic: "/gnss_chc_data"
+  # image_topic: "/camera/color/image_raw/compressed"  # 视觉回环用
 
 output:
   status_topic: "/slam_mapping_v2/status"
@@ -59,25 +59,25 @@ keyframe:
 loop_closure:
   enable: true
   # 检测器类型："laser" | "visual" | "hybrid"
-  detector_type: "visual"
+  detector_type: "laser"
   # 回环候选帧筛选：当前关键帧与历史关键帧的最小索引间隔，低于此值不检测回环
-  min_index_gap: 5
+  min_index_gap: 10
   # 回环候选帧筛选：当前帧与历史候选帧的最小时间间隔（秒），低于此值跳过（避免检测太近的回环）
-  time_thresh_sec: 10.0
+  time_thresh_sec: 5.0
   # 回环检测触发间隔：两次回环检测之间至少间隔 loop_kf_gap 个关键帧，防止过于频繁检测
   loop_kf_gap: 5
   # 回环去重：若新检测到的历史帧索引与已确认回环的历史帧索引差小于此值，视为重复回环并跳过
-  min_id_interval: 20
+  min_id_interval: 10
   # 回环候选帧筛选：当前帧与历史帧索引差必须大于 closest_id_th，确保检测的是“远距离”回环
-  closest_id_th: 100
+  closest_id_th: 20
   # KD-Tree 空间搜索半径（米）：在当前帧位姿附近 max_range 范围内搜索历史关键帧作为回环候选
   max_range: 20.0
   # 子图构建：以候选历史帧为中心，前后各取 submap_search_num 个关键帧拼接成历史子图用于 ICP 配准
-  submap_search_num: 10
+  submap_search_num: 5
   # 子图降采样体素分辨率（米）：拼接子图后通过 VoxelGrid 降采样，降低 ICP 计算量
   submap_resolution: 0.3
   # ICP 配准 fitness score 阈值：ICP 得分高于此阈值认为配准失败，回环不成立
-  icp_fitness_thresh: 0.3
+  icp_fitness_thresh: 0.8
   # 回环噪声整体缩放系数：用于动态调整回环约束噪声的强弱，值越大噪声越大、约束越弱
   loop_noise_scale: 1.0
   # 回环约束旋转噪声基准（弧度）：用于 GTSAM 回环因子的旋转分量标准差

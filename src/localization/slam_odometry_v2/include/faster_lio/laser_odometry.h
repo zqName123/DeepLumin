@@ -25,8 +25,48 @@
 #include "ivox3d/ivox3d.h"
 #include "options.h"
 #include "pointcloud_preprocess.h"
+#include "dcreg_wrapper.h"
 
 namespace faster_lio {
+
+/// 传感器健康状态
+struct SensorHealth {
+    // 轮速
+    bool can_healthy = false;
+    double can_age = 1e9;
+    bool has_can_data = false;
+    double can_last_update = 0.0;
+
+    // GNSS
+    bool gnss_healthy = false;
+    double gnss_age = 1e9;
+    bool has_gnss_data = false;
+    int gnss_status = 0;
+    int gnss_nsv = 0;
+    double gnss_last_update = 0.0;
+
+    // LiDAR
+    bool lidar_healthy = false;
+    size_t lidar_points = 0;
+
+    /// 转为字符串（用于日志）
+    std::string toString() const {
+        std::ostringstream oss;
+        oss << "can=" << (can_healthy ? "ok" : "fail") << "(age=" << can_age << ") "
+            << "gnss=" << (gnss_healthy ? "ok" : "fail") << "(age=" << gnss_age
+            << " status=" << gnss_status << " nsv=" << gnss_nsv << ") "
+            << "lidar=" << (lidar_healthy ? "ok" : "fail") << "(pts=" << lidar_points << ")";
+        return oss.str();
+    }
+};
+
+/// 退化检测信息
+struct DegeneracyInfo {
+    bool is_degenerate = false;              ///< 是否退化
+    double degeneracy_ratio = 1.0;           ///< λ_min / λ_max，越小越退化
+    Eigen::Vector3d degenerate_axis = Eigen::Vector3d::Zero();  ///< 物理空间中的退化轴方向
+    bool is_rot_degenerate[3] = {false, false, false};  ///< roll/pitch/yaw 是否退化
+};
 
 /// 纯里程计核心：与 faster_lio_ws LaserMapping 的算法部分一致
 class LaserOdometry {
@@ -46,6 +86,8 @@ class LaserOdometry {
         double heading_deg = 0.0;
         double pitch_deg = 0.0;
         double roll_deg = 0.0;
+        int status = 0;      ///< GNSS 状态（如 RTK 固定解=33）
+        int nsv = 0;         ///< 可见卫星数量
         bool valid = true;
     };
 
@@ -85,6 +127,15 @@ class LaserOdometry {
                                double attitude_diff_thresh_deg = 2.0,
                                double attitude_correction_gain = 0.7);
 
+    /// 设置观测参数（轮速噪声、非完整性约束噪声、GNSS 噪声、最小状态等）
+    void SetObservationParams(double wheel_velocity_noise,
+                              double non_holonomic_noise,
+                              double gnss_attitude_noise_rad2,
+                              int min_gnss_status, int min_gnss_nsv, int min_lidar_points);
+
+    /// 获取传感器健康状态
+    SensorHealth GetSensorHealth() const;
+
     // sync lidar with imu
     bool SyncPackages();
 
@@ -119,6 +170,42 @@ class LaserOdometry {
 
     /// 轮速/GNSS 辅助校正（与 faster_lio_ws ApplyVelocityGnssAid 一致）
     bool ApplyVelocityGnssAid();
+
+    /// 更新传感器健康状态（检查超时）
+    void UpdateSensorHealth();
+
+    /// 轮速观测更新（单次更新，使用完整 23 维 H 矩阵）
+    void ApplyWheelSpeedObservation();
+
+    /// GNSS 姿态观测更新（单次更新，只观测 pitch 和 roll）
+    void ApplyGnssAttitudeObservation();
+
+    /// IMU 加速度计重力方向观测：利用加速度计测量重力方向，约束 roll 和 pitch
+    /// 只有当车辆不加速时（|acc_norm - g| < threshold）才应用
+    void ApplyImuGravityObservation();
+
+    /// 检测当前是否处于低加速状态（适合进行重力方向观测）
+    bool isLowAcceleration() const;
+
+    /// 退化检测：基于法向量协方差分析
+    DegeneracyInfo DetectDegeneracy() const;
+
+    /// P 矩阵膨胀：在退化方向上恢复 P 的不确定性，让后续观测有话语权
+    void InflateDegenerateP(const DegeneracyInfo& info);
+
+    /// DCReg 包装观测模型：调用原 ObsModel + DCReg 诊断 + 鲁棒加权
+    void ObsModelWithDCReg(state_ikfom &s,
+                           esekfom::dyn_share_datastruct<double> &ekfom_data);
+
+    /// DCReg 后处理：对 ekfom_data 做退化诊断 + Huber + 退化降权
+    void ApplyDCRegAndWeights(
+        esekfom::dyn_share_datastruct<double> &ekfom_data);
+
+    /// DCReg P 矩阵膨胀：在 DCReg 检测到的退化方向上进行定向协方差膨胀
+    void InflateDegeneratePFromDCReg(const DCRegResult& dc_result);
+
+    /// 检查 GNSS 姿态数据是否有效
+    bool isGnssAttitudeValid() const;
 
    private:
     /// modules
@@ -185,6 +272,34 @@ class LaserOdometry {
     bool has_gnss_attitude_ = false;              ///< 是否已有 GNSS 姿态数据
     std::uint64_t vel_reset_count_ = 0;           ///< 速度重置计数
     std::uint64_t attitude_reset_count_ = 0;      ///< 姿态重置计数
+
+    ///////////////////////// 观测更新参数 ///////////////////////////////////////////////////////
+    double wheel_velocity_noise_ = 0.01;          ///< 轮速观测噪声方差 (m²/s²)
+    double non_holonomic_noise_ = 0.01;           ///< 非完整性约束噪声方差 (m²/s²)，横向/垂向速度约束
+    double gnss_attitude_noise_rad2_ = 0.03;      ///< GNSS 姿态观测噪声方差 (rad²)，与 lm_slam 对齐
+    int min_gnss_status_ = 33;                    ///< 最小 GNSS 状态（RTK 固定解）
+    int min_gnss_nsv_ = 8;                        ///< 最小 GNSS 卫星数量
+    int min_lidar_points_ = 100;                  ///< 最小点云数量
+
+    ///////////////////////// IMU 重力方向观测参数 ///////////////////////////////////////////////////////
+    bool use_imu_gravity_ = true;                 ///< 是否使用IMU重力方向观测约束roll/pitch
+    double imu_gravity_noise_ = 0.02;             ///< IMU重力观测噪声方差 (m²/s²)²，对应~0.01rad roll/pitch误差
+    double imu_gravity_acc_threshold_ = 0.5;      ///< 低加速检测阈值 (m/s²)，|acc_norm - 9.81| < threshold
+    Eigen::Vector3d last_acc_ = Eigen::Vector3d::Zero();  ///< 最新IMU加速度计读数
+    bool has_imu_data_ = false;                   ///< 是否已收到IMU数据
+
+    ///////////////////////// 传感器健康状态 ///////////////////////////////////////////////////////
+    mutable std::mutex health_mutex_;             ///< 健康状态互斥锁
+    SensorHealth sensor_health_;                  ///< 传感器健康状态
+
+    ///////////////////////// DCReg 退化检测 & 鲁棒估计 /////////////////////////////////////////
+    bool use_dcreg_degeneracy_ = true;            ///< 是否启用 DCReg 退化检测（含权重和 P 膨胀）
+    bool use_huber_weight_ = true;                ///< 是否启用 Huber 鲁棒损失
+    bool use_degeneracy_weight_ = true;           ///< 是否启用退化方向降权
+    double dcreg_condition_threshold_ = 10.0;     ///< DCReg 退化条件数阈值
+    double huber_k_ = 0.5;                        ///< Huber 损失阈值 (m)
+    double degeneracy_weight_alpha_ = 0.5;        ///< 退化方向降权强度
+    DCRegResult dcreg_result_;                    ///< 最新 DCReg 退化检测结果
 
     ///////////////////////// EKF inputs and output ///////////////////////////////////////////////////////
     common::MeasureGroup measures_;                    // sync IMU and lidar scan
