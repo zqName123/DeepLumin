@@ -2,6 +2,7 @@
 build/
 devel/
 .venv/
+src/localization/slam_mapping_v2/thirdparty/DBoW2/vocabulary/ORBvoc.txt
 
 
 
