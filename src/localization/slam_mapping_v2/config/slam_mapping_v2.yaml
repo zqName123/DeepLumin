@@ -19,7 +19,7 @@ input:
   odom_topic: "/localization/slam_odom"
   scan_topic: "/localization/cloud_registered"
   gnss_topic: "/gnss_chc_data"
-  image_topic: "/camera/image_raw"  # 视觉回环用
+  image_topic: "/camera/li_image"  # 视觉回环用
 
   # odom_topic: "/localization/slam_odom"
   # scan_topic: "/localization/cloud_registered_effect"
@@ -50,14 +50,14 @@ threading:
   time_sync_tolerance_sec: 0.1
 
 keyframe:
-  distance_thresh: 1.0
+  distance_thresh: 0.6
   rotation_thresh_rad: 0.5
   time_thresh_sec: 0.0
   min_points: 50
   min_frame_gap: 10
 
 loop_closure:
-  enable: true
+  enable: false
   # 检测器类型："laser" | "visual" | "hybrid"
   detector_type: "laser"
   # 回环候选帧筛选：当前关键帧与历史关键帧的最小索引间隔，低于此值不检测回环
@@ -65,19 +65,19 @@ loop_closure:
   # 回环候选帧筛选：当前帧与历史候选帧的最小时间间隔（秒），低于此值跳过（避免检测太近的回环）
   time_thresh_sec: 5.0
   # 回环检测触发间隔：两次回环检测之间至少间隔 loop_kf_gap 个关键帧，防止过于频繁检测
-  loop_kf_gap: 5
+  loop_kf_gap: 10
   # 回环去重：若新检测到的历史帧索引与已确认回环的历史帧索引差小于此值，视为重复回环并跳过
   min_id_interval: 10
   # 回环候选帧筛选：当前帧与历史帧索引差必须大于 closest_id_th，确保检测的是“远距离”回环
   closest_id_th: 20
   # KD-Tree 空间搜索半径（米）：在当前帧位姿附近 max_range 范围内搜索历史关键帧作为回环候选
-  max_range: 20.0
+  max_range: 10.0
   # 子图构建：以候选历史帧为中心，前后各取 submap_search_num 个关键帧拼接成历史子图用于 ICP 配准
   submap_search_num: 5
   # 子图降采样体素分辨率（米）：拼接子图后通过 VoxelGrid 降采样，降低 ICP 计算量
-  submap_resolution: 0.3
+  submap_resolution: 0.2
   # ICP 配准 fitness score 阈值：ICP 得分高于此阈值认为配准失败，回环不成立
-  icp_fitness_thresh: 0.8
+  icp_fitness_thresh: 0.1
   # 回环噪声整体缩放系数：用于动态调整回环约束噪声的强弱，值越大噪声越大、约束越弱
   loop_noise_scale: 1.0
   # 回环约束旋转噪声基准（弧度）：用于 GTSAM 回环因子的旋转分量标准差
@@ -96,41 +96,50 @@ loop_closure:
     # ORB 词库路径（从 ORB-SLAM3 移植的预训练词库）
     vocabulary_path: "/home/hhy/2004ros/DeepLumin/src/localization/slam_mapping_v2/thirdparty/DBoW2/vocabulary/ORBvoc.txt"
     # ORB 特征参数
-    nfeatures: 2000
+    nfeatures: 3000
     scale_factor: 1.2
     nlevels: 8
     ini_th_fast: 15
     min_th_fast: 5
     # BoW 检索参数
-    min_bow_score: 0.05
-    min_shared_words: 30
-    max_candidates: 4
+    min_bow_score: 0.03
+    min_shared_words: 15
+    max_candidates: 6
     # 特征匹配参数
-    min_bow_matches: 80
-    nn_ratio: 0.4
+    min_bow_matches: 40
+    nn_ratio: 0.65
     # RANSAC 几何验证参数
-    ransac_min_inliers: 25
+    ransac_min_inliers: 15
     ransac_probability: 0.99
     ransac_max_iterations: 300
     # 连续性验证参数
-    min_continuity: 4
-    max_continuity_miss: 2
+    min_continuity: 1
+    max_continuity_miss: 3
     # 线程参数
     feature_extract_rate_hz: 10
     buffer_size: 100
     # 相机内参（几何验证必需，请根据实际相机标定修改）
     camera:
-      fx: 617.971050917033
-      fy: 616.445131524790
-      cx: 327.710279392468
-      cy: 253.976983707814
+      # fx: 617.971050917033
+      # fy: 616.445131524790
+      # cx: 327.710279392468
+      # cy: 253.976983707814
+      fx: 960.0
+      fy: 960.0
+      cx: 510.0
+      cy: 960.0
      
     # LiDAR 到相机的外参 T_L_C（4x4 齐次变换矩阵，行优先）
     # 默认值：相机 x=LiDAR z, 相机 y=-LiDAR x, 相机 z=-LiDAR y
-    T_L_C: [0., 0., 1., 0.30456,
-           -1., 0., 0., 0.00065,
-            0.,-1., 0., 0.65376,
-            0., 0., 0., 1.]
+    # T_L_C: [0., 0., 1., 0.30456,
+    #        -1., 0., 0., 0.00065,
+    #         0.,-1., 0., 0.65376,
+    #         0., 0., 0., 1.]
+    T_L_C: [0.,  -1.,  0.,  0.,
+              0.,  0.,  1.,  0.3,
+              1., 0.,  0.,  0.,
+              0.,  0.,  0.,  1.]
+
 
   gnss:
     enable: false
@@ -151,7 +160,7 @@ loop_closure:
     status_sigma: []
 
 map_saver:
-  default_resolution: 0.2
+  default_resolution: 0.1
   save_on_stop: true
   save_keyframes: true
   save_keyframe_poses: true
@@ -161,6 +170,7 @@ map_saver:
   trajectory_filename: "trajectory.csv"
   keyframe_pose_filename: "keyframes.csv"
   keyframe_dir_name: "keyframes"
+  mages_dir_name: "images"
   loop_result_dir_name: "loop_results"
   loop_pairs_filename: "loop_pairs.csv"
   loop_current_submap_filename: "latest_loop_current_submap.pcd"

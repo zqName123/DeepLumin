@@ -51,6 +51,18 @@ FrameDetection MarkerDetector::detect(const cv::Mat& image, double timestamp) co
   cv::aruco::estimatePoseSingleMarkers(corners, static_cast<float>(config_.marker_size),
                                        camera_matrix_, dist_coeffs_, rvecs, tvecs);
 
+  // 调试：检查位姿估计结果
+  for (size_t i = 0; i < rvecs.size(); ++i) {
+    if (std::isnan(rvecs[i][0]) || std::isnan(tvecs[i][0])) {
+      ROS_WARN("[aruco_detector] marker %d: pose estimation failed (nan), corners=[%.1f,%.1f %.1f,%.1f %.1f,%.1f %.1f,%.1f]",
+               ids[i],
+               corners[i][0].x, corners[i][0].y,
+               corners[i][1].x, corners[i][1].y,
+               corners[i][2].x, corners[i][2].y,
+               corners[i][3].x, corners[i][3].y);
+    }
+  }
+
   // 组装结果
   for (size_t i = 0; i < ids.size(); ++i) {
     MarkerObservation obs;

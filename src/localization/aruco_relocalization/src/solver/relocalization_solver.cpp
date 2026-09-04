@@ -1,8 +1,14 @@
+/**
+ * @file relocalization_solver.cpp
+ * @brief 重定位求解核心（单 marker 为主，可选多 marker 联合解算）
+ */
+
 #include <aruco_relocalization/solver/relocalization_solver.hpp>
 
 #include <ros/ros.h>
 
 #include <chrono>
+#include <cmath>
 
 namespace aruco_reloc {
 
@@ -43,20 +49,66 @@ SolveResult RelocalizationSolver::solve(const FrameDetection& detection,
     return result;
   }
 
-  // 3. 分支求解
-  if (matched_obs.size() == 1) {
-    result = solveSingleMarker(matched_obs[0], matched_items[0]);
-  } else {
-    result = solveMultiMarker(matched_obs, matched_items);
+  // 3. 单 marker 解算：对每个 marker 单独求解，选择最优结果
+  SolveResult best_single;
+  best_single.success = false;
+  best_single.reproj_error = 1e9;
+
+  for (size_t i = 0; i < matched_obs.size(); ++i) {
+    auto single_result = solveSingleMarker(matched_obs[i], matched_items[i]);
+    if (!single_result.success) continue;
+
+    // 计算重投影误差
+    single_result.reproj_error = computeReprojError(
+        single_result.T_map_cam, matched_obs[i], matched_items[i]);
+
+    // 转换到 base_link
+    single_result.T_map_base = single_result.T_map_cam * T_base_cam_.inverse();
+    single_result.marker_id = matched_obs[i].id;
+    single_result.marker_ids = {matched_obs[i].id};
+
+    // 选择重投影误差最小的结果
+    if (single_result.reproj_error < best_single.reproj_error) {
+      best_single = single_result;
+    }
   }
 
-  // 4. 转换到 base_link
-  if (result.success) {
-    result.T_map_base = result.T_map_cam * T_base_cam_.inverse();
-    result.marker_ids.clear();
-    for (const auto& obs : matched_obs) {
-      result.marker_ids.push_back(obs.id);
+  // 4. 可选：多 marker 联合 PnP 解算
+  if (config_.use_multi_marker && matched_obs.size() >= 2) {
+    auto multi_result = solveMultiMarker(matched_obs, matched_items);
+    if (multi_result.success) {
+      multi_result.T_map_base = multi_result.T_map_cam * T_base_cam_.inverse();
+      multi_result.marker_ids.clear();
+      for (const auto& obs : matched_obs) {
+        multi_result.marker_ids.push_back(obs.id);
+      }
+
+      // 如果多 marker 结果更好，使用多 marker 结果
+      // 这里用 inlier 数量作为评判标准
+      if (best_single.success && multi_result.inlier_indices.size() > 0) {
+        ROS_INFO("[aruco_reloc] multi marker solve: %zu markers, %zu inliers, "
+                 "single best: marker_id=%d, reproj=%.2f",
+                 matched_obs.size(), multi_result.inlier_indices.size(),
+                 best_single.marker_id, best_single.reproj_error);
+      }
     }
+  }
+
+  // 5. 返回最优结果
+  if (best_single.success) {
+    result = best_single;
+  } else if (matched_obs.size() >= 2 && config_.use_multi_marker) {
+    // 如果单 marker 全部失败，尝试多 marker 联合解算
+    result = solveMultiMarker(matched_obs, matched_items);
+    if (result.success) {
+      result.T_map_base = result.T_map_cam * T_base_cam_.inverse();
+      result.marker_ids.clear();
+      for (const auto& obs : matched_obs) {
+        result.marker_ids.push_back(obs.id);
+      }
+    }
+  } else {
+    result.failure_reason = "all_single_marker_failed";
   }
 
   auto end = std::chrono::steady_clock::now();
@@ -72,8 +124,8 @@ SolveResult RelocalizationSolver::solveSingleMarker(const MarkerObservation& obs
   result.T_map_cam = map_item.T_map_marker * obs.T_cam_marker.inverse();
   result.success = true;
   result.num_markers_used = 1;
+  result.marker_id = obs.id;
 
-  ROS_DEBUG("[aruco_reloc] single marker solve: id=%d", obs.id);
   return result;
 }
 
@@ -140,9 +192,40 @@ SolveResult RelocalizationSolver::solveMultiMarker(
   result.success = true;
   result.num_markers_used = static_cast<int>(observations.size());
 
-  ROS_DEBUG("[aruco_reloc] multi marker solve: %zu markers, %zu inliers",
+  ROS_INFO("[aruco_reloc] multi marker solve: %zu markers, %zu inliers",
             observations.size(), result.inlier_indices.size());
+
   return result;
+}
+
+double RelocalizationSolver::computeReprojError(const Eigen::Isometry3d& T_map_cam,
+                                                const MarkerObservation& obs,
+                                                const MarkerItem& map_item) const {
+  // 计算 marker 在 map 下的 3D 角点
+  auto corners_3d = computeMarkerCorners(map_item);
+
+  // 转换到相机坐标系
+  Eigen::Isometry3d T_cam_map = T_map_cam.inverse();
+  std::vector<cv::Point3d> corners_cam;
+  for (const auto& p : corners_3d) {
+    Eigen::Vector3d p_cam = T_cam_map * Eigen::Vector3d(p.x, p.y, p.z);
+    corners_cam.emplace_back(p_cam.x(), p_cam.y(), p_cam.z());
+  }
+
+  // 投影到图像
+  std::vector<cv::Point2d> projected;
+  cv::projectPoints(corners_cam, cv::Vec3d::zeros(), cv::Vec3d::zeros(),
+                    camera_matrix_, dist_coeffs_, projected);
+
+  // 计算平均重投影误差
+  double total_error = 0.0;
+  for (int i = 0; i < 4; ++i) {
+    double dx = projected[i].x - obs.corners[i].x;
+    double dy = projected[i].y - obs.corners[i].y;
+    total_error += std::sqrt(dx * dx + dy * dy);
+  }
+
+  return total_error / 4.0;
 }
 
 std::vector<cv::Point3d> RelocalizationSolver::computeMarkerCorners(

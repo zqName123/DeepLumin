@@ -340,16 +340,15 @@ aggregateMarker(id, T_map_marker, reproj_error)
 
 | 话题名 | 类型 | 说明 |
 |--------|------|------|
-| `/camera/image_raw` | `sensor_msgs/Image` | 相机图像（BGR8） |
-| `/camera/camera_info` | `sensor_msgs/CameraInfo` | 相机内参（仅需一次） |
-| `/localization/slam_odom` | `nav_msgs/Odometry` | SLAM 当前位姿（预留，当前未使用） |
-| `/aruco_reloc/command` | `std_msgs/String` | 控制命令：`"start"` / `"stop"` |
+| `/camera/li_image` | `sensor_msgs/Image` | 相机图像（BGR8） |
+| `/localization/points` | `sensor_msgs/PointCloud2` | 点云（用于位姿验证） |
+| `/localization_v2/relocalization/command` | `std_msgs/String` | 控制命令：`"start"` / `"stop"` |
 
 #### 发布话题（Publishers）
 
 | 话题名 | 类型 | 说明 |
 |--------|------|------|
-| `/aruco_reloc/result` | `deeplumin_msgs/RelocalizationResult` | 重定位结果（含协方差、拒绝原因） |
+| `/localization/relocalization/result` | `deeplumin_msgs/RelocalizationResult` | 重定位结果（含协方差、拒绝原因、点云验证指标） |
 | `/aruco_reloc/pose` | `geometry_msgs/PoseStamped` | 重定位位姿（可视化用） |
 | `/aruco_reloc/status` | `std_msgs/String` | 状态字符串（调试用） |
 
@@ -392,13 +391,11 @@ aggregateMarker(id, T_map_marker, reproj_error)
 
 ```yaml
 # 话题配置
-image_topic: "/camera/image_raw"
-camera_info_topic: "/camera/camera_info"
-slam_odom_topic: "/localization/slam_odom"
-result_topic: "/aruco_reloc/result"
+image_topic: "/camera/li_image"
+result_topic: "/localization/relocalization/result"
 pose_topic: "/aruco_reloc/pose"
 status_topic: "/aruco_reloc/status"
-command_topic: "/aruco_reloc/command"
+command_topic: "/localization_v2/relocalization/command"
 
 # 坐标系
 frame_id: "map"

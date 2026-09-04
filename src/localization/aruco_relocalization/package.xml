@@ -19,6 +19,7 @@
   <depend>tf2</depend>
   <depend>tf2_ros</depend>
   <depend>deeplumin_msgs</depend>
+  <depend>small_gicp</depend>
 
   <export>
     <build_type>catkin</build_type>

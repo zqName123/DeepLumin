@@ -18,6 +18,7 @@
 #include <ros/ros.h>
 
 #include <algorithm>
+#include <cctype>
 #include <cmath>
 #include <stdexcept>
 
@@ -31,7 +32,9 @@ namespace relocalization {
  */
 bool KeyframeDatabase::load(const KeyframeDatabaseConfig& config) {
   config_ = config;
-  poses_ = loadTumPoses(config.pose_file);
+  const bool is_csv = (config.pose_file.size() > 4 && 
+                        config.pose_file.compare(config.pose_file.size() - 4, 4, ".csv") == 0);
+  poses_ = is_csv ? loadCsvPoses(config.pose_file) : loadTumPoses(config.pose_file);
   pose_index_.clear();
   for (std::size_t i = 0; i < poses_.size(); ++i) {
     poses_[i].id = static_cast<int>(i);

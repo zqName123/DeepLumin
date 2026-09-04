@@ -1,18 +1,47 @@
 <!-- offline_mapping.launch -->
-<!-- ArUco 离线建图节点（需同时启动 slam_mapping_v2） -->
+<!-- ArUco 离线建图节点（整合 slam_mapping_v2） -->
 <launch>
   <!-- 参数文件 -->
   <arg name="config_file" default="$(find aruco_relocalization)/config/aruco_relocalization.yaml"/>
-  <rosparam command="load" file="$(arg config_file)" ns="aruco_offline_mapping"/>
+  <arg name="slam_config" default="$(find slam_mapping_v2)/config/slam_mapping_v2.yaml"/>
+  <arg name="slam_odom_config" default="$(find slam_odometry_v2)/config/slam_odometry_v2.yaml"/>
+  <arg name="lio_config" default="$(find slam_odometry_v2)/config/slam_odometry_v2.yaml"/>
 
-  <!-- 覆盖参数 -->
-  <arg name="output_path" default="$(find aruco_relocalization)/config/marker_map.yaml"/>
-  <arg name="path_topic" default="/slam_mapping_v2/path"/>
-  <arg name="image_topic" default="/camera/image_raw"/>
+  <!-- 是否启动 SLAM 建图（默认启动） -->
+  <arg name="start_slam" default="true"/>
+  <!-- 是否启动 RViz（默认不启动，离线建图通常不需要） -->
+  <arg name="rviz" default="true"/>
+
+  <!-- 从配置文件读取 topic（可被命令行参数覆盖） -->
+  <arg name="image_topic" default="/camera/li_image"/>
   <arg name="camera_info_topic" default="/camera/camera_info"/>
+  <arg name="pointcloud_topic" default="/velodyne_points"/>
+  <arg name="path_topic" default="/slam_mapping_v2/path"/>
+  <arg name="output_path" default="$(find aruco_relocalization)/config/marker_map.yaml"/>
+
+  <!-- 启动 SLAM 建图 -->
+  <group if="$(arg start_slam)">
+    <!-- slam_odometry_v2 -->
+    <node pkg="slam_odometry_v2" type="slam_odometry_v2_node" name="slam_odometry_v2" output="screen">
+      <rosparam command="load" file="$(arg slam_odom_config)"/>
+      <param name="node/faster_lio_config_yaml" value="$(arg lio_config)"/>
+    </node>
+
+    <!-- slam_mapping_v2 -->
+    <node pkg="slam_mapping_v2" type="slam_mapping_v2_node" name="slam_mapping_v2" output="screen">
+      <rosparam command="load" file="$(arg slam_config)"/>
+    </node>
+  </group>
+
+  <!-- RViz 可视化（可选） -->
+  <node if="$(arg rviz)" pkg="rviz" type="rviz" name="mapping_rviz"
+    args="-d $(find slam_mapping_v2)/rviz/mapping.rviz"/>
 
   <!-- 离线建图节点 -->
   <node pkg="aruco_relocalization" type="aruco_reloc_offline_mapping_node" name="aruco_offline_mapping" output="screen" respawn="false">
+    <!-- 加载配置文件到节点私有命名空间 -->
+    <rosparam command="load" file="$(arg config_file)"/>
+    <!-- 覆盖参数 -->
     <param name="path_topic" value="$(arg path_topic)"/>
     <param name="image_topic" value="$(arg image_topic)"/>
     <param name="camera_info_topic" value="$(arg camera_info_topic)"/>

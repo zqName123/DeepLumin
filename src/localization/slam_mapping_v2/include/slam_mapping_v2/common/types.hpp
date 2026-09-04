@@ -6,6 +6,7 @@
  */
 
 #include <Eigen/Dense>
+#include <opencv2/core.hpp>
 #include <pcl/point_cloud.h>
 #include <pcl/point_types.h>
 
@@ -71,6 +72,7 @@ struct Keyframe {
   bool has_visual = false;           // 是否包含视觉数据
   double image_timestamp = 0.0;      // 关联的图像时间戳
   int visual_feature_count = 0;      // 视觉特征点数量
+  cv::Mat image;                     // 关键帧图像（用于保存）
 };
 
 struct LoopCandidate {

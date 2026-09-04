@@ -1,13 +1,21 @@
 <!-- aruco_relocalization.launch -->
-<!-- 在线 ArUco 重定位节点 -->
+<!-- 在线 ArUco 重定位节点 + SLAM 建图 -->
 <launch>
   <!-- 参数文件 -->
   <arg name="config_file" default="$(find aruco_relocalization)/config/aruco_relocalization.yaml"/>
-  <rosparam command="load" file="$(arg config_file)" ns="aruco_reloc"/>
+  <arg name="start_slam" default="false"/>
+
+  <!-- 共用配置加载到公有命名空间（相机内参、外参、ArUco 配置） -->
+  <rosparam command="load" file="$(arg config_file)"/>
 
   <!-- 在线重定位节点 -->
   <node pkg="aruco_relocalization" type="aruco_reloc_online_node" name="aruco_reloc_online" output="screen" respawn="false">
-    <!-- 覆盖参数（可选） -->
+    <!-- 节点私有配置加载到私有命名空间 -->
+    <rosparam command="load" file="$(arg config_file)"/>
+    <!-- 覆盖参数 -->
     <param name="marker_map_path" value="$(find aruco_relocalization)/config/marker_map.yaml"/>
   </node>
+
+  <!-- SLAM 建图（可选） -->
+  <include if="$(arg start_slam)" file="$(find slam_mapping_v2)/launch/slam_mapping_v2.launch"/>
 </launch>

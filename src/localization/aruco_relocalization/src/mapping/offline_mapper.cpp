@@ -12,14 +12,42 @@ namespace aruco_reloc {
 bool OfflineMapper::initialize(const OfflineMappingConfig& config) {
   config_ = config;
 
-  // 构造 T_base_cam
-  T_base_cam_ = Eigen::Isometry3d::Identity();
-  T_base_cam_.translation() = config_.extrinsic.translation;
-  T_base_cam_.rotate(config_.extrinsic.rotation);
+  // 构造 T_base_cam = T_base_lidar * T_lidar_cam
+  // T_base_lidar = (lidar_base_to_base)^(-1)
+  Eigen::Isometry3d T_lidar_base_base = Eigen::Isometry3d::Identity();
+  T_lidar_base_base.translation() = config_.lidar_base_to_base.translation;
+  T_lidar_base_base.rotate(config_.lidar_base_to_base.rotation);
+
+  // T_lidar_cam (lidar_to_camera)
+  Eigen::Isometry3d T_lidar_cam = Eigen::Isometry3d::Identity();
+  T_lidar_cam.translation() = config_.extrinsic.translation;
+  T_lidar_cam.rotate(config_.extrinsic.rotation);
+
+  // T_base_cam = T_base_lidar * T_lidar_cam
+  T_base_cam_ = T_lidar_base_base.inverse() * T_lidar_cam;
 
   initialized_ = true;
   ROS_INFO("[aruco_reloc] offline mapper initialized");
+  ROS_INFO("[aruco_reloc] T_base_cam: translation=[%.3f, %.3f, %.3f]",
+           T_base_cam_.translation().x(),
+           T_base_cam_.translation().y(),
+           T_base_cam_.translation().z());
   return true;
+}
+
+void OfflineMapper::setCameraIntrinsics(const cv::Mat& camera_matrix, const cv::Mat& dist_coeffs) {
+  std::lock_guard<std::mutex> lock(mutex_);
+
+  if (camera_info_received_) {
+    ROS_WARN("[offline_mapping] camera info already received, ignoring config file values");
+    return;
+  }
+
+  DetectorConfig det_cfg = config_.detector;
+  detector_.initialize(det_cfg, camera_matrix, dist_coeffs);
+
+  camera_info_received_ = true;
+  ROS_INFO("[offline_mapping] camera intrinsics loaded from config file, detector ready");
 }
 
 void OfflineMapper::onPath(const nav_msgs::Path::ConstPtr& msg) {
@@ -80,9 +108,14 @@ void OfflineMapper::onCameraInfo(const sensor_msgs::CameraInfo::ConstPtr& msg) {
 void OfflineMapper::onImage(const sensor_msgs::Image::ConstPtr& msg) {
   std::lock_guard<std::mutex> lock(mutex_);
 
-  if (!camera_info_received_ || keyframe_poses_.empty()) {
-    ROS_WARN_THROTTLE(5.0, "[offline_mapping] waiting for camera info and keyframe poses");
+  if (!camera_info_received_) {
+    ROS_WARN_THROTTLE(5.0, "[offline_mapping] waiting for camera info");
     return;
+  }
+
+  // 如果没有 SLAM 轨迹，使用单位矩阵作为位姿（用于测试）
+  if (keyframe_poses_.empty()) {
+    ROS_WARN_THROTTLE(5.0, "[offline_mapping] no SLAM trajectory, using identity pose for testing");
   }
 
   // 1. 检测 marker
@@ -94,6 +127,25 @@ void OfflineMapper::onImage(const sensor_msgs::Image::ConstPtr& msg) {
     return;
   }
 
+  // 图像旋转处理（与 slam_mapping_v2 保持一致）
+  if (config_.image_rotation != 0) {
+    cv::RotateFlags flag;
+    switch (config_.image_rotation) {
+      case 1:
+        flag = cv::ROTATE_90_CLOCKWISE;
+        break;
+      case 2:
+        flag = cv::ROTATE_180;
+        break;
+      case 3:
+        flag = cv::ROTATE_90_COUNTERCLOCKWISE;
+        break;
+      default:
+        flag = cv::ROTATE_90_COUNTERCLOCKWISE;
+    }
+    cv::rotate(image, image, flag);
+  }
+
   double image_time = msg->header.stamp.toSec();
   auto detection = detector_.detect(image, image_time);
 
@@ -101,18 +153,22 @@ void OfflineMapper::onImage(const sensor_msgs::Image::ConstPtr& msg) {
     return;
   }
 
-  // 2. 找最近的关键帧位姿
-  const KeyframePose* best_kf = findNearestKeyframe(image_time);
-  if (!best_kf) {
-    ROS_WARN_THROTTLE(2.0, "[offline_mapping] no suitable keyframe found for time %.3f",
-                      image_time);
-    return;
-  }
+  // 2. 找最近的关键帧位姿（如果没有 SLAM 轨迹，使用单位矩阵）
+  Eigen::Isometry3d T_map_base = Eigen::Isometry3d::Identity();
+  if (!keyframe_poses_.empty()) {
+    const KeyframePose* best_kf = findNearestKeyframe(image_time);
+    if (!best_kf) {
+      ROS_WARN_THROTTLE(2.0, "[offline_mapping] no suitable keyframe found for time %.3f",
+                        image_time);
+      return;
+    }
 
-  double time_diff = std::abs(best_kf->timestamp - image_time);
-  if (time_diff > config_.time_sync_tolerance) {
-    ROS_WARN_THROTTLE(2.0, "[offline_mapping] time diff too large: %.3f sec", time_diff);
-    return;
+    double time_diff = std::abs(best_kf->timestamp - image_time);
+    if (time_diff > config_.time_sync_tolerance) {
+      ROS_WARN_THROTTLE(2.0, "[offline_mapping] time diff too large: %.3f sec", time_diff);
+      return;
+    }
+    T_map_base = best_kf->T_map_base;
   }
 
   // 3. 计算每个 marker 在 map 下的位姿并聚合
@@ -121,7 +177,7 @@ void OfflineMapper::onImage(const sensor_msgs::Image::ConstPtr& msg) {
     Eigen::Isometry3d T_cam_marker = obs.T_cam_marker;
 
     // T_map_marker = T_map_base * T_base_cam * T_cam_marker
-    Eigen::Isometry3d T_map_marker = best_kf->T_map_base * T_base_cam_ * T_cam_marker;
+    Eigen::Isometry3d T_map_marker = T_map_base * T_base_cam_ * T_cam_marker;
 
     aggregateMarker(obs.id, T_map_marker, obs.reprojection_error);
   }

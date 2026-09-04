@@ -19,22 +19,25 @@ find_package(catkin REQUIRED COMPONENTS
   tf2
   tf2_ros
   deeplumin_msgs
+  small_gicp
 )
 
 find_package(OpenCV REQUIRED COMPONENTS core aruco calib3d imgproc)
+find_package(PCL ${DEEPLUMIN_PCL_VERSION} EXACT REQUIRED COMPONENTS common io filters kdtree)
 find_package(Eigen3 REQUIRED)
 find_package(yaml-cpp REQUIRED)
 
 catkin_package(
   INCLUDE_DIRS include
   LIBRARIES aruco_reloc_core
-  CATKIN_DEPENDS cv_bridge geometry_msgs image_transport nav_msgs roscpp sensor_msgs std_msgs std_srvs tf2 tf2_ros deeplumin_msgs
+  CATKIN_DEPENDS cv_bridge geometry_msgs image_transport nav_msgs roscpp sensor_msgs std_msgs std_srvs tf2 tf2_ros deeplumin_msgs small_gicp
 )
 
 include_directories(
   include
   ${catkin_INCLUDE_DIRS}
   ${OpenCV_INCLUDE_DIRS}
+  ${PCL_INCLUDE_DIRS}
   ${EIGEN3_INCLUDE_DIRS}
 )
 
@@ -45,17 +48,23 @@ add_library(aruco_reloc_core
   src/solver/relocalization_solver.cpp
   src/validator/relocalization_validator.cpp
   src/ros/param_loader.cpp
+  src/visualizer/marker_visualizer.cpp
+  src/visualizer/debug_visualizer.cpp
+  src/offline_mapping_v2/offline_mapping_v2.cpp
+  src/verifier/pointcloud_verifier.cpp
 )
 add_dependencies(aruco_reloc_core ${catkin_EXPORTED_TARGETS})
 target_link_libraries(aruco_reloc_core
   ${catkin_LIBRARIES}
   ${OpenCV_LIBRARIES}
+  ${PCL_LIBRARIES}
   yaml-cpp
 )
 target_include_directories(aruco_reloc_core PUBLIC
   include
   ${catkin_INCLUDE_DIRS}
   ${OpenCV_INCLUDE_DIRS}
+  ${PCL_INCLUDE_DIRS}
   ${EIGEN3_INCLUDE_DIRS}
 )
 
@@ -72,6 +81,12 @@ add_executable(aruco_reloc_offline_mapping_node src/ros/offline_mapping_node.cpp
 add_dependencies(aruco_reloc_offline_mapping_node ${catkin_EXPORTED_TARGETS})
 target_link_libraries(aruco_reloc_offline_mapping_node aruco_reloc_core ${catkin_LIBRARIES} ${OpenCV_LIBRARIES})
 target_compile_options(aruco_reloc_offline_mapping_node PRIVATE -O3 -DNDEBUG)
+
+# Offline mapping V2 node
+add_executable(offline_mapping_v2_node src/ros/offline_mapping_v2_node.cpp)
+add_dependencies(offline_mapping_v2_node ${catkin_EXPORTED_TARGETS})
+target_link_libraries(offline_mapping_v2_node aruco_reloc_core ${catkin_LIBRARIES} ${OpenCV_LIBRARIES})
+target_compile_options(offline_mapping_v2_node PRIVATE -O3 -DNDEBUG)
 
 install(TARGETS aruco_reloc_core aruco_reloc_online_node aruco_reloc_offline_mapping_node
   ARCHIVE DESTINATION ${CATKIN_PACKAGE_LIB_DESTINATION}

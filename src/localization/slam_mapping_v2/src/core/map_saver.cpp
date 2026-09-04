@@ -1,8 +1,10 @@
 #include "slam_mapping_v2/core/map_saver.hpp"
 
+#include <opencv2/imgcodecs.hpp>
 #include <pcl/common/transforms.h>
 #include <pcl/filters/voxel_grid.h>
 #include <pcl/io/pcd_io.h>
+#include <ros/ros.h>
 
 #include <filesystem>
 #include <fstream>
@@ -33,7 +35,9 @@ bool MapSaver::saveAll(const SaveRequest& req, const std::vector<Keyframe>& keyf
   if (req.save_keyframes) {
     result->keyframe_dir =
         (std::filesystem::path(req.output_dir) / config_.keyframe_dir_name).string();
-    saveKeyframes(result->keyframe_dir, keyframes);
+    const auto images_dir =
+        (std::filesystem::path(req.output_dir) / config_.images_dir_name).string();
+    saveKeyframes(result->keyframe_dir, images_dir, keyframes);
   }
   if (req.save_keyframe_poses) {
     result->keyframe_pose_path =
@@ -82,24 +86,47 @@ bool MapSaver::savePcd(const std::string& path, const PointCloud& cloud) const {
   return pcl::io::savePCDFileBinary(path, cloud) == 0;
 }
 
-bool MapSaver::saveKeyframes(const std::string& dir,
+bool MapSaver::saveKeyframes(const std::string& dir, const std::string& images_dir,
                              const std::vector<Keyframe>& keyframes) const {
   std::filesystem::create_directories(dir);
+  std::filesystem::create_directories(images_dir);
+
+  int saved_cloud = 0;
+  int saved_image = 0;
   bool ok = true;
+
   for (const auto& kf : keyframes) {
-    if (!kf.cloud || kf.cloud->empty()) continue;
-    // 关键帧点云在 odom 系，保存时变换到 base_link 系
-    // 拼接时只需 T(pose_map) 即可还原到 map 全局坐标
-    Eigen::Matrix4d t_odom = Eigen::Matrix4d::Identity();
-    t_odom.block<3, 3>(0, 0) = kf.pose_odom.orientation.normalized().toRotationMatrix();
-    t_odom.block<3, 1>(0, 3) = kf.pose_odom.position;
-    const Eigen::Matrix4f tf_odom_inv = t_odom.inverse().cast<float>();
-    PointCloud cloud_base;
-    transformCloud(*kf.cloud, tf_odom_inv, &cloud_base);
-    const auto path =
-        (std::filesystem::path(dir) / (std::to_string(kf.id) + ".pcd")).string();
-    ok = savePcd(path, cloud_base) && ok;
+    // 保存点云
+    if (kf.cloud && !kf.cloud->empty()) {
+      // 关键帧点云在 odom 系，保存时变换到 base_link 系
+      // 拼接时只需 T(pose_map) 即可还原到 map 全局坐标
+      Eigen::Matrix4d t_odom = Eigen::Matrix4d::Identity();
+      t_odom.block<3, 3>(0, 0) = kf.pose_odom.orientation.normalized().toRotationMatrix();
+      t_odom.block<3, 1>(0, 3) = kf.pose_odom.position;
+      const Eigen::Matrix4f tf_odom_inv = t_odom.inverse().cast<float>();
+      PointCloud cloud_base;
+      transformCloud(*kf.cloud, tf_odom_inv, &cloud_base);
+      const auto cloud_path =
+          (std::filesystem::path(dir) / (std::to_string(kf.id) + ".pcd")).string();
+      if (savePcd(cloud_path, cloud_base)) {
+        saved_cloud++;
+      } else {
+        ok = false;
+      }
+    }
+
+    // 保存图像
+    if (kf.has_visual && !kf.image.empty()) {
+      const auto image_path =
+          (std::filesystem::path(images_dir) / (std::to_string(kf.id) + ".png")).string();
+      if (cv::imwrite(image_path, kf.image)) {
+        saved_image++;
+      }
+    }
   }
+
+  ROS_INFO("[slam_mapping_v2] saved %d keyframes (cloud: %d, image: %d) to %s",
+           static_cast<int>(keyframes.size()), saved_cloud, saved_image, dir.c_str());
   return ok;
 }
 

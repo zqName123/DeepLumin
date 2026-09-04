@@ -148,6 +148,26 @@ int KdtreeGicpLoopDetector::findBestHistoryCandidateIndex(const std::vector<Keyf
   std::vector<float> sqdists;
   kdtree_history_poses_->radiusSearch(cloud_history_poses_->back(), search_radius, ids, sqdists, 0);
 
+  // ---- 诊断日志 ----
+  {
+    const auto& cur = cloud_history_poses_->back();
+    debugLoopLog("radiusSearch: current=(" + std::to_string(cur.x) + "," +
+                 std::to_string(cur.y) + "," + std::to_string(cur.z) +
+                 ") radius=" + std::to_string(search_radius) +
+                 " candidates=" + std::to_string(ids.size()));
+    // 找第一个不是当前帧的历史候选
+    for (std::size_t j = 0; j < ids.size(); ++j) {
+      if (ids[j] >= 0 && ids[j] < current_idx) {
+        debugLoopLog("  nearest history: id=" + std::to_string(ids[j]) +
+                     " sqdist=" + std::to_string(sqdists[j]) +
+                     " required_gap=" + std::to_string(std::max(cfg_.min_index_gap, cfg_.closest_id_th)) +
+                     " time_diff=" + std::to_string(std::abs(kfs[ids[j]].timestamp - kfs.back().timestamp)));
+        break;
+      }
+    }
+  }
+  // ---- 诊断日志结束 ----
+
   int best_history_idx = -1;
   float best_sqdist = std::numeric_limits<float>::max();
   const int required_index_gap = std::max(cfg_.min_index_gap, cfg_.closest_id_th);
@@ -220,13 +240,49 @@ bool KdtreeGicpLoopDetector::alignCandidateSubmaps(const std::vector<Keyframe>& 
     return false;
   }
 
+  // 用两个关键帧的 pose_map 位姿差作为 ICP 初始猜测，
+  // 解决回到起点时漂移大、单位阵初始值差导致 ICP 收敛失败的问题
+  const Eigen::Matrix4f T_cur = poseToMatrix(kfs[current_idx].pose_map).cast<float>();
+  const Eigen::Matrix4f T_hist = poseToMatrix(kfs[history_idx].pose_map).cast<float>();
+  const Eigen::Matrix4f init_guess = T_hist.inverse() * T_cur;
+
   PointCloud aligned;
   icp_->setInputSource(cur_norm);
   icp_->setInputTarget(hist_norm);
+  // icp_->align(aligned, init_guess);
   icp_->align(aligned, Eigen::Matrix4f::Identity());
   *score = icp_->getFitnessScore();
-  std::cout << "[Loop] ICP fitness score: " << *score << " converged: " << icp_->hasConverged() << std::endl;
+
+  // 统计内点率：变换后源点云中有多少点在目标点云 maxCorrespondenceDistance 内有对应
+  float inlier_ratio = 0.0f;
+  {
+    PointCloud transformed;
+    pcl::transformPointCloud(*cur_norm, transformed, icp_->getFinalTransformation());
+    pcl::KdTreeFLANN<PointType> target_tree;
+    target_tree.setInputCloud(hist_norm);
+    const float max_dist_sq = 20.0f * 20.0f;  // 与 setMaxCorrespondenceDistance 一致
+    int inlier_count = 0;
+    std::vector<int> nn_ids(1);
+    std::vector<float> nn_dists(1);
+    for (const auto& pt : transformed.points) {
+      if (target_tree.nearestKSearch(pt, 1, nn_ids, nn_dists) > 0 &&
+          nn_dists[0] < max_dist_sq) {
+        ++inlier_count;
+      }
+    }
+    inlier_ratio = transformed.empty() ? 0.0f
+        : static_cast<float>(inlier_count) / static_cast<float>(transformed.size());
+  }
+  debugLoopLog("ICP result: score=" + std::to_string(*score) +
+               " converged=" + std::to_string(icp_->hasConverged()) +
+               " inlier_ratio=" + std::to_string(inlier_ratio) +
+               " src_pts=" + std::to_string(cur_norm->size()) +
+               " tgt_pts=" + std::to_string(hist_norm->size()));
+
   if (!icp_->hasConverged() || !std::isfinite(*score) || *score > cfg_.icp_fitness_thresh) {
+    debugLoopLog("ICP rejected: converged=" + std::to_string(icp_->hasConverged()) +
+                 " score=" + std::to_string(*score) +
+                 " thresh=" + std::to_string(cfg_.icp_fitness_thresh));
     return false;
   }
   const Eigen::Matrix4d T_hist_cur = icp_->getFinalTransformation().cast<double>();

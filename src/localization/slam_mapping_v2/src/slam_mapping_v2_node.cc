@@ -22,6 +22,7 @@
 #include <ros/ros.h>
 #include <sensor_msgs/CompressedImage.h>
 #include <sensor_msgs/Image.h>
+#include <opencv2/imgproc.hpp>
 #include <sensor_msgs/PointCloud2.h>
 #include <std_srvs/Trigger.h>
 #include <tf2_ros/transform_broadcaster.h>
@@ -48,9 +49,8 @@ class SlamMappingV2Node {
     scan_sub_ = nh.subscribe(cfg_.input.scan_topic, 200, &SlamMappingV2Node::onScan, this);
     gnss_sub_ = nh.subscribe(cfg_.input.gnss_topic, 1000, &SlamMappingV2Node::onGnss, this);
 
-    // 视觉回环：条件订阅图像话题
-    if (cfg_.loop_closure.detector_type == "visual" ||
-        cfg_.loop_closure.detector_type == "hybrid") {
+    // 订阅图像话题（用于视觉回环和关键帧图像保存）
+    if (!cfg_.input.image_topic.empty()) {
       // 判断是否为压缩图像话题
       if (cfg_.input.image_topic.find("compressed") != std::string::npos) {
         image_compressed_sub_ = nh.subscribe(cfg_.input.image_topic, 10,
@@ -71,6 +71,14 @@ class SlamMappingV2Node {
     reset_srv_ = nh.advertiseService(cfg_.services.reset, &SlamMappingV2Node::handleReset, this);
     get_status_srv_ =
         nh.advertiseService(cfg_.services.get_status, &SlamMappingV2Node::handleGetStatus, this);
+
+    // 调试图像发布（仅视觉或混合模式时启用）
+    if (cfg_.loop_closure.detector_type == "visual" ||
+        cfg_.loop_closure.detector_type == "hybrid") {
+      debug_image_pub_ = nh.advertise<sensor_msgs::Image>(
+          "/slam_mapping_v2/debug_image", 1);
+      ROS_INFO("[slam_mapping_v2] Debug image topic: /slam_mapping_v2/debug_image");
+    }
 
     if (cfg_.runtime.auto_start) {
       StartRequest req;
@@ -141,6 +149,12 @@ class SlamMappingV2Node {
       ROS_ERROR("[slam_mapping_v2] cv_bridge exception: %s", e.what());
       return;
     }
+
+    ROS_INFO_THROTTLE(5.0, "[slam_mapping_v2] Image received: %dx%d ch=%d stamp=%.3f",
+                      image.cols, image.rows, image.channels(), msg->header.stamp.toSec());
+
+    publishDebugImage(image, msg->header.stamp);
+    cv::rotate(image, image, cv::ROTATE_90_COUNTERCLOCKWISE);
     runtime_.feedImage(image, msg->header.stamp.toSec());
   }
 
@@ -156,6 +170,12 @@ class SlamMappingV2Node {
       ROS_ERROR("[slam_mapping_v2] Failed to decode compressed image");
       return;
     }
+
+    ROS_INFO_THROTTLE(5.0, "[slam_mapping_v2] Compressed image received: %dx%d ch=%d stamp=%.3f",
+                      image.cols, image.rows, image.channels(), msg->header.stamp.toSec());
+
+    publishDebugImage(image, ros::Time(msg->header.stamp));
+    cv::rotate(image, image, cv::ROTATE_90_COUNTERCLOCKWISE);
     runtime_.feedImage(image, msg->header.stamp.toSec());
   }
 
@@ -181,6 +201,49 @@ class SlamMappingV2Node {
         pubs_.publishKeyframeMarkers(kfs);
       }
     }
+  }
+
+  /**
+   * @brief 发布局部调试图像：逆时针旋转90°恢复正立视角 + 绘制状态信息
+   *
+   * 相机顺时针绕x轴旋转90°安装，图像原始方向是侧躺的。
+   * 此函数将图像逆时针旋转90°恢复正立，并在左上角叠加状态文字，
+   * 发布到 /slam_mapping_v2/debug_image，方便在 rviz 中查看。
+   */
+  void publishDebugImage(const cv::Mat& gray, const ros::Time& stamp) {
+    if (debug_image_pub_.getNumSubscribers() == 0) return;
+
+    // 逆时针旋转90°恢复正立视角
+    cv::Mat upright;
+    cv::rotate(gray, upright, cv::ROTATE_90_COUNTERCLOCKWISE);
+
+    // 转 BGR 以便叠加彩色文字
+    cv::Mat vis;
+    cv::cvtColor(upright, vis, cv::COLOR_GRAY2BGR);
+
+    // 绘制状态信息
+    const auto st = runtime_.status();
+    char buf[128];
+    std::snprintf(buf, sizeof(buf), "Size: %dx%d -> %dx%d (CCW90)",
+                  gray.cols, gray.rows, upright.cols, upright.rows);
+    cv::putText(vis, buf, {10, 40}, cv::FONT_HERSHEY_SIMPLEX, 1.2, {0, 255, 0}, 3);
+
+    std::snprintf(buf, sizeof(buf), "KFs: %zu  Loops: %lu",
+                  runtime_.keyframes().size(), st.loop_count);
+    cv::putText(vis, buf, {10, 90}, cv::FONT_HERSHEY_SIMPLEX, 1.2, {0, 255, 0}, 3);
+
+    std::snprintf(buf, sizeof(buf), "K: fx=%.0f fy=%.0f cx=%.0f cy=%.0f",
+                  cfg_.loop_closure.visual.camera.fx,
+                  cfg_.loop_closure.visual.camera.fy,
+                  cfg_.loop_closure.visual.camera.cx,
+                  cfg_.loop_closure.visual.camera.cy);
+    cv::putText(vis, buf, {10, 140}, cv::FONT_HERSHEY_SIMPLEX, 1.0, {255, 200, 0}, 2);
+
+    // 发布
+    sensor_msgs::ImagePtr msg = cv_bridge::CvImage(std_msgs::Header(), "bgr8", vis).toImageMsg();
+    msg->header.stamp = stamp;
+    msg->header.frame_id = "camera_link";
+    debug_image_pub_.publish(msg);
   }
 
   void publishMapOdomTf(double stamp) {
@@ -262,6 +325,7 @@ class SlamMappingV2Node {
   ros::Subscriber gnss_sub_;
   ros::Subscriber image_sub_;
   ros::Subscriber image_compressed_sub_;
+  ros::Publisher debug_image_pub_;
   ros::ServiceServer start_srv_;
   ros::ServiceServer stop_srv_;
   ros::ServiceServer save_srv_;

@@ -67,6 +67,51 @@ std::vector<Pose> loadTumPoses(const std::string& path) {
   return poses;
 }
 
+/**
+ * @brief 读取 CSV 格式位姿文件
+ *
+ * 格式：id,timestamp,x,y,z,qx,qy,qz,qw（逗号分隔，每行一个关键帧）
+ * 首行可选表头（以非数字/正负号开头则跳过）。
+ * keyframe_id 由文件中的 id 列指定，需与 key_point_frame/<id>.pcd 对齐。
+ */
+std::vector<Pose> loadCsvPoses(const std::string& path) {
+  std::ifstream in(path);
+  if (!in.is_open()) {
+    throw std::runtime_error("failed to open pose file: " + path);
+  }
+
+  std::vector<Pose> poses;
+  std::string line;
+  bool first_line = true;
+  while (std::getline(in, line)) {
+    if (line.empty()) {
+      continue;
+    }
+    if (first_line) {
+      first_line = false;
+      const char c = line[0];
+      if (!std::isdigit(static_cast<unsigned char>(c)) && c != '-' && c != '+') {
+        continue;
+      }
+    }
+    std::replace(line.begin(), line.end(), ',', ' ');
+    std::istringstream iss(line);
+    Pose pose;
+    int csv_id = -1;
+    double qx = 0.0, qy = 0.0, qz = 0.0, qw = 1.0;
+    if (!(iss >> csv_id >> pose.timestamp >> pose.t.x() >> pose.t.y() >> pose.t.z() >> qx >> qy >> qz >> qw)) {
+      continue;
+    }
+    if (csv_id < 0) {
+      continue;
+    }
+    pose.id = csv_id;
+    pose.q = Eigen::Quaterniond(qw, qx, qy, qz).normalized();
+    poses.push_back(pose);
+  }
+  return poses;
+}
+
 PoseLookupResult lookupPoseByTimestamp(const std::vector<Pose>& poses, double timestamp, double max_diff) {
   PoseLookupResult result;
   if (poses.empty()) {

@@ -1,0 +1,12 @@
+<!-- offline_mapping_v2.launch -->
+<!-- 离线建图 V2：读取关键帧图像和位姿，遍历检测 marker，输出 marker map -->
+<launch>
+  <!-- 参数文件 -->
+  <arg name="config_file" default="$(find aruco_relocalization)/config/aruco_relocalization.yaml"/>
+
+  <!-- 共用配置加载到公有命名空间（相机内参、外参、ArUco 配置） -->
+  <rosparam command="load" file="$(arg config_file)"/>
+
+  <!-- 离线建图节点 -->
+  <node pkg="aruco_relocalization" type="offline_mapping_v2_node" name="offline_mapping_v2" output="screen"/>
+</launch>

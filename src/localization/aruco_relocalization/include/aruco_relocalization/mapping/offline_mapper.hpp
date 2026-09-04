@@ -26,10 +26,13 @@ class OfflineMapper {
  public:
   bool initialize(const OfflineMappingConfig& config);
 
+  /// 从配置文件设置相机内参（如果没有 camera_info topic）
+  void setCameraIntrinsics(const cv::Mat& camera_matrix, const cv::Mat& dist_coeffs);
+
   /// 接收关键帧轨迹
   void onPath(const nav_msgs::Path::ConstPtr& msg);
 
-  /// 接收图像
+  /// 接收图像（自动处理旋转）
   void onImage(const sensor_msgs::Image::ConstPtr& msg);
 
   /// 接收相机内参

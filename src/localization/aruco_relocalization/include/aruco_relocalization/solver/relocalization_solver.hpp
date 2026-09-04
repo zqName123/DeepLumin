@@ -18,6 +18,7 @@ namespace aruco_reloc {
 
 struct SolverConfig {
   int min_markers = 1;               // 最小有效 marker 数
+  bool use_multi_marker = false;     // 是否使用多 marker 联合 PnP 解算
   bool use_ransac = true;            // 是否使用 RANSAC
   int ransac_iterations = 100;       // RANSAC 迭代次数
   double ransac_reproj_error = 8.0;  // RANSAC 重投影误差阈值（pixels）
@@ -29,8 +30,10 @@ struct SolveResult {
   Eigen::Isometry3d T_map_cam = Eigen::Isometry3d::Identity();  // 相机在 map 下的位姿
   Eigen::Isometry3d T_map_base = Eigen::Isometry3d::Identity(); // base_link 在 map 下的位姿
   int num_markers_used = 0;
-  std::vector<int> marker_ids;
+  int marker_id = -1;                // 单 marker 解算时的 marker ID
+  std::vector<int> marker_ids;       // 多 marker 时的 ID 列表
   std::vector<int> inlier_indices;
+  double reproj_error = 1e9;         // 重投影误差（用于选择最优结果）
   double solve_time_ms = 0.0;
   std::string failure_reason;
 };
@@ -40,17 +43,22 @@ class RelocalizationSolver {
   bool initialize(const SolverConfig& config, const cv::Mat& camera_matrix,
                   const cv::Mat& dist_coeffs, const Eigen::Isometry3d& T_base_cam);
 
-  /// 执行重定位求解
+  /// 执行重定位求解（单 marker 为主，可选多 marker 联合解算）
   SolveResult solve(const FrameDetection& detection, const MarkerMapLoader& map) const;
 
- private:
-  /// 单 marker 求解
+  /// 单 marker 求解（公开接口，供外部单独调用）
   SolveResult solveSingleMarker(const MarkerObservation& obs,
                                 const MarkerItem& map_item) const;
 
+ private:
   /// 多 marker 联合 PnP 求解
   SolveResult solveMultiMarker(const std::vector<MarkerObservation>& observations,
                                const std::vector<MarkerItem>& map_items) const;
+
+  /// 计算单 marker 重投影误差
+  double computeReprojError(const Eigen::Isometry3d& T_map_cam,
+                            const MarkerObservation& obs,
+                            const MarkerItem& map_item) const;
 
   /// 计算 marker 在 map 下的 3D 角点
   std::vector<cv::Point3d> computeMarkerCorners(const MarkerItem& item) const;

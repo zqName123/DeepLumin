@@ -163,6 +163,7 @@ struct MapSaverConfig {
   std::string trajectory_filename = "trajectory.csv";
   std::string keyframe_pose_filename = "keyframes.csv";
   std::string keyframe_dir_name = "keyframes";
+  std::string images_dir_name = "images";
   std::string loop_result_dir_name = "loop_results";
   std::string loop_pairs_filename = "loop_pairs.csv";
   std::string loop_current_submap_filename = "latest_loop_current_submap.pcd";

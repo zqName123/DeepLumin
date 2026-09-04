@@ -38,6 +38,7 @@ struct PoseLookupResult {
 };
 
 std::vector<Pose> loadTumPoses(const std::string& path);
+std::vector<Pose> loadCsvPoses(const std::string& path);
 PoseLookupResult lookupPoseByTimestamp(const std::vector<Pose>& poses, double timestamp, double max_diff);
 CloudPtr cloudFromRosMsg(const sensor_msgs::PointCloud2& msg);
 std::string joinPath(const std::string& a, const std::string& b);

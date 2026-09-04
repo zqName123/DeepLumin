@@ -69,7 +69,7 @@
 <launch>
   <arg name="config" default="$(find relocalization)/config/relocalization.yaml"/>
   <arg name="rviz" default="true"/>
-  <arg name="bag_file" default="/home/hhy/2004ros/data/2026-07-14-11-17-21.bag"/>
+  <arg name="bag_file" default="/home/hhy/2004ros/data/2026-08-31-15-51-24.bag"/>
   <arg name="bag_lidar_topic" default="/ouster/points"/>
   <arg name="bag_cloud_stride" default="10"/>
   <arg name="max_queries" default="20"/>

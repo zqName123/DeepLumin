@@ -449,6 +449,39 @@ bool MappingRuntime::processOnce() {
     if (cfg_.loop_closure.gnss.enable) {
       associateGnssToKeyframe(&kf);
     }
+
+    // 保存最新图像到关键帧（用于离线 marker map 构建）
+    {
+      std::lock_guard<std::mutex> img_lock(image_mutex_);
+      ROS_INFO_THROTTLE(2.0, "[Keyframe] kf_ts=%.3f image_queue_size=%zu",
+                        kf.timestamp, image_queue_.size());
+      if (!image_queue_.empty()) {
+        // 找到时间戳最接近的图像
+        auto best_it = image_queue_.begin();
+        double best_dt = std::abs(best_it->second - kf.timestamp);
+        for (auto it = image_queue_.begin(); it != image_queue_.end(); ++it) {
+          double dt = std::abs(it->second - kf.timestamp);
+          if (dt < best_dt) {
+            best_dt = dt;
+            best_it = it;
+          }
+        }
+        ROS_INFO_THROTTLE(2.0, "[Keyframe] best_dt=%.3f img_ts=%.3f kf_ts=%.3f",
+                          best_dt, best_it->second, kf.timestamp);
+        if (best_dt < 0.1) {  // 100ms 容差
+          kf.has_visual = true;
+          kf.image_timestamp = best_it->second;
+          kf.image = best_it->first.clone();
+          ROS_INFO_THROTTLE(2.0, "[Keyframe] saved image for kf %d, img_size=%dx%d",
+                            kf.id, kf.image.cols, kf.image.rows);
+        } else {
+          ROS_WARN_THROTTLE(2.0, "[Keyframe] no matching image: best_dt=%.3f > 0.1", best_dt);
+        }
+      } else {
+        ROS_WARN_THROTTLE(2.0, "[Keyframe] image_queue is empty");
+      }
+    }
+
     last_keyframe_ = kf;
     // 将关键帧加入待处理队列，通知后端线程
     {
@@ -562,12 +595,13 @@ void MappingRuntime::backendLoop() {
         }
         // 执行位姿图优化
         optimizer_.optimize(&keyframes_);
+        // 用优化后的位姿重建可视化地图（map 系降采样缓存）
+        {
+          std::lock_guard<std::mutex> map_lock(map_mutex_);
+          global_map_.rebuild(keyframes_);
+        }
       }
-      // 用优化后的位姿重建可视化地图（map 系降采样缓存）
-      {
-        std::lock_guard<std::mutex> map_lock(map_mutex_);
-        global_map_.rebuild(keyframes_);
-      }
+      
       // 记录最新关键帧
       if (!keyframes_.empty()) latest_kf = &keyframes_.back();
       ROS_INFO_THROTTLE(1.0, "[slam_mapping_v2] backend merged: kfs=%zu loops=%zu gnss_factors=%zu",
@@ -856,7 +890,6 @@ void MappingRuntime::visualFeatLoop() {
           feat_buffer_->insert(frame);
           ROS_INFO_THROTTLE(2.0, "[VisualFeat] Extracted kf %d: img_ts=%.3f kf_ts=%.3f dt=%.3fs keypoints=%zu buf_size=%zu",
                             kf_id, ts, kf_ts, ts - kf_ts, frame.keypoints.size(), feat_buffer_->size());
-              
         }
       } else {
         double latest_kf_ts = -1;

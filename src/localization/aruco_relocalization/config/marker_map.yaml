@@ -1,21 +1,50 @@
-# marker_map.yaml 示例
-# 坐标系：map（全局坐标系）
-# 由 offline_mapping_node 生成
-
-frame_id: "map"
-source_pose_topic: "/slam_mapping_v2/path"
-generation_time: "2026-08-26 10:30:00"
-
+frame_id: map
+source: offline_mapping_v2
+generation_time: 1788423578.653360
+config:
+  camera_matrix:
+    - 960
+    - 0
+    - 510
+    - 0
+    - 960
+    - 960
+    - 0
+    - 0
+    - 1
+  marker_size: 0.2
+  dictionary: DICT_5X5_1000
 markers:
-  # 示例 marker，实际使用时由离线建图生成
-  # - id: 1
-  #   x: 1.234
-  #   y: 2.345
-  #   z: 0.567
-  #   qw: 0.707
-  #   qx: 0.0
-  #   qy: 0.0
-  #   qz: 0.707
-  #   size: 0.2
-  #   observation_count: 42
-  #   mean_reproj_error: 1.23
+  - id: 0
+    x: 4.873225897478353
+    y: -14.3013874729954
+    z: 0.6225238897446017
+    qw: 0.5423191236212135
+    qx: 0.4062008638139144
+    qy: 0.4622639026219926
+    qz: 0.5720165301145009
+    size: 0.2
+    observation_count: 4
+    mean_reproj_error: 77.74229840316788
+    keyframe_ids:
+      - 45
+      - 46
+      - 47
+      - 48
+  - id: 1
+    x: 5.018888165348176
+    y: -15.02618318111683
+    z: 0.657642853982943
+    qw: 0.5816578900248377
+    qx: -0.4737544082841558
+    qy: 0.4175807851890702
+    qz: -0.512695960042658
+    size: 0.2
+    observation_count: 5
+    mean_reproj_error: 73.6018564985358
+    keyframe_ids:
+      - 44
+      - 45
+      - 46
+      - 47
+      - 48

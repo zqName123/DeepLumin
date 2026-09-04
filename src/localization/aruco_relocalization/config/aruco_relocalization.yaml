@@ -1,13 +1,47 @@
 # aruco_relocalization 配置文件
+# =============================================================================
+# 结构说明：
+#   共用配置（公有命名空间）：camera_matrix / dist_coeffs / extrinsic / aruco / image_rotation
+#   节点私有配置（私有命名空间）：话题 / 校验器 / 求解器 / 点云验证
+# =============================================================================
 
-# 话题配置
-image_topic: "/camera/image_raw"
-camera_info_topic: "/camera/camera_info"
-slam_odom_topic: "/localization/slam_odom"
-result_topic: "/aruco_reloc/result"
+# ==================== 共用配置 ====================
+
+# 图像旋转配置（离线建图和在线重定位共用）
+# 0: 不旋转, 1: 顺时针90°, 2: 180°, 3: 逆时针90°
+image_rotation: 3  # 逆时针90°，与相机物理安装一致
+
+# 相机内参（离线建图和在线重定位共用）
+camera_matrix: [960.0, 0.0, 510.0, 0.0, 960.0, 960.0, 0.0, 0.0, 1.0]
+dist_coeffs: [0.0, 0.0, 0.0, 0.0, 0.0]
+
+# 相机外参（离线建图和在线重定位共用）
+# T_base_camera = T_base_lidar * T_lidar_camera
+extrinsic:
+  # base_link 到 lidar 的变换（通常为单位矩阵，如果两者重合）
+  base_to_lidar:
+    translation: [0.0, 0.0, 0.0]
+    rotation: [1.0, 0.0, 0.0, 0.0]  # qw, qx, qy, qz
+  # lidar 到 camera 的物理安装变换
+  # 相机在 lidar 下方30cm，方向一致（x朝前，y朝左，z朝上）
+  lidar_to_camera:
+    translation: [0.0, 0.0, -0.3]
+    rotation: [0.5, -0.5, 0.5, -0.5]  # qw, qx, qy, qz
+
+# ArUco 配置（离线建图和在线重定位共用）
+aruco:
+  dictionary: "DICT_5X5_1000"
+  marker_size: 0.2  # meters
+  corner_subpix: true
+
+# ==================== 节点私有配置 ====================
+
+# 话题配置（在线重定位私有）
+image_topic: "/camera/li_image"
+result_topic: "/localization/relocalization/result"
 pose_topic: "/aruco_reloc/pose"
 status_topic: "/aruco_reloc/status"
-command_topic: "/aruco_reloc/command"
+command_topic: "/localization_v2/relocalization/command"
 
 # 坐标系
 frame_id: "map"
@@ -16,42 +50,89 @@ child_frame_id: "base_link"
 # marker 地图路径
 marker_map_path: "$(find aruco_relocalization)/config/marker_map.yaml"
 
-# 相机外参（base_link -> camera_link）
-extrinsic:
-  base_to_camera:
-    translation: [0.0, 0.0, 0.0]
-    rotation: [1.0, 0.0, 0.0, 0.0]  # qw, qx, qy, qz
-
-# 是否从 TF 获取外参（优先级高于配置文件）
-use_tf_extrinsic: false
-
-# ArUco 配置
-aruco:
-  dictionary: "DICT_4X4_50"
-  marker_size: 0.2  # meters
-  corner_subpix: true
-
-# 求解器配置
+# 求解器配置（在线重定位私有）
 solver:
   min_markers: 1
+  use_multi_marker: false  # 是否使用多 marker 联合 PnP 解算（默认单 marker 为主）
   use_ransac: true
   ransac_iterations: 100
   ransac_reproj_error: 8.0
   ransac_confidence: 0.99
 
-# 校验器配置
+# 校验器配置（在线重定位私有）
 validator:
-  max_reproj_error: 10.0  # pixels
+  max_reproj_error: 100.0  # pixels
   max_marker_distance_error: 0.1  # meters
   max_translation_jump: 2.0  # meters
   max_rotation_jump: 30.0  # degrees
   use_motion_check: true
-  min_markers: 2  # 推荐 >=2
+  min_markers: 1  # 推荐 >=2
 
-# 离线建图配置
-offline_mapping:
-  path_topic: "/slam_mapping_v2/path"
-  output_path: "$(find aruco_relocalization)/config/marker_map.yaml"
-  time_sync_tolerance: 0.5  # 秒
-  min_observations: 5
-  max_reproj_error: 5.0  # pixels
+# 点云 VGICP 匹配 + 验证配置（在线重定位私有）
+# 流程：ArUco 位姿作为初始猜测 → VGICP 精匹配 → 最近邻验证
+pointcloud_verify:
+  enabled: true
+  cloud_topic: "/ouster/points"
+
+  # 点云坐标系转换（与 relocalization 一致）
+  # LiDAR 安装旋转 -90°，需要将点云从 lidar 系转到 base_link 系
+  rotate_xy_y_negx: true
+  query_yaw_deg: 0.0
+
+  # base_link 到 lidar 的变换（旋转后使用，通常为单位矩阵）
+  base_to_lidar:
+    translation: [0.0, 0.0, 0.0]
+    rotation: [1.0, 0.0, 0.0, 0.0]  # qw, qx, qy, qz
+
+  # 全局地图 PCD 路径（用于裁剪局部子图）
+  global_map_pcd: "/home/hhy/2004ros/deeplumin_mapping_2/manual_mapping/map.pcd"
+
+  # 裁剪参数（米）：按候选位姿朝向裁剪
+  crop_forward: 30.0
+  crop_backward: 30.0
+  crop_left: 30.0
+  crop_right: 30.0
+  crop_down: 5.0
+  crop_up: 10.0
+
+  # 预处理
+  voxel_leaf: 0.1
+  min_range: 3.0
+  max_range: 20.0
+  z_filter_enable: false
+  z_filter_min: -1.0
+  z_filter_max: 5.0
+
+  # VGICP 匹配参数（small_gicp）
+  max_correspondence_distance: 2.0
+  transformation_epsilon: 0.001
+  max_iterations: 64
+
+  # 内点判断阈值（VGICP 后使用）
+  inlier_distance: 0.5    # 最近邻距离阈值（米）
+  min_inlier_ratio: 0.8   # 最小内点率
+  max_inlier_rmse: 0.4    # 最大内点 RMSE（米）
+
+  # VGICP 开关（false 则直接用 ArUco 位姿计算 inlier）
+  use_vgicp: true
+
+# 调试可视化配置
+visualizer:
+  enabled: true
+  debug_image_topic: "/aruco_reloc/debug_image"
+  source_cloud_topic: "/aruco_reloc/source_cloud"
+  submap_topic: "/aruco_reloc/submap"
+  aligned_cloud_topic: "/aruco_reloc/aligned_cloud"
+
+# 离线建图 V2 配置（离线建图私有）
+offline_mapping_v2:
+  # 输入路径（slam_mapping_v2 输出的关键帧数据）
+  keyframe_poses_csv: "/home/hhy/2004ros/deeplumin_mapping_2/manual_mapping/keyframes.csv"
+  keyframe_images_dir: "/home/hhy/2004ros/deeplumin_mapping_2/manual_mapping/images"
+
+  # 输出路径
+  output_marker_map: "/home/hhy/2004ros/DeepLumin/src/localization/aruco_relocalization/config/marker_map.yaml"
+
+  # 校验参数
+  max_reproj_error: 100.0  # pixels
+  min_observations: 2      # 每个 marker 至少被观测到的次数

@@ -26,7 +26,8 @@ class MapSaver {
                          double origin_lon_deg, double origin_alt) const;
 
  private:
-  bool saveKeyframes(const std::string& dir, const std::vector<Keyframe>& keyframes) const;
+  bool saveKeyframes(const std::string& dir, const std::string& images_dir,
+                     const std::vector<Keyframe>& keyframes) const;
   bool saveKeyframePoses(const std::string& path, const std::vector<Keyframe>& keyframes) const;
   bool saveTrajectory(const std::string& path, const std::vector<Keyframe>& keyframes) const;
   bool saveLoopPairs(const std::string& path,
