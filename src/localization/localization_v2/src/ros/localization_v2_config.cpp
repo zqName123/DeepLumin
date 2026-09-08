@@ -119,8 +119,6 @@ LocalizationV2Config loadLocalizationV2Config(ros::NodeHandle& pnh) {
   // 跟踪失效检测
   cfg.gm_failure_threshold =
       loadInt(pnh, "tracking_failure/gm_failure_threshold", cfg.gm_failure_threshold);
-  cfg.gm_min_inlier_ratio =
-      loadDouble(pnh, "global_matcher/min_inlier_ratio", cfg.gm_min_inlier_ratio);
   cfg.gm_max_inlier_rmse =
       loadDouble(pnh, "global_matcher/max_inlier_rmse", cfg.gm_max_inlier_rmse);
 
@@ -129,6 +127,24 @@ LocalizationV2Config loadLocalizationV2Config(ros::NodeHandle& pnh) {
       loadInt(pnh, "recovery/reloc_failure_threshold", cfg.reloc_failure_threshold);
   cfg.reloc_timeout_sec =
       loadDouble(pnh, "recovery/reloc_timeout_sec", cfg.reloc_timeout_sec);
+
+  // 恢复防抖
+  cfg.gm_recovery_threshold =
+      loadInt(pnh, "recovery_anti_jitter/gm_recovery_threshold", cfg.gm_recovery_threshold);
+  cfg.reloc_recovery_threshold =
+      loadInt(pnh, "recovery_anti_jitter/reloc_recovery_threshold", cfg.reloc_recovery_threshold);
+  cfg.tracking_min_dwell_sec =
+      loadDouble(pnh, "recovery_anti_jitter/tracking_min_dwell_sec", cfg.tracking_min_dwell_sec);
+  cfg.tracking_lost_min_dwell_sec =
+      loadDouble(pnh, "recovery_anti_jitter/tracking_lost_min_dwell_sec", cfg.tracking_lost_min_dwell_sec);
+
+  // 跟踪质量等级
+  cfg.gm_good_min_inlier_ratio =
+      loadDouble(pnh, "tracking_quality/good_min_inlier_ratio", cfg.gm_good_min_inlier_ratio);
+  cfg.gm_degraded_min_inlier_ratio =
+      loadDouble(pnh, "tracking_quality/degraded_min_inlier_ratio", cfg.gm_degraded_min_inlier_ratio);
+  cfg.gm_degraded_threshold =
+      loadInt(pnh, "tracking_quality/degraded_frame_threshold", cfg.gm_degraded_threshold);
 
   // 降级输出
   cfg.allow_degraded_output =

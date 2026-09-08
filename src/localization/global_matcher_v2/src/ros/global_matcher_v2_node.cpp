@@ -32,9 +32,11 @@
 #include <pcl/filters/voxel_grid.h>
 #include <pcl/point_cloud.h>
 #include <pcl/point_types.h>
+#include <pcl/search/kdtree.h>
 #include <pcl_conversions/pcl_conversions.h>
 #include <ros/ros.h>
 #include <sensor_msgs/PointCloud2.h>
+#include <std_msgs/Int32.h>
 #include <std_msgs/String.h>
 
 #include <deeplumin_msgs/GlobalMatchResult.h>
@@ -157,10 +159,47 @@ CloudPtr downsample(const CloudConstPtr& input, double leaf) {
     *output = *input;
     return output;
   }
-  pcl::VoxelGrid<PointT> voxel;
-  voxel.setLeafSize(static_cast<float>(leaf), static_cast<float>(leaf), static_cast<float>(leaf));
-  voxel.setInputCloud(input);
-  voxel.filter(*output);
+  // 质心体素降采样：与核心代码一致，哈希实现避免 PCL int32 溢出
+  const double inv_leaf = 1.0 / leaf;
+  struct VoxelAccum {
+    std::size_t out_index;
+    double sx, sy, sz;
+    std::size_t count;
+  };
+  std::unordered_map<std::uint64_t, VoxelAccum> voxel_map;
+  voxel_map.reserve(input->size() / 4);
+  output->reserve(input->size() / 8);
+
+  for (const auto& p : input->points) {
+    if (!std::isfinite(p.x) || !std::isfinite(p.y) || !std::isfinite(p.z)) {
+      continue;
+    }
+    const std::int64_t ix = static_cast<std::int64_t>(std::floor(p.x * inv_leaf));
+    const std::int64_t iy = static_cast<std::int64_t>(std::floor(p.y * inv_leaf));
+    const std::int64_t iz = static_cast<std::int64_t>(std::floor(p.z * inv_leaf));
+    const std::uint64_t key = (static_cast<std::uint64_t>(ix) & 0x1FFFFF) |
+                              ((static_cast<std::uint64_t>(iy) & 0x1FFFFF) << 21) |
+                              ((static_cast<std::uint64_t>(iz) & 0x1FFFFF) << 42);
+    auto it = voxel_map.find(key);
+    if (it == voxel_map.end()) {
+      const std::size_t idx = output->size();
+      output->push_back(p);
+      voxel_map.emplace(key, VoxelAccum{idx, p.x, p.y, p.z, 1u});
+    } else {
+      it->second.sx += p.x;
+      it->second.sy += p.y;
+      it->second.sz += p.z;
+      ++it->second.count;
+    }
+  }
+
+  for (const auto& kv : voxel_map) {
+    const VoxelAccum& acc = kv.second;
+    PointT& pt = output->points[acc.out_index];
+    pt.x = static_cast<float>(acc.sx / static_cast<double>(acc.count));
+    pt.y = static_cast<float>(acc.sy / static_cast<double>(acc.count));
+    pt.z = static_cast<float>(acc.sz / static_cast<double>(acc.count));
+  }
   return output;
 }
 
@@ -229,6 +268,15 @@ class GlobalMatcherV2Node {
       initial_guess_pub_ =
           nh_.advertise<geometry_msgs::PoseStamped>(config_.initial_guess_topic, 2);
     }
+    if (config_.publish_difference_cloud) {
+      diff_cloud_pub_ =
+          nh_.advertise<sensor_msgs::PointCloud2>(config_.difference_cloud_topic, 2);
+      loc_available_pub_ = nh_.advertise<std_msgs::Int32>("/loc_available", 10);
+      cluster_cloud_pub_ =
+          nh_.advertise<sensor_msgs::PointCloud2>(config_.cluster_cloud_topic, 2);
+      // 完整点云订阅
+      raw_diff_sub_ = nh_.subscribe(config_.difference_raw_topic, 2, &GlobalMatcherV2Node::onRawDiff, this);
+    }
     if (config_.publish_path) {
       path_pub_ = nh_.advertise<nav_msgs::Path>(config_.path_topic, 2);
       path_.header.frame_id = config_.map_frame;
@@ -254,6 +302,8 @@ class GlobalMatcherV2Node {
     set_map_segment_command_sub_ =
         nh_.subscribe(config_.set_map_segment_command_topic, 2,
                       &GlobalMatcherV2Node::onSetMapSegmentCommand, this);
+
+    
 
     // ---- 定时器 ----
     match_timer_ = nh_.createTimer(ros::Duration(1.0 / std::max(0.1, config_.match_rate)),
@@ -283,6 +333,17 @@ class GlobalMatcherV2Node {
     latest_source_stamp_ = msg->header.stamp.isZero() ? receive_stamp : msg->header.stamp;
     latest_source_receive_stamp_ = receive_stamp;
     latest_source_frame_ = msg->header.frame_id;
+  }
+
+  void onRawDiff(const sensor_msgs::PointCloud2::ConstPtr& msg) {
+    CloudPtr cloud(new CloudT());
+    pcl::fromROSMsg(*msg, *cloud);
+    cloud = removeInvalid(cloud);
+    const ros::Time receive_stamp = ros::Time::now();
+    std::lock_guard<std::mutex> lock(mutex_);
+    latest_raw_diff_ = cloud;
+    latest_raw_diff_stamp_ = msg->header.stamp.isZero() ? receive_stamp : msg->header.stamp;
+    
   }
 
   void onTrackingInitialOdom(const nav_msgs::Odometry::ConstPtr& msg) {
@@ -488,6 +549,9 @@ class GlobalMatcherV2Node {
     const small_gicp::GaussianVoxelMap* fine_voxelmap_ptr = nullptr;
 
     const ros::Time start = ros::Time::now();
+    
+    crop_pcl = map_manager_.cropSubmap(initial_map_base_for_crop, config_.crop);
+    
     if (use_crop) {
       crop_pcl = map_manager_.cropSubmap(initial_map_base_for_crop, config_.crop);
       if (!crop_pcl || crop_pcl->empty()) {
@@ -522,6 +586,8 @@ class GlobalMatcherV2Node {
       target_kdtree_ptr = crop_kdtree.get();
       coarse_voxelmap_ptr = crop_voxel_coarse.get();
       fine_voxelmap_ptr = crop_voxel_fine.get();
+
+
     } else {
       last_match_submap_.reset();
       const auto cached_sg = map_manager_.targetCloud();
@@ -621,6 +687,10 @@ class GlobalMatcherV2Node {
 
     publishAligned(source_stamp, source, final_map_source);
     publishSubmap(source_stamp);
+    if (success) {
+      publishDifferenceCloud(source_stamp, final_map_source,
+                             map_manager_.targetPcl());
+    }
     const bool publish_map_source =
         config_.result_pose_frame == "source" || config_.result_pose_frame == "odom";
     const Eigen::Matrix4f result_pose = publish_map_source ? final_map_source : final_map_base;
@@ -830,6 +900,210 @@ class GlobalMatcherV2Node {
     aligned_pub_.publish(msg);
   }
 
+  double computeAdaptiveEps(const CloudPtr& cloud, int k, double scale) const {
+    if (!cloud || cloud->empty() || cloud->size() < static_cast<size_t>(k + 1)) {
+      return 0.5;  // 默认值
+    }
+    pcl::search::KdTree<pcl::PointXYZ>::Ptr tree(new pcl::search::KdTree<pcl::PointXYZ>());
+    tree->setInputCloud(cloud);
+
+    const size_t n = cloud->size();
+    std::vector<int> k_indices(k + 1);
+    std::vector<float> k_sqr_distances(k + 1);
+    std::vector<float> k_dist(n);
+
+    for (size_t i = 0; i < n; ++i) {
+      tree->nearestKSearch(cloud->points[i], k + 1, k_indices, k_sqr_distances);
+      k_dist[i] = std::sqrt(k_sqr_distances[k]);  // 第k近邻距离（跳过自身）
+    }
+
+    std::sort(k_dist.begin(), k_dist.end());
+    const double median = k_dist[n / 2];
+    return median * scale;
+  }
+
+  CloudPtr dbscanCluster(const CloudPtr& cloud, double eps, int min_pts,
+                         std::vector<int>& labels) const {
+    labels.assign(cloud->size(), -1);  // -1: unvisited, -2: noise, >=0: cluster id
+    if (cloud->empty()) return CloudPtr(new CloudT());
+
+    pcl::search::KdTree<pcl::PointXYZ>::Ptr tree(new pcl::search::KdTree<pcl::PointXYZ>());
+    tree->setInputCloud(cloud);
+
+    const double eps_sq = eps * eps;
+    const size_t n = cloud->size();
+    int cluster_id = 0;
+
+    std::vector<int> neighbors;
+    std::vector<float> distances;
+    neighbors.reserve(256);
+    distances.reserve(256);
+
+    for (size_t i = 0; i < n; ++i) {
+      if (labels[i] != -1) continue;  // already visited
+
+      neighbors.clear();
+      distances.clear();
+      tree->radiusSearch(cloud->points[i], eps_sq, neighbors, distances);
+
+      if (neighbors.size() < static_cast<size_t>(min_pts)) {
+        labels[i] = -2;  // noise
+        continue;
+      }
+
+      labels[i] = cluster_id;
+      std::vector<size_t> seeds;
+      seeds.reserve(neighbors.size());
+      for (const int nb : neighbors) {
+        if (static_cast<size_t>(nb) != i) {
+          seeds.push_back(nb);
+        }
+      }
+
+      size_t seed_idx = 0;
+      while (seed_idx < seeds.size()) {
+        const size_t q = seeds[seed_idx++];
+        if (labels[q] == -2) {
+          labels[q] = cluster_id;  // 把噪点改为中心点
+        }
+        if (labels[q] != -1) continue;  // already assigned
+        labels[q] = cluster_id;
+
+        neighbors.clear();
+        distances.clear();
+        tree->radiusSearch(cloud->points[q], eps_sq, neighbors, distances);
+        if (neighbors.size() >= static_cast<size_t>(min_pts)) {
+          for (const int nb : neighbors) {
+            if (labels[nb] == -1) {
+              seeds.push_back(nb);
+            }
+          }
+        }
+      }
+      ++cluster_id;
+    }
+
+    CloudPtr result(new CloudT());
+    result->points.reserve(n);
+    for (size_t i = 0; i < n; ++i) {
+      if (labels[i] >= 0) {
+        result->points.push_back(cloud->points[i]);
+      }
+    }
+    result->width = result->points.size();
+    result->height = 1;
+    result->is_dense = true;
+    return result;
+  }
+
+  void publishDifferenceCloud(const ros::Time& stamp,
+                              const Eigen::Matrix4f& map_source,
+                              const CloudConstPtr& target_map) {
+    if (!config_.publish_difference_cloud || !diff_cloud_pub_ ||
+        diff_cloud_pub_.getNumSubscribers() == 0) {
+      return;
+    }
+    if (!target_map || target_map->empty()) {
+      return;
+    }
+    CloudPtr diff_source;
+    {
+      std::lock_guard<std::mutex> lock(mutex_);
+      if (latest_raw_diff_ && !latest_raw_diff_->empty()) {
+        diff_source = latest_raw_diff_;
+      }
+    }
+    if (!diff_source || diff_source->empty()) {
+      return;
+    }
+
+    // 将 source 点云变换到地图系
+    CloudPtr transformed(new CloudT());
+    pcl::transformPointCloud(*diff_source, *transformed, map_source);
+
+    // 缓存 KDTree：仅当地图指针变化时重建
+    if (cached_diff_map_ != target_map) {
+      cached_diff_map_ = target_map;
+      cached_diff_tree_.reset(new pcl::search::KdTree<pcl::PointXYZ>());
+      cached_diff_tree_->setInputCloud(cached_diff_map_);
+    }
+
+    const float dist_thresh_sq = static_cast<float>(
+        config_.difference_distance_threshold * config_.difference_distance_threshold);
+    const size_t n = transformed->points.size();
+
+    CloudPtr diff_cloud(new CloudT());
+    diff_cloud->points.reserve(n);
+
+    std::vector<int> k_indices(1);
+    std::vector<float> k_sqr_distances(1);
+
+    for (size_t i = 0; i < n; ++i) {
+      const auto& pt = transformed->points[i];
+      if (!std::isfinite(pt.x) || !std::isfinite(pt.y) || !std::isfinite(pt.z)) {
+        continue;
+      }
+      const int found = cached_diff_tree_->nearestKSearch(pt, 1, k_indices, k_sqr_distances);
+      if (found <= 0 || k_sqr_distances[0] > dist_thresh_sq) {
+        diff_cloud->points.push_back(pt);
+      }
+    }
+
+    diff_cloud->width = diff_cloud->points.size();
+    diff_cloud->height = 1;
+    diff_cloud->is_dense = true;
+
+    // 发布定位有效性标志
+    std_msgs::Int32 loc_available;
+    const size_t total_pts = diff_source->size();
+    if (diff_cloud->points.size() > static_cast<size_t>(config_.difference_rate_threshold * total_pts)) {
+      loc_available.data = 0;  // 差异点过多，定位失效
+      ROS_INFO("[global_matcher_v2] Difference: %zu / %zu not in map, ratio=%.3f "
+               "!!!!!!!!!!!!!!!!!!",
+               diff_cloud->points.size(), n,
+               static_cast<double>(diff_cloud->points.size()) / static_cast<double>(n));
+    } else {
+      loc_available.data = 1;  // 定位有效
+      ROS_INFO("[global_matcher_v2] Difference: %zu / %zu not in map, ratio=%.3f",
+               diff_cloud->points.size(), n,
+               static_cast<double>(diff_cloud->points.size()) / static_cast<double>(n));
+    }
+    loc_available_pub_.publish(loc_available);
+
+    // 发布差异点云
+    sensor_msgs::PointCloud2 msg;
+    pcl::toROSMsg(*diff_cloud, msg);
+    msg.header.stamp = stamp;
+    msg.header.frame_id = config_.map_frame;
+    diff_cloud_pub_.publish(msg);
+
+    // ---- 聚类：检测障碍物（人/车/货） ----
+    if (cluster_cloud_pub_ && cluster_cloud_pub_.getNumSubscribers() > 0 &&
+        diff_cloud->points.size() > static_cast<size_t>(config_.cluster_min_pts)) {
+      const double eps = computeAdaptiveEps(
+          diff_cloud, config_.cluster_knn_k, config_.cluster_eps_scale);
+      std::vector<int> cluster_labels;
+      CloudPtr clustered = dbscanCluster(diff_cloud, eps, config_.cluster_min_pts,
+                                         cluster_labels);
+      ROS_INFO("[global_matcher_v2] start cluster !");
+      if (clustered && !clustered->empty()) {
+        sensor_msgs::PointCloud2 cluster_msg;
+        pcl::toROSMsg(*clustered, cluster_msg);
+        cluster_msg.header.stamp = stamp;
+        cluster_msg.header.frame_id = config_.map_frame;
+        cluster_cloud_pub_.publish(cluster_msg);
+
+        int max_label = -1;
+        for (int lbl : cluster_labels) {
+          if (lbl > max_label) max_label = lbl;
+        }
+        ROS_INFO("[global_matcher_v2] Cluster: %d obstacles, eps=%.3f, "
+                 "clustered_pts=%zu / raw_diff=%zu",
+                 max_label + 1, eps, clustered->size(), diff_cloud->size());
+      }
+    }
+  }
+
   void publishInitialGuess(const ros::Time& stamp, const Eigen::Matrix4f& map_base) const {
     if (!config_.publish_initial_guess || !initial_guess_pub_) {
       return;
@@ -938,6 +1212,7 @@ class GlobalMatcherV2Node {
   ros::Subscriber gm_anchor_sub_;
   ros::Subscriber load_map_command_sub_;
   ros::Subscriber set_map_segment_command_sub_;
+  ros::Subscriber raw_diff_sub_;
 
   ros::Publisher result_pub_;
   ros::Publisher status_pub_;
@@ -946,10 +1221,18 @@ class GlobalMatcherV2Node {
   ros::Publisher submap_pub_;
   ros::Publisher global_map_pub_;
   ros::Publisher initial_guess_pub_;
+  ros::Publisher diff_cloud_pub_;
+  ros::Publisher loc_available_pub_;
+  ros::Publisher cluster_cloud_pub_;  ///< 聚类障碍物点云发布器
   ros::Publisher path_pub_;
   ros::Timer match_timer_;
   ros::Timer map_timer_;
 
+
+    // ---- 差异检测：全量点云缓存 ----
+  CloudPtr latest_raw_diff_;             ///< 全量点云（含完整轮廓），用于差异检测
+  ros::Time latest_raw_diff_stamp_;      ///< 全量点云时间戳
+  
   mutable std::mutex mutex_;
   CloudPtr latest_source_;
   ros::Time latest_source_stamp_;
@@ -973,6 +1256,10 @@ class GlobalMatcherV2Node {
   nav_msgs::Path path_;
   Eigen::Matrix4f last_crop_map_base_ = Eigen::Matrix4f::Identity();
   pcl::PointCloud<pcl::PointXYZ>::Ptr last_match_submap_;  ///< use_crop 模式下复用匹配已裁剪的子图（同时用于 target_submap 可视化）
+
+  // ---- 差异检测缓存 ----
+  pcl::PointCloud<pcl::PointXYZ>::ConstPtr cached_diff_map_;  ///< 缓存地图指针，用于检测地图变化
+  pcl::search::KdTree<pcl::PointXYZ>::Ptr cached_diff_tree_;  ///< 缓存的 PCL KDTree
 };
 
 }  // namespace global_matcher_v2

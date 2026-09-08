@@ -60,6 +60,8 @@ bool FusionCore::setMapOdom(const Pose3d& map_odom) {
 }
 
 
+
+
 bool FusionCore::updateMapOdomFromMapBase(const Pose3d& map_base, bool require_slam) {
   if (!isFinite(map_base.position) || !isFinite(map_base.orientation)) {
     return false;

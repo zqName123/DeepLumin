@@ -224,7 +224,25 @@ GlobalMatcherV2Config loadGlobalMatcherV2Config(ros::NodeHandle& pnh) {
   // result
   cfg.result_pose_frame = loadString(pnh, "result/pose_frame", cfg.result_pose_frame);
 
-  // publish
+  // difference
+  cfg.publish_difference_cloud =
+      loadBool(pnh, "publish/difference_cloud", cfg.publish_difference_cloud);
+  cfg.difference_cloud_topic =
+      loadString(pnh, "topics/difference_cloud", cfg.difference_cloud_topic);
+  cfg.difference_distance_threshold =
+      loadDouble(pnh, "difference/distance_threshold", cfg.difference_distance_threshold);
+  cfg.difference_rate_threshold =
+      loadDouble(pnh, "difference/rate_threshold", cfg.difference_rate_threshold);
+  cfg.difference_raw_topic = loadString(pnh, "difference/input_topic", cfg.difference_raw_topic);
+  cfg.cluster_cloud_topic =
+      loadString(pnh, "topics/cluster_cloud", cfg.cluster_cloud_topic);
+  cfg.cluster_knn_k = loadInt(pnh, "difference/cluster_knn_k", cfg.cluster_knn_k);
+  cfg.cluster_eps_scale =
+      loadDouble(pnh, "difference/cluster_eps_scale", cfg.cluster_eps_scale);
+  cfg.cluster_min_pts = loadInt(pnh, "difference/cluster_min_pts", cfg.cluster_min_pts);
+  cfg.cluster_max_pts = loadInt(pnh, "difference/cluster_max_pts", cfg.cluster_max_pts);
+
+   // publish
   cfg.publish_global_map = loadBool(pnh, "publish/global_map", cfg.publish_global_map);
   cfg.publish_target_submap =
       loadBool(pnh, "publish/target_submap", cfg.publish_target_submap);

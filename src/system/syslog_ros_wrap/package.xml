@@ -1,0 +1,10 @@
+<?xml version="1.0"?>
+<package format="2">
+  <name>syslog_ros_wrap</name>
+  <version>1.0.0</version>
+  <description>ROS wrapper for syslog logging library</description>
+  <maintainer email="user@todo.todo">user</maintainer>
+  <license>MIT</license>
+
+  <buildtool_depend>catkin</buildtool_depend>
+</package>

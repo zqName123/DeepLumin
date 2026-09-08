@@ -565,16 +565,22 @@ void MappingRuntime::backendLoop() {
       // 写锁保护关键帧列表
       std::unique_lock<std::shared_mutex> kf_lock(kf_mutex_);
       // 将批量关键帧加入全局列表并分配ID
+      const int appended_start = static_cast<int>(keyframes_.size());
       for (auto& kf : batch) {
         kf.id = static_cast<int>(keyframes_.size());
         keyframes_.push_back(std::move(kf));
       }
       const int latest_index = static_cast<int>(keyframes_.size()) - 1;
+
+      bool did_optimize = false;
+      bool loop_detected = false;
+
       // 如果启用回环检测或GNSS，构建并优化位姿图
       if (loop_enabled_ || cfg_.loop_closure.gnss.enable) {
         // 添加里程计因子（连续关键帧之间的约束）
         optimizer_.addOdomFactors(keyframes_);
         // 如果启用GNSS，添加GNSS约束因子
+        const std::size_t gnss_before = gnss_.factorCount();
         if (cfg_.loop_closure.gnss.enable) {
           gnss_.update(keyframes_, &optimizer_.graph(), latest_index);
         }
@@ -583,6 +589,7 @@ void MappingRuntime::backendLoop() {
         if (loop_enabled_) {
           candidate = detector_->detect(keyframes_); // 视觉的话先detect，在detect中提取视觉特征
           if (candidate.valid) {
+            loop_detected = true;
             // 标记回环关键帧
             keyframes_[candidate.current_idx].loop_closed = true;
             keyframes_[candidate.history_idx].loop_closed = true;
@@ -595,10 +602,21 @@ void MappingRuntime::backendLoop() {
         }
         // 执行位姿图优化
         optimizer_.optimize(&keyframes_);
-        // 用优化后的位姿重建可视化地图（map 系降采样缓存）
-        {
-          std::lock_guard<std::mutex> map_lock(map_mutex_);
+        // 判断是否真正发生了优化：检测到回环 OR 新增了GNSS因子
+        did_optimize = loop_detected || (gnss_.factorCount() > gnss_before);
+      }
+
+      // 根据是否优化选择重建方式：优化后全量重建，否则增量追加
+      {
+        std::lock_guard<std::mutex> map_lock(map_mutex_);
+        if (did_optimize) {
+          // 优化后全量重建（所有关键帧使用优化后的位姿重新变换）
           global_map_.rebuild(keyframes_);
+        } else {
+          // 无优化：只增量追加本轮新增的关键帧
+          for (int i = appended_start; i <= latest_index; ++i) {
+            global_map_.append(keyframes_[i]);
+          }
         }
       }
       

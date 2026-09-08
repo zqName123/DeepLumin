@@ -20,21 +20,15 @@ add_message_files(
 add_message_files(
   DIRECTORY msg/localization
   FILES
-  SlamPose.msg
-  FusedOdometry.msg
   LocalizationStatus.msg
-  SlamHealth.msg
-  Gpchc.msg
-  CanReceiveInfo.msg
   GlobalMatchResult.msg
   RelocalizationResult.msg
-  ObserverPolicy.msg
   FusionStatus.msg
-  ObservationDebug.msg
   MappingEnvironmentItem.msg
   MappingEnvironmentStatus.msg
   MappingStatus.msg
   MappingRecordStatus.msg
+  LocPoint.msg
 )
 
 add_message_files(
@@ -56,6 +50,9 @@ add_message_files(
   FILES
   SystemStatus.msg
   VehicleStatus.msg
+  Gpchc.msg
+  CanReceiveInfo.msg
+
 )
 
 add_service_files(

@@ -26,6 +26,7 @@
 
 #include <deeplumin_msgs/FusionStatus.h>
 #include <deeplumin_msgs/GlobalMatchResult.h>
+#include <deeplumin_msgs/LocPoint.h>
 #include <geometry_msgs/PoseWithCovarianceStamped.h>
 #include <geometry_msgs/TransformStamped.h>
 #include <nav_msgs/Odometry.h>
@@ -130,6 +131,11 @@ class LocalizationV2Node {
     tracking_config.gm_failure_threshold = config_.gm_failure_threshold;
     tracking_config.reloc_failure_threshold = config_.reloc_failure_threshold;
     tracking_config.reloc_timeout_sec = config_.reloc_timeout_sec;
+    tracking_config.gm_recovery_threshold = config_.gm_recovery_threshold;
+    tracking_config.reloc_recovery_threshold = config_.reloc_recovery_threshold;
+    tracking_config.tracking_min_dwell_sec = config_.tracking_min_dwell_sec;
+    tracking_config.tracking_lost_min_dwell_sec = config_.tracking_lost_min_dwell_sec;
+    tracking_config.gm_degraded_threshold = config_.gm_degraded_threshold;
 
     state_machine_.configure(init, policy, tracking_config);
 
@@ -161,6 +167,9 @@ class LocalizationV2Node {
       current_scan_map_pub_ =
           nh_.advertise<sensor_msgs::PointCloud2>(config_.current_scan_in_map_topic, 2);
     }
+
+    loc_point_pub_ = nh_.advertise<deeplumin_msgs::LocPoint>(config_.loc_point_topic, 10);
+
     path_.header.frame_id = config_.map_frame;
 
     // ---- 定时器 ----
@@ -206,14 +215,14 @@ class LocalizationV2Node {
     update.inlier_ratio = msg->inlier_ratio;
 
     if (!update.success) {
-      // 跟踪失败检测
+      // 跟踪失败检测：计数器由状态机统一管理
       if (state_machine_.state() == LocalizationStateMachine::State::kTracking) {
-        gm_consecutive_failures_++;
+        state_machine_.onTrackingFailure();
         ROS_WARN_THROTTLE(1.0, "[localization_v2] GM consecutive failures=%d/%d",
-                          gm_consecutive_failures_, config_.gm_failure_threshold);
+                          state_machine_.getGmConsecutiveFailures(),
+                          config_.gm_failure_threshold);
 
-        if (gm_consecutive_failures_ >= config_.gm_failure_threshold) {
-          state_machine_.onTrackingFailure();
+        if (state_machine_.state() == LocalizationStateMachine::State::kTrackingLost) {
           dispatchRelocalizationCommand();
           tracking_lost_since_ = ros::Time::now();
           ROS_WARN("[localization_v2] tracking lost, starting relocalization recovery");
@@ -228,32 +237,60 @@ class LocalizationV2Node {
     gm_candidate_inlier_rmse_ = msg->inlier_rmse;
     gm_candidate_map_id_ = msg->map_id;
 
-    // GM 质量检查（使用 inlier_ratio 和 inlier_rmse）
-    bool gm_quality_good = true;
-    if (msg->inlier_ratio < config_.gm_min_inlier_ratio) {
-      gm_quality_good = false;
-      ROS_WARN_THROTTLE(2.0, "[localization_v2] GM inlier ratio %.3f below limit %.3f",
-                        msg->inlier_ratio, config_.gm_min_inlier_ratio);
-    }
+    // --- GM 质量三级分级 ---
+    // 好（good）：inlier_ratio >= good_min 且 inlier_rmse <= max_rmse → level 0
+    // 退化（degraded）：inlier_ratio >= degraded_min 且 inlier_rmse <= max_rmse → level 1
+    // 差（bad）：inlier_ratio < degraded_min 或 inlier_rmse > max_rmse → 失败计数
+    bool gm_quality_good = false;
+    bool gm_quality_degraded = false;
     if (msg->inlier_rmse > config_.gm_max_inlier_rmse) {
-      gm_quality_good = false;
-      ROS_WARN_THROTTLE(2.0, "[localization_v2] GM inlier rmse %.3f above limit %.3f",
+      // RMSE 超标 → 差（无论 inlier_ratio 多少）
+      ROS_WARN_THROTTLE(2.0, "[localization_v2] GM bad: inlier_rmse=%.3f above limit=%.3f",
                         msg->inlier_rmse, config_.gm_max_inlier_rmse);
+    } else if (msg->inlier_ratio >= config_.gm_good_min_inlier_ratio) {
+      // 好
+      gm_quality_good = true;
+    } else if (msg->inlier_ratio >= config_.gm_degraded_min_inlier_ratio) {
+      // 退化
+      gm_quality_degraded = true;
+      ROS_WARN_THROTTLE(2.0, "[localization_v2] GM degraded: inlier_ratio=%.3f "
+                        "(good_thresh=%.3f degraded_thresh=%.3f)",
+                        msg->inlier_ratio,
+                        config_.gm_good_min_inlier_ratio, config_.gm_degraded_min_inlier_ratio);
+    } else {
+      // inlier_ratio 太低 → 差
+      ROS_WARN_THROTTLE(2.0, "[localization_v2] GM bad: inlier_ratio=%.3f below degraded_thresh=%.3f",
+                        msg->inlier_ratio, config_.gm_degraded_min_inlier_ratio);
     }
 
-    // TRACKING 状态下：质量好时重置失败计数，质量差时增加失败计数
+    // TRACKING 状态下：三级质量判断
     if (state_machine_.state() == LocalizationStateMachine::State::kTracking) {
       if (gm_quality_good) {
-        gm_consecutive_failures_ = 0;
-      } else {
-        gm_consecutive_failures_++;
-        if (gm_consecutive_failures_ >= config_.gm_failure_threshold) {
-          state_machine_.onTrackingFailure();
+        // 好：重置所有计数器
+        state_machine_.resetGmCounter();
+        state_machine_.resetDegradedCounter();
+      } else if (gm_quality_degraded) {
+        // 退化：增加退化计数，仍应用位姿（level 会标记为 WARNING）
+        state_machine_.onTrackingDegraded();
+        if (state_machine_.state() == LocalizationStateMachine::State::kTrackingLost) {
           dispatchRelocalizationCommand();
           tracking_lost_since_ = ros::Time::now();
-          ROS_WARN("[localization_v2] tracking lost due to poor GM quality, starting relocalization");
+          ROS_WARN("[localization_v2] tracking lost due to prolonged degraded GM quality "
+                   "(degraded=%d, threshold=%d)",
+                   state_machine_.getGmDegradedCount(), config_.gm_degraded_threshold);
         }
-        return;
+      } else {
+        // 差：增加失败计数，重置退化计数（打断退化连续性）
+        state_machine_.onTrackingFailure();
+        state_machine_.resetDegradedCounter();
+        if (state_machine_.state() == LocalizationStateMachine::State::kTrackingLost) {
+          dispatchRelocalizationCommand();
+          tracking_lost_since_ = ros::Time::now();
+          ROS_WARN("[localization_v2] tracking lost due to poor GM quality "
+                   "(failures=%d/%d)",
+                   state_machine_.getGmConsecutiveFailures(), config_.gm_failure_threshold);
+        }
+        return;  // 差结果不应用位姿
       }
     }
     if (update.pose_is_map_base) {
@@ -267,33 +304,63 @@ class LocalizationV2Node {
 
     // 未进入 TRACKING：不应用 jump guard（门限仅 TRACKING 生效）
     if (state_machine_.state() != LocalizationStateMachine::State::kTracking) {
-      // LOCALIZATION_FAILURE 状态：GM 成功时恢复到 TRACKING
+      // LOCALIZATION_FAILURE 状态：仅 GM 质量好时累积恢复（确认窗口）
       if (state_machine_.state() == LocalizationStateMachine::State::kLocalizationFailure) {
+        if (!gm_quality_good) {
+          state_machine_.onRecoveryAttemptFailed();
+          ROS_WARN_THROTTLE(2.0,
+                            "[localization_v2] skip GM recovery from localization failure: quality too low "
+                            "inlier=%.3f rmse=%.3f",
+                            msg->inlier_ratio, msg->inlier_rmse);
+          return;
+        }
         if (!fusion_.setMapOdom(gm_candidate_map_odom_)) {
+          state_machine_.onRecoveryAttemptFailed();
           return;
         }
         state_machine_.onGlobalMatchSuccess();
-        dispatchRelocalizationCommand();
-        latest_map_id_ = msg->map_id;
-        publishMapToOdom();
-        ROS_INFO("[localization_v2] recovered from localization failure via global matcher "
-                 "map_id=%s inlier=%.3f rmse=%.3f",
-                 msg->map_id.c_str(), msg->inlier_ratio, msg->inlier_rmse);
+        if (state_machine_.state() == LocalizationStateMachine::State::kTracking) {
+          dispatchRelocalizationCommand();
+          latest_map_id_ = msg->map_id;
+          publishMapToOdom();
+          ROS_INFO("[localization_v2] recovered from localization failure via global matcher "
+                   "map_id=%s inlier=%.3f rmse=%.3f",
+                   msg->map_id.c_str(), msg->inlier_ratio, msg->inlier_rmse);
+        } else {
+          ROS_INFO_THROTTLE(1.0,
+                            "[localization_v2] GM recovery accumulating for localization failure: "
+                            "inlier=%.3f rmse=%.3f (waiting for confirmation window)",
+                            msg->inlier_ratio, msg->inlier_rmse);
+        }
         return;
       }
 
-      // TRACKING_LOST 状态：GM 成功时也可以恢复（如果质量足够好）
+      // TRACKING_LOST 状态：GM 成功时累积恢复（确认窗口）
       if (state_machine_.state() == LocalizationStateMachine::State::kTrackingLost) {
-        if (gm_quality_good && fusion_.setMapOdom(gm_candidate_map_odom_)) {
-          state_machine_.onGlobalMatchSuccess();
+        if (!gm_quality_good) {
+          state_machine_.onRecoveryAttemptFailed();
+          ROS_DEBUG("[localization_v2] GM quality bad during recovery attempt, reset counter");
+          return;
+        }
+        if (!fusion_.setMapOdom(gm_candidate_map_odom_)) {
+          state_machine_.onRecoveryAttemptFailed();
+          return;
+        }
+        state_machine_.onGlobalMatchSuccess();
+        if (state_machine_.state() == LocalizationStateMachine::State::kTracking) {
           dispatchRelocalizationCommand();
           latest_map_id_ = msg->map_id;
           publishMapToOdom();
           ROS_INFO("[localization_v2] recovered from tracking lost via global matcher "
                    "map_id=%s inlier=%.3f rmse=%.3f",
                    msg->map_id.c_str(), msg->inlier_ratio, msg->inlier_rmse);
-          return;
+        } else {
+          ROS_INFO_THROTTLE(1.0,
+                            "[localization_v2] GM recovery accumulating for tracking lost: "
+                            "inlier=%.3f rmse=%.3f (waiting for confirmation window)",
+                            msg->inlier_ratio, msg->inlier_rmse);
         }
+        return;
       }
 
       if (config_.use_global_matcher_init && !config_.use_relocalization_init) {
@@ -385,13 +452,13 @@ class LocalizationV2Node {
       return;
     }
     if (!signal.success) {
-      // TRACKING_LOST 状态下重定位失败，增加计数
+      // TRACKING_LOST 状态下重定位失败，计数器由状态机统一管理
       if (state == LocalizationStateMachine::State::kTrackingLost) {
-        reloc_consecutive_failures_++;
+        state_machine_.onRecoveryFailed();
         ROS_WARN_THROTTLE(2.0, "[localization_v2] relocalization failed, consecutive=%d/%d",
-                          reloc_consecutive_failures_, config_.reloc_failure_threshold);
-        if (reloc_consecutive_failures_ >= config_.reloc_failure_threshold) {
-          state_machine_.onRecoveryFailed();
+                          state_machine_.getRelocConsecutiveFailures(),
+                          config_.reloc_failure_threshold);
+        if (state_machine_.state() == LocalizationStateMachine::State::kLocalizationFailure) {
           dispatchRelocalizationCommand();
           ROS_ERROR("[localization_v2] recovery failed, localization failure");
         }
@@ -423,9 +490,28 @@ class LocalizationV2Node {
     reloc_result_method_ = signal.method;
     reloc_result_stamp_ = ros::Time::now();
 
-    // TRACKING_LOST 状态下重定位成功，重置失败计数
+    // TRACKING_LOST 状态下重定位成功：使用状态机确认窗口
     if (state == LocalizationStateMachine::State::kTrackingLost) {
-      reloc_consecutive_failures_ = 0;
+      state_machine_.onRelocalizationResult(true);
+      // 即使确认窗口未满，也先应用位姿（避免等待期间位姿缺失，让GM能在正确位姿上工作）
+      if (!fusion_.setMapOdom(reloc_result_map_base_)) {
+        return;
+      }
+      if (state_machine_.state() == LocalizationStateMachine::State::kTracking) {
+        // 恢复成功，发布最终结果
+        dispatchRelocalizationCommand();
+        publishMapToOdom();
+        ROS_INFO("[localization_v2] recovered from tracking lost via relocalization "
+                 "map_id=%s inlier=%.3f rmse=%.3f",
+                 reloc_result_map_id_.c_str(), reloc_result_inlier_ratio_,
+                 reloc_result_inlier_rmse_);
+      } else {
+        ROS_INFO_THROTTLE(1.0,
+                          "[localization_v2] relocalization recovery accumulating: "
+                          "inlier=%.3f rmse=%.3f (waiting for confirmation window)",
+                          reloc_result_inlier_ratio_, reloc_result_inlier_rmse_);
+      }
+      return;
     }
 
     tryCompleteInitialization();
@@ -473,9 +559,19 @@ class LocalizationV2Node {
   }
 
   void arbitrateAndComplete() {
-    const bool reloc_better =
-        reloc_result_inlier_ratio_ >= gm_candidate_inlier_ratio_ &&
-        reloc_result_inlier_rmse_ <= gm_candidate_inlier_rmse_;
+    // 综合评分仲裁：重定位是初始化主源，使用加权评分综合考虑内点率和 RMSE
+    // 内点率权重 1.0，RMSE 权重 -0.3（RMSE 单位米，数值较小，适当加权）
+    // 当重定位综合评分不低于 GM 时，优先选择重定位（重定位初始化效果更好）
+    const double reloc_score = reloc_result_inlier_ratio_ - 0.3 * reloc_result_inlier_rmse_;
+    const double gm_score = gm_candidate_inlier_ratio_ - 0.3 * gm_candidate_inlier_rmse_;
+    const bool reloc_better = reloc_score >= gm_score;
+
+    ROS_INFO("[localization_v2] init arbitration: reloc(score=%.4f ratio=%.3f rmse=%.3f) vs "
+             "gm(score=%.4f ratio=%.3f rmse=%.3f) => %s",
+             reloc_score, reloc_result_inlier_ratio_, reloc_result_inlier_rmse_,
+             gm_score, gm_candidate_inlier_ratio_, gm_candidate_inlier_rmse_,
+             reloc_better ? "RELOC" : "GM");
+
     if (reloc_better) {
       completeWithReloc();
     } else {
@@ -505,12 +601,14 @@ class LocalizationV2Node {
   void completeWithGm() {
     if (!fusion_.setMapOdom(gm_candidate_map_odom_)) {
       ROS_WARN("[localization_v2] invalid global matcher candidate pose, ignored");
+      reloc_result_pending_ = false;
       return;
     }
     latest_map_id_ = gm_candidate_map_id_;
     state_machine_.onRelocalizationResult(/*accepted=*/true);
     dispatchRelocalizationCommand();
     publishMapToOdom();
+    reloc_result_pending_ = false;
     ROS_INFO("[localization_v2] initialized from global matcher candidate "
              "(gm inlier=%.3f rmse=%.3f vs reloc inlier=%.3f rmse=%.3f)",
              gm_candidate_inlier_ratio_, gm_candidate_inlier_rmse_, reloc_result_inlier_ratio_,
@@ -540,11 +638,11 @@ class LocalizationV2Node {
       return;
     }
 
-    // 恢复超时检查
+    // 恢复超时检查：超时是独立的失败判定，直接切换状态不经过计数器
     if (state_machine_.state() == LocalizationStateMachine::State::kTrackingLost) {
       const double elapsed = (ros::Time::now() - tracking_lost_since_).toSec();
       if (elapsed >= config_.reloc_timeout_sec) {
-        state_machine_.onRecoveryFailed();
+        state_machine_.forceLocalizationFailure();
         dispatchRelocalizationCommand();
         ROS_ERROR("[localization_v2] recovery timeout (%.1fs >= %.1fs), localization failure",
                   elapsed, config_.reloc_timeout_sec);
@@ -574,6 +672,23 @@ class LocalizationV2Node {
       fillPose(map_base, &odom.pose.pose);
       odom.twist = latest_twist_;
       fused_odom_pub_.publish(odom);
+
+      // 构建loc_point 下游订阅
+      deeplumin_msgs::LocPoint loc_point;
+      loc_point.header.stamp = stamp;
+      loc_point.header.frame_id = config_.map_frame;
+      loc_point.x = map_base.position.x();
+      loc_point.y = map_base.position.y();
+      // 提取yaw 和 pitch
+      Eigen::Matrix3d R = map_base.orientation.normalized().toRotationMatrix();
+      loc_point.yaw = std::atan2(R(1, 0), R(0, 0)); // yaw 角度范围 [-pi, pi]，单位弧度
+      loc_point.pitch = std::asin(-R(2, 0)); // pitch 角度范围 [-pi, pi]，单位弧度
+      
+      const float vx = latest_twist_.twist.linear.x;
+      loc_point.vec = static_cast<float>(vx);
+
+      loc_point_pub_.publish(loc_point);
+
 
       // 历史轨迹
       if (config_.publish_path) {
@@ -697,11 +812,23 @@ class LocalizationV2Node {
         break;
 
       case LocalizationStateMachine::State::kTracking:
-        msg.level = deeplumin_msgs::FusionStatus::LEVEL_NORMAL;
         msg.state = "TRACKING";
         msg.initialized = true;
         msg.output_valid = true;
-        msg.failure_reason = "";
+        // 动态计算 level：根据 GM 质量和退化计数器
+        {
+          int failures = state_machine_.getGmConsecutiveFailures();
+          int degraded = state_machine_.getGmDegradedCount();
+          if (failures == 0 && degraded == 0) {
+            msg.level = deeplumin_msgs::FusionStatus::LEVEL_NORMAL;
+            msg.failure_reason = "";
+          } else {
+            msg.level = deeplumin_msgs::FusionStatus::LEVEL_WARNING;
+            msg.failure_reason = "GM quality degraded: consecutive_failures=" +
+                                 std::to_string(failures) +
+                                 ", degraded_frames=" + std::to_string(degraded);
+          }
+        }
         msg.position_std = 0.1;
         msg.velocity_std = 0.5;
         msg.roll_std = 0.5;
@@ -715,7 +842,7 @@ class LocalizationV2Node {
         msg.initialized = true;
         msg.output_valid = config_.allow_degraded_output;
         msg.failure_reason = "tracking lost, GM consecutive failures=" +
-                             std::to_string(gm_consecutive_failures_) +
+                             std::to_string(state_machine_.getGmConsecutiveFailures()) +
                              ", relocalization attempting recovery";
         msg.position_std = 5.0;
         msg.velocity_std = 2.0;
@@ -730,7 +857,7 @@ class LocalizationV2Node {
         msg.initialized = true;
         msg.output_valid = false;
         msg.failure_reason = std::string("localization failure: recovery timeout") +
-                             ", reloc failures=" + std::to_string(reloc_consecutive_failures_);
+                             ", reloc failures=" + std::to_string(state_machine_.getRelocConsecutiveFailures());
         msg.position_std = 100.0;
         msg.velocity_std = 10.0;
         msg.roll_std = 90.0;
@@ -868,6 +995,7 @@ class LocalizationV2Node {
   ros::Publisher status_pub_;
   ros::Publisher gm_anchor_pub_;
   ros::Publisher current_scan_map_pub_;
+  ros::Publisher loc_point_pub_;
   tf2_ros::TransformBroadcaster tf_broadcaster_;
   ros::Timer timer_;
 
@@ -891,8 +1019,6 @@ class LocalizationV2Node {
   std::string gm_candidate_map_id_;
 
   // 跟踪失效检测
-  int gm_consecutive_failures_ = 0;
-  int reloc_consecutive_failures_ = 0;
   ros::Time tracking_lost_since_;
 };
 

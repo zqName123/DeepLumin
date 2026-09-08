@@ -70,7 +70,7 @@ common:
 
 # 轮速/GNSS 辅助：唯一来源（核心 yaml 读取 + 节点订阅开关共用）
 vel_gnss:
-  use_vel: false    # 与 faster_lio_ws ouster64.yaml 对齐：启用 CAN 轮速约束
+  use_vel: true    # 与 faster_lio_ws ouster64.yaml 对齐：启用 CAN 轮速约束
   use_gnss_attitude: false
   can_vel_diff_thresh_kmh: 2.0
   can_timeout_sec: 0.1

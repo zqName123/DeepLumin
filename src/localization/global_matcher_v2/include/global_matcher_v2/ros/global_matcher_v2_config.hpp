@@ -93,6 +93,21 @@ struct GlobalMatcherV2Config {
   // ---- 结果 ----
   std::string result_pose_frame = "base";  ///< base | odom（odom=输出 map->odom）
 
+  // ---- 差异检测（computeDifference） ----
+  bool publish_difference_cloud = false;
+  std::string difference_cloud_topic =
+      "/localization/global_matcher/difference_cloud";
+  double difference_distance_threshold = 0.15;
+  double difference_rate_threshold = 0.25;
+  std::string difference_raw_topic = "/localization/cloud_registered";
+  // ---- 差异点聚类（DBSCAN + KNN自适应eps） ----
+  std::string cluster_cloud_topic =
+      "/localization/global_matcher/cluster_cloud";
+  int cluster_knn_k = 4;             ///< KNN自适应eps的k值
+  double cluster_eps_scale = 1.2;    ///< eps松弛因子（中位数 * scale）
+  int cluster_min_pts = 10;          ///< DBSCAN最小簇点数，小于此值视为噪点
+  int cluster_max_pts = 10000;       ///< DBSCAN最大簇点数
+
   // ---- 发布开关（减少话题量） ----
   bool publish_global_map = true;
   bool publish_target_submap = false;

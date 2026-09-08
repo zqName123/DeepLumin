@@ -1,82 +1,324 @@
+# =============================================================================
 # aruco_relocalization 配置文件
 # =============================================================================
+# 功能：为 ArUco 视觉标记重定位系统提供所有模块的运行时参数
+# 包路径：DeepLumin/src/localization/aruco_relocalization/
+#
 # 结构说明：
-#   共用配置（公有命名空间）：camera_matrix / dist_coeffs / extrinsic / aruco / image_rotation
-#   节点私有配置（私有命名空间）：话题 / 校验器 / 求解器 / 点云验证
+#   该配置文件划分为两大区域：
+#   ┌─ 共用配置（公有命名空间）─────────────────────────────────────────┐
+#   │   image_rotation / camera_matrix / dist_coeffs / extrinsic / aruco │
+#   │   这些参数被离线建图 V2 和在线重定位两个模块共用加载               │
+#   └─────────────────────────────────────────────────────────────────────┘
+#   ┌─ 节点私有配置（私有命名空间）───────────────────────────────────────┐
+#   │   话题配置 / 求解器 / 校验器 / 点云验证 / 可视化 / 离线建图 V2     │
+#   │   各节点仅加载自己命名空间下的参数                                  │
+#   └─────────────────────────────────────────────────────────────────────┘
+#
+# 加载方式：通过 ROS 参数服务器加载（launch 文件中使用 <rosparam> 标签）
+# 修改说明：修改后需重启节点才能生效
 # =============================================================================
 
-# ==================== 共用配置 ====================
+# =============================================================================
+# 共用配置（公有命名空间）
+# 以下配置同时被 offline_mapping_v2_node 和 aruco_reloc_online_node 加载
+# 离线建图通过 ParamLoader 和 ROS 参数服务器读取，在线重定位直接读取
+# =============================================================================
 
+# ---------------------------------------------------------------------------
 # 图像旋转配置（离线建图和在线重定位共用）
-# 0: 不旋转, 1: 顺时针90°, 2: 180°, 3: 逆时针90°
+# ---------------------------------------------------------------------------
+# 由于相机物理安装方向可能与预期不一致（如倒置、侧装），
+# 通过此参数将图像旋转到标准方向后再进行 ArUco 检测。
+# 旋转发生在检测之前，因此会影响所有后续处理（角点坐标、位姿解算等）。
+# 可选值：
+#   0: 不旋转（相机安装方向已正确）
+#   1: 顺时针旋转 90°（相当于 cv::ROTATE_90_CLOCKWISE）
+#   2: 旋转 180°（相当于 cv::ROTATE_180）
+#   3: 逆时针旋转 90°（相当于 cv::ROTATE_90_COUNTERCLOCKWISE，默认值）
 image_rotation: 3  # 逆时针90°，与相机物理安装一致
 
+# ---------------------------------------------------------------------------
 # 相机内参（离线建图和在线重定位共用）
+# ---------------------------------------------------------------------------
+# 相机内参矩阵 K（3x3，行优先顺序）：
+#   [fx,  0, cx,
+#     0, fy, cy,
+#     0,  0,  1]
+# 用于 ArUco 位姿解算时的 3D-2D 投影（PnP 算法）。
+# 必须通过相机标定获得，不准确的内参会直接影响位姿精度。
+# 当前值说明：
+#   fx = 960.0, fy = 960.0  焦距（像素），决定尺度估计精度
+#   cx = 510.0, cy = 960.0  主点坐标（像素），通常位于图像中心附近
 camera_matrix: [960.0, 0.0, 510.0, 0.0, 960.0, 960.0, 0.0, 0.0, 1.0]
+
+# 畸变系数（5个参数，顺序为 k1, k2, p1, p2, k3）：
+#   k1, k2, k3：径向畸变系数（桶形/枕形畸变）
+#   p1, p2：切向畸变系数（镜头与成像平面不平行导致）
+# 设为全零表示已校正图像（或畸变很小可忽略）。
+# 如果相机标定结果显示畸变较大，请填写标定值以提升检测精度。
 dist_coeffs: [0.0, 0.0, 0.0, 0.0, 0.0]
 
+# ---------------------------------------------------------------------------
 # 相机外参（离线建图和在线重定位共用）
-# T_base_camera = T_base_lidar * T_lidar_camera
+# ---------------------------------------------------------------------------
+# 坐标系变换链（用于将 ArUco 检测结果从 camera 系转换到 map 系）：
+#   T_map_camera = T_map_base * T_base_lidar * T_lidar_camera
+# 其中：
+#   T_cam_marker 由 OpenCV 的 estimatePoseSingleMarkers() 直接输出
+#   T_lidar_camera 由本文件中的 lidar_to_camera 定义
+#   T_base_lidar 由本文件中的 base_to_lidar 定义
+#   T_map_base 是最终求解的目标（base_link 在全局地图中的位姿）
+#
+# 完整公式：T_map_marker = T_map_base * T_base_lidar * T_lidar_camera * T_cam_marker
 extrinsic:
-  # base_link 到 lidar 的变换（通常为单位矩阵，如果两者重合）
+  # base_link -> lidar 变换
+  # 说明：如果 base_link 和 lidar 坐标系原点重合则保持单位矩阵。
+  #       若两者不重合（如雷达安装位置偏离车体中心），需填写实际变换。
+  # 参数：
+  #   translation: [x, y, z] 平移（米），正值表示 lidar 在 base_link 对应的方向
+  #   rotation: [qw, qx, qy, qz] 四元数（Hamilton 约定）
   base_to_lidar:
     translation: [0.0, 0.0, 0.0]
-    rotation: [1.0, 0.0, 0.0, 0.0]  # qw, qx, qy, qz
-  # lidar 到 camera 的物理安装变换
-  # 相机在 lidar 下方30cm，方向一致（x朝前，y朝左，z朝上）
+    rotation: [1.0, 0.0, 0.0, 0.0]  # qw=1, qx=0, qy=0, qz=0 表示单位四元数（无旋转）
+
+  # lidar -> camera 变换（物理安装变换）
+  # 说明：描述激光雷达坐标系到相机坐标系的刚体变换。
+  #       当前配置：相机安装在 lidar 正下方 30cm，方向保持一致。
+  # 参数：
+  #   translation: [x, y, z] 平移（米）
+  #     x: 相机在 lidar 前方 (+) / 后方 (-)
+  #     y: 相机在 lidar 左方 (+) / 右方 (-)
+  #     z: 相机在 lidar 上方 (+) / 下方 (-)  —— 当前 -0.3 表示相机在下方
+  #   rotation: [qw, qx, qy, qz] 四元数
+  #     当前旋转值 [0.5, -0.5, 0.5, -0.5] 对应的 ZYX 欧拉角约为：
+  #       roll=0°, pitch=0°, yaw=-90°（相机坐标系相对于 lidar 绕 Z 轴旋转了 -90°）
   lidar_to_camera:
     translation: [0.0, 0.0, -0.3]
     rotation: [0.5, -0.5, 0.5, -0.5]  # qw, qx, qy, qz
 
+# ---------------------------------------------------------------------------
 # ArUco 配置（离线建图和在线重定位共用）
+# ---------------------------------------------------------------------------
 aruco:
+  # ArUco 字典类型
+  # 可选值：DICT_4X4_50, DICT_4X4_100, DICT_4X4_250, DICT_4X4_1000,
+  #         DICT_5X5_50, DICT_5X5_100, DICT_5X5_250, DICT_5X5_1000,
+  #         DICT_6X6_50, DICT_6X6_100, DICT_6X6_250, DICT_6X6_1000,
+  #         DICT_7X7_50, DICT_7X7_100, DICT_7X7_250, DICT_7X7_1000,
+  #         DICT_ARUCO_ORIGINAL
+  # 命名规则：DICT_{网格尺寸}X{网格尺寸}_{标记总数}
+  #   例如 DICT_5X5_1000 = 5×5 内部网格，共 1000 个不同 ID
+  # 选型建议：标记总数越多，不同 ID 间的检测区分度越低。
+  #   少量标记 (<50 个) 建议用 DICT_4X4_50 或 DICT_5X5_50
+  #   大量标记推荐用较大的网格尺寸（如 6×6 或 7×7）以提高鲁棒性
   dictionary: "DICT_5X5_1000"
-  marker_size: 0.2  # meters
+
+  # Marker 物理边长（单位：米）
+  # 实际打印/显示的 ArUco 标记的物理尺寸。
+  # 此参数直接影响 PnP 求解的尺度估计，必须准确测量。
+  # 如果实际尺寸与设置值不符，会导致位姿的平移分量出现尺度误差。
+  # 常见值：0.15（15cm）, 0.2（20cm）, 0.25（25cm）, 0.3（30cm）
+  marker_size: 0.2  # 20cm × 20cm
+
+  # 是否启用亚像素角点精化
+  # true:  使用 cv::cornerSubPix() 对检测到的角点进行亚像素精化，
+  #        提升角点精度，从而降低重投影误差，提高位姿解算精度。
+  #        推荐启用，额外计算开销很小。
+  # false: 使用原始检测角点，速度略快但精度较低。
   corner_subpix: true
 
-# ==================== 节点私有配置 ====================
+# =============================================================================
+# 节点私有配置（私有命名空间）
+# 以下配置通过 ROS 私有命名空间（~）加载，各节点仅读取自己需要的参数。
+# 在线重定位节点（aruco_reloc_online_node）读取：
+#   话题配置 / solver / validator / pointcloud_verify / visualizer
+# 离线建图 V2 节点（offline_mapping_v2_node）读取：
+#   offline_mapping_v2
+# =============================================================================
 
+# ---------------------------------------------------------------------------
 # 话题配置（在线重定位私有）
+# ---------------------------------------------------------------------------
+# 说明：在线重定位节点订阅和发布的 ROS 话题名称。
+# 注意：这些话题名称可以在 launch 文件中通过 remap 标签覆盖，无需修改此文件。
+# ---------------------------------------------------------------------------
+
+# 订阅：相机图像话题
+# 类型：sensor_msgs::Image
+# 编码：bgr8
+# 说明：ArUco Marker 检测的输入源，帧率建议 >= 10Hz 以保证实时性。
 image_topic: "/camera/li_image"
+
+# 发布：重定位结果话题（用于定位管理器 fusion）
+# 类型：deeplumin_msgs::RelocalizationResult
+# 说明：包含位姿、协方差、成功标志、拒绝原因等，供定位管理器做多传感器融合。
 result_topic: "/localization/relocalization/result"
+
+# 发布：当前位姿话题（供其他模块使用）
+# 类型：geometry_msgs::PoseStamped
+# 说明：frame_id = "map", 仅包含位姿信息，不包含协方差。
 pose_topic: "/aruco_reloc/pose"
+
+# 发布：状态信息话题（供调试/监控使用）
+# 类型：std_msgs::String
+# 说明：格式为 "success=1 marker_id=5 reproj=2.34 time_ms=3.2"，方便命令行监控。
+# 使用示例：rostopic echo /aruco_reloc/status
 status_topic: "/aruco_reloc/status"
+
+# 订阅：控制命令话题（用于远程启停）
+# 类型：std_msgs::String
+# 说明：支持 "start" 和 "stop" 两个命令。
+#   "start"：开始重定位（首次默认即启用）
+#   "stop"：暂停重定位，停止发布结果
+# 使用示例：rostopic pub /localization_v2/relocalization/command std_msgs/String "data: 'start'"
 command_topic: "/localization_v2/relocalization/command"
 
-# 坐标系
-frame_id: "map"
-child_frame_id: "base_link"
+# ---------------------------------------------------------------------------
+# 坐标系（在线重定位私有）
+# ---------------------------------------------------------------------------
+frame_id: "map"          # 发布位姿的参考坐标系（全局地图坐标系）
+child_frame_id: "base_link"  # 位姿对应的本体坐标系（机器人底盘中心）
 
-# marker 地图路径
+# ---------------------------------------------------------------------------
+# Marker 地图路径（在线重定位私有）
+# ---------------------------------------------------------------------------
+# 说明：预构建的 ArUco Marker 地图文件路径。
+# 该文件由离线建图 V2 模块生成，包含所有 Marker 在 map 系下的 6DoF 位姿。
+# 支持 $(find <package_name>) 宏替换，在 launch 文件中解析为实际路径。
 marker_map_path: "$(find aruco_relocalization)/config/marker_map.yaml"
 
+# ---------------------------------------------------------------------------
 # 求解器配置（在线重定位私有）
+# ---------------------------------------------------------------------------
+# 功能：将检测到的 ArUco Marker 与预建地图匹配，解算全局位姿。
+# 求解策略：
+#   单 Marker 求解（默认）：T_map_cam = T_map_marker * T_cam_marker^-1
+#     对每个匹配到的 Marker 单独求解，选重投影误差最小的结果。
+#     速度最快，适合实时性要求高的场景。
+#   多 Marker 联合 PnP 求解（可选）：cv::solvePnPRANSAC()
+#     构建所有 Marker 角点的 2D-3D 对应关系，联合求解。
+#     精度更高，但计算量更大。
 solver:
+  # 最小有效 Marker 数
+  # 说明：当前帧中至少需要匹配到多少个地图中的 Marker 才进行求解。
+  # 取值建议：
+  #   1：适合 Marker 稀疏部署的场景，但单个 Marker 位姿解算受噪声影响大
+  #   2 或 3：适合 Marker 密集部署的场景，提高求解可靠性
   min_markers: 1
-  use_multi_marker: false  # 是否使用多 marker 联合 PnP 解算（默认单 marker 为主）
+
+  # 是否启用多 Marker 联合 PnP 解算
+  # false（默认）：使用单 Marker 求解，对每个 Marker 独立求解并选最优
+  # true：使用所有匹配到的 Marker 的角点联合求解（cv::solvePnPRANSAC）
+  # 注意：设为 true 时，建议同时将 min_markers 设为 >= 3 以发挥联合求解优势
+  use_multi_marker: false
+
+  # 多 Marker 时是否使用 RANSAC（仅当 use_multi_marker=true 时生效）
+  # true：使用 cv::solvePnPRANSAC()，对异常观测有鲁棒性
+  # false：使用 cv::solvePnP()，所有角点等权参与求解
   use_ransac: true
+
+  # RANSAC 迭代次数（仅当 use_multi_marker=true 且 use_ransac=true 时生效）
+  # 值越大，找到正确解的概率越高，但耗时线性增长。
+  # 建议值：100~500，根据实时性要求调整。
   ransac_iterations: 100
+
+  # RANSAC 重投影误差阈值（单位：像素）
+  # 说明：RANSAC 判断内点/外点的重投影误差边界。
+  # 小于此值的角点对内点投票，大于此值的被视为外点丢弃。
+  # 建议值：5.0~10.0（像素），值越小筛选越严格。
   ransac_reproj_error: 8.0
+
+  # RANSAC 置信度
+  # 说明：RANSAC 算法期望获得至少一个无外点样本的概率。
+  # 值越大，迭代次数越充分，但耗时增加。
+  # 建议值：0.99~0.995
   ransac_confidence: 0.99
 
+# ---------------------------------------------------------------------------
 # 校验器配置（在线重定位私有）
+# ---------------------------------------------------------------------------
+# 功能：对求解器输出的候选位姿进行多重校验，过滤异常结果。
+# 校验流程（4级顺序校验，任意一级失败则拒绝该位姿）：
+#   1. 数量阈值校验：有效 Marker 数 >= min_markers
+#   2. 重投影误差校验：平均重投影误差 <= max_reproj_error
+#   3. 几何一致性校验（多 Marker 时）：Marker 间距误差 <= max_marker_distance_error
+#   4. 运动一致性校验（启用时）：平移/旋转跳变 <= 阈值
 validator:
-  max_reproj_error: 100.0  # pixels
-  max_marker_distance_error: 0.1  # meters
-  max_translation_jump: 2.0  # meters
-  max_rotation_jump: 30.0  # degrees
-  use_motion_check: true
-  min_markers: 1  # 推荐 >=2
+  # 最大允许平均重投影误差（单位：像素）
+  # 说明：所有有效 Marker 角点的平均重投影误差上限。
+  # 若超过此值，说明 Marker 检测质量差或位姿解算不准确。
+  # 建议值：
+  #   10.0~50.0：严格模式，仅接受高质量位姿
+  #   50.0~100.0：宽松模式，适应大视角或远距离检测
+  max_reproj_error: 100.0
 
+  # 最大允许 Marker 间距误差（单位：米，仅多 Marker 时生效）
+  # 说明：通过比较地图中 Marker 间的距离与当前检测中 Marker 间的距离，
+  #       检测几何一致性。若差异过大，说明可能存在误匹配。
+  # 建议值：0.05~0.2（米），取决于 Marker 部署密度和地图精度。
+  max_marker_distance_error: 0.1
+
+  # 最大允许平移跳变（单位：米）
+  # 说明：当前帧位姿与上一帧位姿的平移量之差的上限。
+  # 用于防止位姿突变（如误匹配导致的错误位姿）。
+  # 设为 0 或负值可禁用此校验。
+  # 建议值：1.0~5.0（米），取决于机器人运动速度和帧率。
+  max_translation_jump: 2.0
+
+  # 最大允许旋转跳变（单位：度）
+  # 说明：当前帧与上一帧的旋转角度差上限。
+  # 建议值：15.0~45.0（度），取决于机器人旋转速度和帧率。
+  max_rotation_jump: 30.0
+
+  # 是否启用运动一致性校验
+  # true：启用平移跳变和旋转跳变校验（需要有效上一帧位姿）
+  # false：跳过运动一致性校验（第一帧或丢失后重定位时自动跳过）
+  use_motion_check: true
+
+  # 校验通过所需最小 Marker 数
+  # 说明：通过了上述误差校验后，至少需要多少个 Marker 才算有效。
+  # 建议值：
+  #   1：允许单个 Marker 触发重定位（适合稀疏部署）
+  #   2 或 3：需要多个 Marker 一致确认（适合密集部署，更可靠）
+  min_markers: 1
+
+# ---------------------------------------------------------------------------
 # 点云 VGICP 匹配 + 验证配置（在线重定位私有）
-# 流程：ArUco 位姿作为初始猜测 → VGICP 精匹配 → 最近邻验证
+# ---------------------------------------------------------------------------
+# 功能：使用 VGICP 点云配准对 ArUco 位姿进行精化和验证。
+# 处理流程：
+#   1. 从缓冲区获取与图像时间戳最接近的点云
+#   2. 坐标系旋转（lidar -> base_link）
+#   3. 点云预处理（距离裁剪 + Z 滤波 + 体素下采样）
+#   4. 从全局地图裁剪局部子图（以候选位姿为中心）
+#   5. VGICP 两级配准（粗配准 -> 精匹配，可选）
+#   6. 最近邻搜索，统计 inlier_ratio / inlier_rmse
+#   7. 阈值判断，输出验证结果
+# 注意：点云验证是可选步骤，可大幅提高重定位可靠性，但会增加延迟。
 pointcloud_verify:
+  # 是否启用点云验证
+  # true：启用（推荐，可显著提高重定位可靠性）
+  # false：仅使用 ArUco 视觉位姿，不加点云验证
   enabled: true
+
+  # 点云订阅话题
+  # 类型：sensor_msgs::PointCloud2
+  # 说明：激光雷达点云数据，用于 VGICP 配准和最近邻验证。
   cloud_topic: "/ouster/points"
 
-  # 点云坐标系转换（与 relocalization 一致）
-  # LiDAR 安装旋转 -90°，需要将点云从 lidar 系转到 base_link 系
+  # 点云坐标系转换：是否将点云从 lidar 系旋转到 base_link 系
+  # 说明：如果 LiDAR 的安装方向与 base_link 不一致（如绕 Z 轴旋转了 -90°），
+  #       需要将点云旋转到 base_link 系后再进行后续处理。
+  # true：执行旋转（x -> y, y -> -x），即绕 Z 轴旋转 -90°
+  # false：不旋转，直接使用 lidar 系下的点云
+  # 此参数应与 extrinsic.base_to_lidar 配合使用。
   rotate_xy_y_negx: true
+
+  # 额外绕 Z 轴旋转角度（单位：度）
+  # 说明：在 rotate_xy_y_negx 之后，额外旋转指定的角度。
+  # 用于微调 LiDAR 的安装朝向偏差。
+  # 通常设为 0.0，除非有特殊的安装角度补偿需求。
   query_yaw_deg: 0.0
 
   # base_link 到 lidar 的变换（旋转后使用，通常为单位矩阵）
@@ -84,55 +326,161 @@ pointcloud_verify:
     translation: [0.0, 0.0, 0.0]
     rotation: [1.0, 0.0, 0.0, 0.0]  # qw, qx, qy, qz
 
-  # 全局地图 PCD 路径（用于裁剪局部子图）
+  # 全局地图 PCD 路径
+  # 说明：预先构建的全局激光点云地图文件路径（PCD 格式）。
+  # 用于从候选位姿附近裁剪局部子图，与当前帧点云进行配准。
+  # 此文件由 slam_mapping_v2 模块生成。
   global_map_pcd: "/home/hhy/2004ros/deeplumin_mapping_2/manual_mapping/map.pcd"
 
-  # 裁剪参数（米）：按候选位姿朝向裁剪
-  crop_forward: 30.0
-  crop_backward: 30.0
-  crop_left: 30.0
-  crop_right: 30.0
-  crop_down: 5.0
-  crop_up: 10.0
+  # 子图裁剪参数（单位：米）
+  # 说明：以候选位姿为中心，向前/后/左/右/下/上 6 个方向裁剪局部子图。
+  # 裁剪范围不宜过大（否则包含过多无关点云，增加计算量），
+  # 也不宜过小（否则可能缺少足够的几何特征进行配准）。
+  # 建议值：室内场景 10~20m，室外场景 20~50m。
+  crop_forward: 30.0   # 向前（x 正方向）
+  crop_backward: 30.0  # 向后（x 负方向）
+  crop_left: 30.0      # 向左（y 正方向）
+  crop_right: 30.0     # 向右（y 负方向）
+  crop_down: 5.0       # 向下（z 负方向）
+  crop_up: 10.0        # 向上（z 正方向）
 
-  # 预处理
+  # 点云预处理参数
+  # 体素下采样分辨率（单位：米）
+  # 说明：使用体素网格滤波器对点云进行下采样，减少点数以加速配准。
+  # 值越大，点云越稀疏，速度越快，但精度损失也越大。
+  # 建议值：0.05~0.2（米），根据场景规模和精度要求调整。
   voxel_leaf: 0.1
-  min_range: 3.0
-  max_range: 20.0
-  z_filter_enable: false
-  z_filter_min: -1.0
-  z_filter_max: 5.0
 
-  # VGICP 匹配参数（small_gicp）
+  # 距离裁剪范围（单位：米）
+  # 说明：仅保留距离传感器在 [min_range, max_range] 范围内的点。
+  # 目的：去除过近的噪声点和过远的稀疏点。
+  min_range: 3.0   # 最小距离（去除车身/传感器附近的噪声点）
+  max_range: 20.0  # 最大距离（去除远处不可靠点）
+
+  # Z 轴滤波
+  # 说明：按 Z 坐标对点云进行滤波，去除地面和天花板以上的点。
+  # z_filter_enable: false 表示不启用 Z 轴滤波
+  z_filter_enable: false
+  z_filter_min: -1.0  # 最小 Z 值（米），低于此值的点被过滤
+  z_filter_max: 5.0   # 最大 Z 值（米），高于此值的点被过滤
+
+  # VGICP 匹配参数（small_gicp 库）
+  # 最大对应距离（单位：米）
+  # 说明：VGICP 配准时，两点被视为对应点的最大距离阈值。
+  # 值越小，只保留高精度的对应关系，但可能收敛失败。
+  # 建议值：1.0~3.0（米），粗配准用大值，精匹配用小值。
   max_correspondence_distance: 2.0
+
+  # 变换收敛阈值
+  # 说明：连续两次迭代的变换增量小于此值时，认为配准已收敛。
+  # 建议值：0.0001~0.01
   transformation_epsilon: 0.001
+
+  # 最大迭代次数
+  # 说明：VGICP 配准的最大迭代次数，超过此值强制停止。
+  # 建议值：32~128
   max_iterations: 64
 
-  # 内点判断阈值（VGICP 后使用）
-  inlier_distance: 0.5    # 最近邻距离阈值（米）
-  min_inlier_ratio: 0.8   # 最小内点率
-  max_inlier_rmse: 0.4    # 最大内点 RMSE（米）
+  # 内点判断参数（VGICP 配准后使用）
+  # 内点距离阈值（单位：米）
+  # 说明：最近邻搜索时，距离小于此值的点对被判定为内点。
+  # 建议值：0.3~1.0（米）
+  inlier_distance: 0.5
 
-  # VGICP 开关（false 则直接用 ArUco 位姿计算 inlier）
+  # 最小内点率
+  # 说明：内点数量占总对应点数量的比例下限。
+  # 低于此值则点云验证不通过，拒绝该位姿。
+  # 建议值：0.6~0.9，值越大验证越严格。
+  min_inlier_ratio: 0.8
+
+  # 最大内点 RMSE（单位：米）
+  # 说明：所有内点对应距离的均方根误差上限。
+  # 高于此值表示配准质量差，拒绝该位姿。
+  # 建议值：0.2~0.5（米）
+  max_inlier_rmse: 0.4
+
+  # VGICP 开关
+  # true：先执行 VGICP 精匹配，再基于精化后的位姿计算 inlier 指标
+  # false：跳过 VGICP，直接用 ArUco 视觉位姿计算 inlier 指标
+  # 注意：设为 false 时，仅验证 ArUco 位姿的几何一致性，不进行精化。
   use_vgicp: true
 
-# 调试可视化配置
+# ---------------------------------------------------------------------------
+# 调试可视化配置（在线重定位私有）
+# ---------------------------------------------------------------------------
+# 说明：控制在线重定位节点的调试输出，方便在 RViz 中实时观察检测和配准结果。
+# 启用后会增加一定的计算和网络传输开销，建议正式运行时关闭。
 visualizer:
+  # 是否启用可视化输出
+  # true：发布调试图像和点云话题（推荐开发调试时启用）
+  # false：禁用所有可视化输出（推荐正式运行时关闭以节省资源）
   enabled: true
+
+  # 调试图像话题（可视化检测结果）
+  # 类型：sensor_msgs::Image
+  # 内容：在原始图像上绘制 Marker 角点（绿色圆圈）、ID（青色文字）、
+  #       坐标系（RGB 三轴）、重投影误差和位姿信息。
   debug_image_topic: "/aruco_reloc/debug_image"
+
+  # 源点云话题（可视化变换到 map 系的当前帧点云）
+  # 类型：sensor_msgs::PointCloud2
   source_cloud_topic: "/aruco_reloc/source_cloud"
+
+  # 子图话题（可视化从全局地图裁剪的局部子图）
+  # 类型：sensor_msgs::PointCloud2
   submap_topic: "/aruco_reloc/submap"
+
+  # 配准后点云话题（可视化 VGICP 匹配后的点云）
+  # 类型：sensor_msgs::PointCloud2
   aligned_cloud_topic: "/aruco_reloc/aligned_cloud"
 
+# ---------------------------------------------------------------------------
 # 离线建图 V2 配置（离线建图私有）
+# ---------------------------------------------------------------------------
+# 功能：读取 slam_mapping_v2 保存的关键帧数据，批量检测 ArUco Marker，
+#       生成预建 Marker 地图文件（marker_map.yaml）。
+# 使用方式：
+#   1. 先运行 slam_mapping_v2 完成建图，确保关键帧数据已保存
+#   2. 设置 keyframe_poses_csv 和 keyframe_images_dir 为实际路径
+#   3. 运行 roslaunch aruco_relocalization offline_mapping_v2.launch
+#   4. 检查输出文件 output_marker_map 是否已生成
 offline_mapping_v2:
-  # 输入路径（slam_mapping_v2 输出的关键帧数据）
+  # 输入路径：关键帧位姿 CSV 文件路径（必需）
+  # 文件格式：CSV 文件，每行包含一个关键帧的位姿数据
+  # 列顺序：id, timestamp, x, y, z, qx, qy, qz, qw
+  #    id: 关键帧索引（对应图像文件名）
+  #    timestamp: 时间戳（秒）
+  #    x, y, z: 关键帧位置（map 坐标系，单位：米）
+  #    qx, qy, qz, qw: 关键帧姿态四元数（Hamilton 约定）
+  # 此文件由 slam_mapping_v2 模块保存，优化后的位姿。
   keyframe_poses_csv: "/home/hhy/2004ros/deeplumin_mapping_2/manual_mapping/keyframes.csv"
+
+  # 输入路径：关键帧图像目录路径（必需）
+  # 说明：目录中包含所有关键帧的图像文件，文件名格式为 {id}.png 或 {id}.jpg，
+  #       其中 id 与 keyframe_poses_csv 中的 id 对应。
+  # 注意：如果图像文件与 CSV 中的 ID 不匹配（缺少或多余），
+  #       建图过程会跳过不匹配的关键帧并给出警告。
   keyframe_images_dir: "/home/hhy/2004ros/deeplumin_mapping_2/manual_mapping/images"
 
-  # 输出路径
+  # 输出路径：生成的 Marker 地图文件路径
+  # 说明：生成的 marker_map.yaml 文件会写入此路径。
+  # 该文件将被在线重定位节点加载，用于实时重定位。
+  # 注意：路径中的目录必须存在，否则文件写入会失败。
   output_marker_map: "/home/hhy/2004ros/DeepLumin/src/localization/aruco_relocalization/config/marker_map.yaml"
 
   # 校验参数
-  max_reproj_error: 100.0  # pixels
-  min_observations: 2      # 每个 marker 至少被观测到的次数
+  # 最大允许重投影误差（单位：像素）
+  # 说明：在离线建图过程中，只有重投影误差小于此值的 Marker 观测才会被保留。
+  # 较大的值可以保留更多观测（包括低质量观测），
+  # 较小的值可以提高地图质量，但可能丢失部分观测数据。
+  # 建议值：50.0~150.0（像素）
+  max_reproj_error: 100.0
+
+  # 每个 Marker 至少被观测到的次数
+  # 说明：只有被至少 N 个关键帧观测到的 Marker 才会被写入地图。
+  # 值越大，最终地图中的 Marker 越可靠，但可能遗漏部分 Marker。
+  # 建议值：
+  #   1：保留所有观测到的 Marker（包括单帧观测）
+  #   2~3：需要多帧确认，过滤掉偶然检测到的错误 Marker（推荐）
+  #   5+：需要大量观测，适合高可靠性要求的场景
+  min_observations: 2

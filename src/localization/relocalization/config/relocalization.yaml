@@ -46,21 +46,21 @@ matcher:
 # pose_file:       "/home/hhy/2004ros/deeplumin_mapping/建图任务_20260805_061709/trajectory.csv"
 # global_map_pcd:  "/home/hhy/2004ros/deeplumin_mapping/建图任务_20260805_061709/map.pcd"
 
-keyframe_dir: "/home/hhy/2004ros/data/key_point_frame_no_ground"
-pose_file: "/home/hhy/2004ros/data/map_use_curr/optimized_poses_tum.txt"
-global_map_pcd: "/home/hhy/2004ros/data/global_map_manual_imu.pcd"
+# keyframe_dir: "/home/hhy/2004ros/data/key_point_frame_no_ground"
+# pose_file: "/home/hhy/2004ros/data/map_use_curr/optimized_poses_tum.txt"
+# global_map_pcd: "/home/hhy/2004ros/data/global_map_manual_imu.pcd"
 
-# keyframe_dir: "/home/hhy/2004ros/deeplumin_mapping_2/manual_mapping/keyframes"
-# pose_file: "/home/hhy/2004ros/deeplumin_mapping_2/manual_mapping/keyframes.csv"
-# global_map_pcd: "/home/hhy/2004ros/deeplumin_mapping_2/manual_mapping/map.pcd"
+keyframe_dir: "/home/hhy/2004ros/deeplumin_mapping_2/manual_mapping/keyframes"
+pose_file: "/home/hhy/2004ros/deeplumin_mapping_2/manual_mapping/keyframes.csv"
+global_map_pcd: "/home/hhy/2004ros/deeplumin_mapping_2/manual_mapping/map.pcd"
 
-# scan_context_db: "/home/hhy/2004ros/relocalization_framework/csc_database_v8.bin"
-# output_db: "/home/hhy/2004ros/relocalization_framework/csc_database_v8.bin"
+scan_context_db: "/home/hhy/2004ros/relocalization_framework/csc_database_v8.bin"
+output_db: "/home/hhy/2004ros/relocalization_framework/csc_database_v8.bin"
 
 
 # ⚠️  与 scan_context.max_radius / preprocess.max_range 对应的库
 #scan_context_db: "/home/hhy/2004ros/relocalization_ws/scan_context_submap_db_index8_remove_ceiling.bin"
-scan_context_db: "/home/hhy/2004ros/relocalization_framework/csc_database_v6_pre.bin"
+# scan_context_db: "/home/hhy/2004ros/relocalization_framework/csc_database_v6_pre.bin"
 # output_db:       "/home/hhy/2004ros/relocalization_ws/scan_context_submap_db_index50.bin"
 
 scan_context_submap_db: "/home/hhy/2004ros/relocalization_ws/scan_context_submap_db_50.bin"

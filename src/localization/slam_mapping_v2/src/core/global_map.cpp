@@ -34,6 +34,32 @@ void GlobalMap::rebuild(const std::vector<Keyframe>& keyframes) {
   cached_map_ = std::move(out);
 }
 
+void GlobalMap::append(const Keyframe& kf) {
+  if (!kf.cloud || kf.cloud->empty()) return;
+
+  // 与 rebuild 相同的变换：T(pose_map) * T(pose_odom)^{-1}
+  const Eigen::Matrix4f tf =
+      (poseToMatrix(kf.pose_map) * poseToMatrix(kf.pose_odom).inverse()).cast<float>();
+  PointCloud tmp;
+  pcl::transformPointCloud(*kf.cloud, tmp, tf);
+
+  std::lock_guard<std::mutex> lock(mutex_);
+  if (!cached_map_) {
+    cached_map_.reset(new PointCloud());
+  }
+  *cached_map_ += tmp;
+
+  // 增量降采样，控制可视化点数
+  if (cfg_.publish_voxel_leaf > 0.0 && !cached_map_->empty()) {
+    pcl::VoxelGrid<PointType> voxel;
+    voxel.setLeafSize(cfg_.publish_voxel_leaf, cfg_.publish_voxel_leaf, cfg_.publish_voxel_leaf);
+    voxel.setInputCloud(cached_map_);
+    PointCloudPtr filtered(new PointCloud());
+    voxel.filter(*filtered);
+    cached_map_ = std::move(filtered);
+  }
+}
+
 PointCloudPtr GlobalMap::cloud() const {
   std::lock_guard<std::mutex> lock(mutex_);
   return cached_map_ ? cached_map_ : PointCloudPtr(new PointCloud());

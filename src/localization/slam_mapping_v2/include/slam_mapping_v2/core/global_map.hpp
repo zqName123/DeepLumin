@@ -31,6 +31,13 @@ class GlobalMap {
    */
   void rebuild(const std::vector<Keyframe>& keyframes);
 
+  /**
+   * @brief 增量追加单个关键帧（仅当无优化回环时使用，避免全量重建）
+   *
+   * 用当前 pose_map 变换点云后追加到缓存地图，不重新遍历所有关键帧。
+   */
+  void append(const Keyframe& kf);
+
   /// 导出已缓存的 map 系地图（无需再变换，可直接发布）
   PointCloudPtr cloud() const;
 

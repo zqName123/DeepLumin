@@ -33,6 +33,7 @@ struct LocalizationV2Config {
   std::string relocalization_result_topic = "/localization/relocalization/result";
   std::string relocalization_command_topic = "/localization_v2/relocalization/command";
   std::string gm_anchor_topic = "/localization_v2/gm_anchor";  ///< 初始化仲裁重定位胜出时，通知 GM 重锚（仅初始化阶段）
+  std::string loc_point_topic = "/localization_v2/loc_point";  ///< 规划订阅的位姿数据
 
   // ---- 运行时 ----
   double output_rate_hz = 100.0;
@@ -74,12 +75,22 @@ struct LocalizationV2Config {
 
   // ---- 跟踪失效检测 ----
   int gm_failure_threshold = 10;           ///< GM 连续失败阈值，达到此值触发跟踪丢失
-  double gm_min_inlier_ratio = 0.3;        ///< GM inlier 比率下限
-  double gm_max_inlier_rmse = 0.8;         ///< GM inlier RMSE 上限
+  double gm_max_inlier_rmse = 0.8;         ///< GM inlier RMSE 上限（任何等级都不允许超过）
 
   // ---- 重定位恢复 ----
   int reloc_failure_threshold = 5;         ///< 重定位连续失败阈值，达到此值触发定位失败
   double reloc_timeout_sec = 30.0;         ///< 重定位超时时间（秒）
+
+  // ---- 恢复防抖 ----
+  int gm_recovery_threshold = 3;           ///< GM 恢复确认窗口：连续成功次数
+  int reloc_recovery_threshold = 2;        ///< 重定位恢复确认窗口：连续成功次数
+  double tracking_min_dwell_sec = 2.0;     ///< TRACKING 最小驻留时间（秒）
+  double tracking_lost_min_dwell_sec = 1.0; ///< TRACKING_LOST 最小驻留时间（秒）
+
+  // ---- 跟踪质量等级 ----
+  double gm_good_min_inlier_ratio = 0.69;      ///< 好/退化分界：inlier_ratio >= 此值 → good
+  double gm_degraded_min_inlier_ratio = 0.4;    ///< 退化/差分界：inlier_ratio < 此值 → bad
+  int gm_degraded_threshold = 20;               ///< 连续退化帧数阈值，达到此值触发跟踪丢失
 
   // ---- 降级输出 ----
   bool allow_degraded_output = true;       ///< TRACKING_LOST 时是否继续输出

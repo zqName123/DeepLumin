@@ -26,6 +26,8 @@ topics:
   status: /localization_v2/status                    # FusionStatus 定位状态
   current_scan_in_map: /localization_v2/current_scan_in_map  # 点云在 map 系（可视化）
   gm_anchor: /localization_v2/gm_anchor              # 初始化仲裁重定位胜出时，通知 GM 重锚（仅初始化阶段）
+  loc_point: /localization_v2/loc_point              # 规划订阅的位姿数据
+
 
 # -------------------- 运行时 --------------------
 runtime:
@@ -86,12 +88,35 @@ initial_pose:
 
 # -------------------- 跟踪失效检测 --------------------
 tracking_failure:
-  gm_failure_threshold: 20          # GM 连续失败阈值，达到此值触发跟踪丢失
+  gm_failure_threshold: 50         # GM 连续失败阈值，达到此值触发跟踪丢失
 
 # -------------------- 重定位恢复 --------------------
 recovery:
-  reloc_failure_threshold: 5        # 重定位连续失败阈值，达到此值触发定位失败
+  reloc_failure_threshold: 50        # 重定位连续失败阈值，达到此值触发定位失败
   reloc_timeout_sec: 30.0           # 重定位超时时间（秒）
+
+# -------------------- 恢复防抖 --------------------
+# 确认窗口：恢复需要连续成功 N 次，防止偶发成功导致状态抖动
+# 驻留时间：状态切换后需要等待一定时间才能再次切换
+recovery_anti_jitter:
+  # GM 恢复确认窗口：连续 N 次高质量 GM 才恢复
+  gm_recovery_threshold: 3
+  # 重定位恢复确认窗口：连续 N 次成功重定位才恢复
+  reloc_recovery_threshold: 1
+  # TRACKING 最小驻留时间（秒）：进入 TRACKING 后至少等待此时间才允许切换到 TRACKING_LOST
+  tracking_min_dwell_sec: 2.0
+  # TRACKING_LOST 最小驻留时间（秒）：进入 TRACKING_LOST 后至少等待此时间才允许恢复
+  tracking_lost_min_dwell_sec: 1.0
+
+# -------------------- 跟踪质量等级 --------------------
+# 用于 TRACKING 状态下 level 的动态分级（软映射）
+# 好：inlier_ratio >= good_min_inlier_ratio → level 0（正常）
+# 退化：degraded_min_inlier_ratio <= inlier_ratio < good_min_inlier_ratio → level 1（退化）
+# 差：inlier_ratio < degraded_min_inlier_ratio → 触发失败计数
+tracking_quality:
+  good_min_inlier_ratio: 0.69          # 好/退化分界（与 global_matcher/min_inlier_ratio 一致）
+  degraded_min_inlier_ratio: 0.4       # 退化/差分界
+  degraded_frame_threshold: 50         # 连续退化帧数阈值，达到此值触发跟踪丢失
 
 # -------------------- 降级输出 --------------------
 degraded:

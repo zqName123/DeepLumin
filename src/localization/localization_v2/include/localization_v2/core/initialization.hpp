@@ -15,6 +15,7 @@
  * - 降级输出比完全无输出更安全
  */
 
+#include <chrono>
 #include <string>
 
 namespace localization_v2 {
@@ -51,7 +52,7 @@ struct RelocalizationPolicy {
   bool stop_on_global_match = true;
 };
 
-/// 跟踪失效检测配置
+/// 跟踪失效检测与恢复防抖配置
 struct TrackingFailureConfig {
   /// GM 连续失败阈值，达到此值触发跟踪丢失
   int gm_failure_threshold = 10;
@@ -59,6 +60,16 @@ struct TrackingFailureConfig {
   int reloc_failure_threshold = 5;
   /// 重定位超时时间（秒）
   double reloc_timeout_sec = 30.0;
+  /// GM 恢复确认窗口：连续成功 N 次才恢复，防止偶发成功导致抖动
+  int gm_recovery_threshold = 3;
+  /// 重定位恢复确认窗口：连续成功 N 次才恢复
+  int reloc_recovery_threshold = 2;
+  /// TRACKING 最小驻留时间（秒）：进入后至少等待此时间才允许切换到 TRACKING_LOST
+  double tracking_min_dwell_sec = 2.0;
+  /// TRACKING_LOST 最小驻留时间（秒）：进入后至少等待此时间才允许恢复
+  double tracking_lost_min_dwell_sec = 1.0;
+  /// 跟踪退化阈值：连续退化帧数达到此值触发跟踪丢失
+  int gm_degraded_threshold = 20;
 };
 
 class LocalizationStateMachine {
@@ -108,17 +119,31 @@ class LocalizationStateMachine {
   /// 跟踪失败检测：GM 连续失败达到阈值
   void onTrackingFailure();
 
-  /// 恢复失败检测：重定位超时或连续失败达到阈值
+  /// 跟踪质量退化检测：GM 连续退化达到阈值（level 1 → lost）
+  void onTrackingDegraded();
+
+  /// 恢复失败检测：重定位连续失败达到阈值
   void onRecoveryFailed();
 
-  // ========== 计数器查询（用于状态发布） ==========
+  /// 恢复尝试失败（GM 质量差）：重置恢复确认计数器
+  void onRecoveryAttemptFailed();
+
+  /// 强制切换为定位失败（超时场景，不经过计数器）
+  void forceLocalizationFailure();
+
+  // ========== 计数器查询 & 重置（用于状态发布） ==========
   int getGmConsecutiveFailures() const { return gm_consecutive_failures_; }
+  int getGmDegradedCount() const { return gm_degraded_count_; }
   int getRelocConsecutiveFailures() const { return reloc_consecutive_failures_; }
+  void resetGmCounter() { gm_consecutive_failures_ = 0; }
+  void resetDegradedCounter() { gm_degraded_count_ = 0; }
+  void resetRelocCounter() { reloc_consecutive_failures_ = 0; }
 
  private:
-  void transitionTo(State state);
+  void transitionTo(State state, bool bypass_dwell = false);
   void request(RelocCommand command) { pending_command_ = command; }
   void resetCounters();
+  void resetRecoveryCounters();
 
   InitConfig init_;
   RelocalizationPolicy policy_;
@@ -130,7 +155,15 @@ class LocalizationStateMachine {
 
   // 失效检测计数器
   int gm_consecutive_failures_ = 0;
+  int gm_degraded_count_ = 0;
   int reloc_consecutive_failures_ = 0;
+
+  // 恢复确认计数器（防抖）
+  int gm_recovery_consecutive_successes_ = 0;
+  int reloc_recovery_consecutive_successes_ = 0;
+
+  // 驻留时间记录
+  std::chrono::steady_clock::time_point last_transition_stamp_;
 };
 
 }  // namespace localization_v2

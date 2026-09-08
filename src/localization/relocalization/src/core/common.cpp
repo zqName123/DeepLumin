@@ -312,13 +312,48 @@ CloudPtr voxelDownsampleCloud(const CloudConstPtr& cloud, double voxel_leaf) {
     }
     return out;
   }
-  pcl::VoxelGrid<PointT> voxel;
-  voxel.setLeafSize(static_cast<float>(voxel_leaf),
-                    static_cast<float>(voxel_leaf),
-                    static_cast<float>(voxel_leaf));
-  voxel.setInputCloud(cloud);
+  // 质心体素降采样：哈希实现，避免 PCL VoxelGrid int32 索引在大坐标时溢出
+  const double inv_leaf = 1.0 / voxel_leaf;
+  struct VoxelAccum {
+    std::size_t out_index;
+    double sx, sy, sz;
+    std::size_t count;
+  };
+  std::unordered_map<std::uint64_t, VoxelAccum> voxel_map;
+  voxel_map.reserve(cloud->size() / 4);
   CloudPtr downsampled(new CloudT);
-  voxel.filter(*downsampled);
+  downsampled->reserve(cloud->size() / 8);
+
+  for (const auto& p : cloud->points) {
+    if (!std::isfinite(p.x) || !std::isfinite(p.y) || !std::isfinite(p.z)) {
+      continue;
+    }
+    const std::int64_t ix = static_cast<std::int64_t>(std::floor(p.x * inv_leaf));
+    const std::int64_t iy = static_cast<std::int64_t>(std::floor(p.y * inv_leaf));
+    const std::int64_t iz = static_cast<std::int64_t>(std::floor(p.z * inv_leaf));
+    const std::uint64_t key = (static_cast<std::uint64_t>(ix) & 0x1FFFFF) |
+                              ((static_cast<std::uint64_t>(iy) & 0x1FFFFF) << 21) |
+                              ((static_cast<std::uint64_t>(iz) & 0x1FFFFF) << 42);
+    auto it = voxel_map.find(key);
+    if (it == voxel_map.end()) {
+      const std::size_t idx = downsampled->size();
+      downsampled->push_back(p);
+      voxel_map.emplace(key, VoxelAccum{idx, p.x, p.y, p.z, 1u});
+    } else {
+      it->second.sx += p.x;
+      it->second.sy += p.y;
+      it->second.sz += p.z;
+      ++it->second.count;
+    }
+  }
+
+  for (const auto& kv : voxel_map) {
+    const VoxelAccum& acc = kv.second;
+    PointT& pt = downsampled->points[acc.out_index];
+    pt.x = static_cast<float>(acc.sx / static_cast<double>(acc.count));
+    pt.y = static_cast<float>(acc.sy / static_cast<double>(acc.count));
+    pt.z = static_cast<float>(acc.sz / static_cast<double>(acc.count));
+  }
   return downsampled;
 }
 
