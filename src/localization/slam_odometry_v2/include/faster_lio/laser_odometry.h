@@ -19,6 +19,8 @@
 #include <sensor_msgs/PointCloud2.h>
 #include <condition_variable>
 #include <cstdint>
+#include <deque>
+#include <queue>
 #include <thread>
 
 #include "imu_processing.hpp"
@@ -58,14 +60,6 @@ struct SensorHealth {
             << "lidar=" << (lidar_healthy ? "ok" : "fail") << "(pts=" << lidar_points << ")";
         return oss.str();
     }
-};
-
-/// 退化检测信息
-struct DegeneracyInfo {
-    bool is_degenerate = false;              ///< 是否退化
-    double degeneracy_ratio = 1.0;           ///< λ_min / λ_max，越小越退化
-    Eigen::Vector3d degenerate_axis = Eigen::Vector3d::Zero();  ///< 物理空间中的退化轴方向
-    bool is_rot_degenerate[3] = {false, false, false};  ///< roll/pitch/yaw 是否退化
 };
 
 /// 纯里程计核心：与 faster_lio_ws LaserMapping 的算法部分一致
@@ -127,11 +121,9 @@ class LaserOdometry {
                                double attitude_diff_thresh_deg = 2.0,
                                double attitude_correction_gain = 0.7);
 
-    /// 设置观测参数（轮速噪声、非完整性约束噪声、GNSS 噪声、最小状态等）
+    /// 设置观测参数（轮速噪声、GNSS 姿态噪声）
     void SetObservationParams(double wheel_velocity_noise,
-                              double non_holonomic_noise,
-                              double gnss_attitude_noise_rad2,
-                              int min_gnss_status, int min_gnss_nsv, int min_lidar_points);
+                              double gnss_attitude_noise);
 
     /// 获取传感器健康状态
     SensorHealth GetSensorHealth() const;
@@ -174,10 +166,10 @@ class LaserOdometry {
     /// 更新传感器健康状态（检查超时）
     void UpdateSensorHealth();
 
-    /// 轮速观测更新（单次更新，使用完整 23 维 H 矩阵）
+    /// 轮速观测更新（3D 世界系速度伪观测，lm_slam 同构）
     void ApplyWheelSpeedObservation();
 
-    /// GNSS 姿态观测更新（单次更新，只观测 pitch 和 roll）
+    /// GNSS 姿态观测更新（lm_slam 式相对姿态：首帧基准 + 3D 含 yaw）
     void ApplyGnssAttitudeObservation();
 
     /// IMU 加速度计重力方向观测：利用加速度计测量重力方向，约束 roll 和 pitch
@@ -187,25 +179,14 @@ class LaserOdometry {
     /// 检测当前是否处于低加速状态（适合进行重力方向观测）
     bool isLowAcceleration() const;
 
-    /// 退化检测：基于法向量协方差分析
-    DegeneracyInfo DetectDegeneracy() const;
-
-    /// P 矩阵膨胀：在退化方向上恢复 P 的不确定性，让后续观测有话语权
-    void InflateDegenerateP(const DegeneracyInfo& info);
-
     /// DCReg 包装观测模型：调用原 ObsModel + DCReg 诊断 + 鲁棒加权
+    /// （三期方案：退化方向 H 列非线性软缩放在此后处理中完成，无任何 P 手术）
     void ObsModelWithDCReg(state_ikfom &s,
                            esekfom::dyn_share_datastruct<double> &ekfom_data);
 
-    /// DCReg 后处理：对 ekfom_data 做退化诊断 + Huber + 退化降权
+    /// DCReg 后处理：对 ekfom_data 做退化诊断 + Huber + 退化方向 H 列非线性软缩放
     void ApplyDCRegAndWeights(
         esekfom::dyn_share_datastruct<double> &ekfom_data);
-
-    /// DCReg P 矩阵膨胀：在 DCReg 检测到的退化方向上进行定向协方差膨胀
-    void InflateDegeneratePFromDCReg(const DCRegResult& dc_result);
-
-    /// 检查 GNSS 姿态数据是否有效
-    bool isGnssAttitudeValid() const;
 
    private:
     /// modules
@@ -273,13 +254,26 @@ class LaserOdometry {
     std::uint64_t vel_reset_count_ = 0;           ///< 速度重置计数
     std::uint64_t attitude_reset_count_ = 0;      ///< 姿态重置计数
 
+    ///////////////////////// GNSS 相对姿态观测（lm_slam 同构）/////////////////////////////////////
+    /// 观测"姿态相对首帧的变化"而非绝对值，安装角/坐标系/绝对误差被基准吸收
+    Eigen::Matrix3d R_gnss_first_ = Eigen::Matrix3d::Identity();  ///< 首帧 GNSS 旋转基准
+    Eigen::Matrix3d R_est_first_ = Eigen::Matrix3d::Identity();   ///< 首帧 LIO 旋转基准
+    bool gnss_baseline_captured_ = false;         ///< 是否已捕获首帧基准
+    double last_used_gnss_ts_ = -1.0;             ///< 上次实际使用的 GNSS 消息时间戳
+    bool gnss_update_every_frame_ = false;        ///< 每帧复用最新缓存值（lm_slam 行为，默认关）
+    int gnss_baseline_wait_frames_ = 50;          ///< 基准捕获前等待帧数（等 LIO 收敛）
+    int gnss_min_nsv_ = 6;                        ///< GNSS 最低可见卫星数门控：遮挡/隧道内 nsv→0 时
+                                                  ///< 姿态解算漂移（实测相对 pitch 残差达 12°），必须跳过
+    // GNSS pitch 滑动窗平均（对齐 lm_slam filter()/window_size=50，只对 pitch 滤波）：
+    // 滤掉 GNSS pitch 高频抖动，提供稳定 pitch 参考压 z 漂移；heading/roll 直接相对、不滤波
+    std::deque<double> gnss_pitch_window_;
+    double gnss_pitch_window_sum_ = 0.0;
+    size_t gnss_pitch_window_size_ = 50;
+    double last_gnss_raw_pitch_deg_ = 0.0;        ///< 平滑前的 GNSS 原始 pitch（诊断：定位 2° 偏差归属）
+
     ///////////////////////// 观测更新参数 ///////////////////////////////////////////////////////
-    double wheel_velocity_noise_ = 0.01;          ///< 轮速观测噪声方差 (m²/s²)
-    double non_holonomic_noise_ = 0.01;           ///< 非完整性约束噪声方差 (m²/s²)，横向/垂向速度约束
-    double gnss_attitude_noise_rad2_ = 0.03;      ///< GNSS 姿态观测噪声方差 (rad²)，与 lm_slam 对齐
-    int min_gnss_status_ = 33;                    ///< 最小 GNSS 状态（RTK 固定解）
-    int min_gnss_nsv_ = 8;                        ///< 最小 GNSS 卫星数量
-    int min_lidar_points_ = 100;                  ///< 最小点云数量
+    double wheel_velocity_noise_ = 0.1089;        ///< 轮速 3D 伪观测噪声方差 (m²/s²)，σ=0.33 对齐 lm_slam
+    double gnss_attitude_noise_ = 0.03;           ///< GNSS 相对姿态噪声方差 (rad²)，σ≈9.9° 对齐 lm_slam 实际生效值
 
     ///////////////////////// IMU 重力方向观测参数 ///////////////////////////////////////////////////////
     bool use_imu_gravity_ = true;                 ///< 是否使用IMU重力方向观测约束roll/pitch
@@ -300,6 +294,49 @@ class LaserOdometry {
     double huber_k_ = 0.5;                        ///< Huber 损失阈值 (m)
     double degeneracy_weight_alpha_ = 0.5;        ///< 退化方向降权强度
     DCRegResult dcreg_result_;                    ///< 最新 DCReg 退化检测结果
+    /// 退化分数的帧间平滑（指数衰减）：DCReg 单帧特征比对点云噪声敏感，分数在阈值附近
+    /// 剧烈抖动（实测 rot_y: 0.152→0→0），导致膨胀"脉冲式"——只活一帧，下一帧 LiDAR 又把
+    /// P 压回 1e-7。平滑让膨胀在退化段持续 3~5 帧，轮速/GNSS 才有持续话语权。
+    std::array<double, 6> smooth_degeneracy_scores_ = {0.0, 0.0, 0.0, 0.0, 0.0, 0.0};
+    bool degeneracy_score_initialized_ = false;   ///< 是否已初始化平滑分数
+    double dcreg_score_smooth_alpha_ = 0.7;       ///< 平滑：当前帧权重（0.7*当前 + 0.3*上一帧）
+    double dcreg_col_score_gate_ = 0.05;          ///< H 列缩放门控：平滑分数 > gate 的方向列乘 c_min
+                                                  ///< （0.05 ⟺ cond>26.3 @T=25；比例映射已被实车+定量双重否决）
+    double dcreg_col_min_scale_ = 1e-3;           ///< 退化方向列缩放下限：保留的弱约束比例，保 GNSS 话语权
+    bool dcreg_constrain_enabled_ = false;        ///< 退化干预总开关：false=仅检测+日志（lm_slam 一致版），
+                                                  ///< true=启用滞回状态机+列缩放+地图冻结（v4 实验路径，保留备用）
+
+    // —— 退化滞回状态机（v4：切断门控闪断→P 摆动→增益振荡正反馈，仅 dcreg_constrain_enabled_=true 生效）——
+    // 实车证据（0622）：score 在 gate 两侧逐帧摆动时，P_pitch 在 1e-7↔4e-3 间跳变 4 个量级，
+    // k_pitch 1e-5↔0.13 跳变，lio_pitch 被 +6.6°↔−4.9° 振荡拖拽（effect num 曾暴跌至 152）。
+    // 任一方向 s>gate 即进入退化态并锁定该方向；进入后强制保持 hold_frames 帧，期间无论
+    // 当帧 is_degenerate/score 如何一律缩放锁定列，且 MapIncremental 不插点（状态供 Run() 读取）。
+    bool degenerate_active_ = false;              ///< 滞回退化态是否激活
+    int degenerate_hold_counter_ = 0;             ///< 剩余强制保持帧数
+    int dcreg_hold_frames_ = 10;                  ///< 触发后保持帧数（10Hz 下约 1 秒）
+    bool held_degenerate_dirs_[6] = {false};      ///< 本次退化 episode 锁定的方向（scores 顺序）
+    double last_sm_frame_time_ = -1.0;            ///< 状态机已处理的帧时间（IEKF 多次迭代去重）
+    bool map_freeze_this_frame_ = false;          ///< 本帧冻结地图增量（Run() 门控 MapIncremental）
+
+    // 卡方分布阈值（99.9% 置信度）
+    static constexpr double CHI2_THRESHOLD_3DOF = 16.27;
+
+    ///////////////////////// 工具函数：马氏距离异常值检测 ////////////////////////////////////////
+    template <int dim>
+    std::pair<bool, double> MahalanobisOutlierRejection(
+        const Eigen::Matrix<double, dim, 1>& residual,
+        const Eigen::Matrix<double, dim, 23>& H,
+        const Eigen::Matrix<double, 23, 23>& P,
+        const Eigen::Matrix<double, dim, dim>& R,
+        double threshold) const {
+        Eigen::Matrix<double, dim, dim> S = H * P * H.transpose() + R;
+        auto llt = S.llt();
+        if (llt.info() != Eigen::Success) {
+            return {true, std::numeric_limits<double>::max()};
+        }
+        double mahalanobis = residual.transpose() * llt.solve(residual);
+        return {mahalanobis > threshold, mahalanobis};
+    }
 
     ///////////////////////// EKF inputs and output ///////////////////////////////////////////////////////
     common::MeasureGroup measures_;                    // sync IMU and lidar scan

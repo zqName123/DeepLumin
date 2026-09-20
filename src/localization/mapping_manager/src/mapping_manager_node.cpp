@@ -199,11 +199,18 @@ class MappingManagerNode {
       }
       ROS_INFO("[mapping_manager] backend start accepted state=%s reason=%s",
                srv.response.state.c_str(), srv.response.reason.c_str());
+      // 立即同步后端状态，让 GUI 尽快看到 RUNNING 状态
+      syncBackendStatus();
     }
 
     if (req.auto_start_recording) startAutoBagRecording();
 
-    mapping_manager_ros::fillRos(out, &res);
+    // 使用同步后的最新状态填充响应
+    const auto post_start = core_.getStatus().status;
+    res.accepted = out.accepted;
+    res.task_id = out.task_id;
+    res.state = mapping_manager::toString(post_start.state);
+    res.reason = post_start.status_message.empty() ? "建图已启动" : post_start.status_message;
     return true;
   }
 
@@ -254,6 +261,12 @@ class MappingManagerNode {
                srv.response.state.c_str(), srv.response.reason.c_str(),
                srv.response.map_path.c_str(), srv.response.output_dir.c_str());
       syncBackendStatus();
+      // 使用同步后的最新状态填充响应，让 GUI 立即看到最终状态（而非中间 STOPPING）
+      const auto post_status = core_.getStatus().status;
+      res.accepted = true;
+      res.state = mapping_manager::toString(post_status.state);
+      res.reason = post_status.status_message.empty() ? "建图已停止" : post_status.status_message;
+      return true;
     }
 
     mapping_manager_ros::fillRos(out, &res);
@@ -311,6 +324,15 @@ class MappingManagerNode {
   void onTimer(const ros::TimerEvent&) {
     core_.update(nowSec());
     recorder_.poll();
+
+    // 定期同步后端状态（每 2 次 ≈ 每 0.4 秒 @5Hz），确保关键帧/回环计数等字段保持最新
+    {
+      static int sync_counter = 0;
+      if (++sync_counter >= 2) {
+        sync_counter = 0;
+        if (config_.backend.enabled) syncBackendStatus();
+      }
+    }
 
     auto snapshot = core_.getStatus();
     if (snapshot.record_status.active && !recorder_.running() && !recorder_.stopping() &&

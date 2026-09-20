@@ -24,9 +24,9 @@ extrinsics:
 
 # -------------------- 话题 --------------------
 topics:
-  source_cloud: /localization/cloud_registered_effect
+  source_cloud: /slam_odometry/cloud_registered
   initial_pose: /localization/fused_odom          # 跟踪初值（融合里程计）
-  source_odom: /localization/slam_odom
+  source_odom: /slam_odometry/odom
   bootstrap_initial_pose: /localization/manager/initial_pose
   manual_initial_pose: /initialpose
   gm_anchor: /localization_v2/gm_anchor            # localization_v2 初始化仲裁重锚（仅初始化阶段）
@@ -62,7 +62,7 @@ map:
   vgicp_voxel_resolution: 0.4 # 0.5
   vgicp_coarse_scale: 10.0
   vgicp_fine_scale: 1.0
-  global_map_publish_voxel_leaf: 0.3   # 可视化用全局地图降采样
+  global_map_publish_voxel_leaf: 0.8   # 可视化用全局地图降采样
   global_map_publish_period: 0.0       # 全局地图重发周期（秒）
 
 # -------------------- 运行时 --------------------
@@ -98,7 +98,7 @@ crop:
 # -------------------- 匹配器 --------------------
 matcher:
   # icp | gicp | vgicp（small_gicp）| fast_gicp（v1 行为）| fast_gicp_vgicp（fast_gicp 粗 + vgicp 细）
-  type: vgicp
+  type: gicp
   use_crop: false
   source_voxel_leaf: 0.06
   target_voxel_leaf: 0.08
@@ -113,7 +113,7 @@ matcher:
   # 鲁棒核：none | huber | cauchy（仅 small_gicp 的 gicp/vgicp/icp 生效）
   robust_kernel: none
   robust_kernel_scale: 5.0
-  num_threads: 2               # small_gicp 线程数
+  num_threads: 4               # small_gicp 线程数 2
   cov_num_neighbors: 20         # source 协方差估计近邻数
   cov_num_threads: 2
   fast_gicp_num_threads: 4
@@ -158,4 +158,4 @@ publish:
   initial_guess: false
   path: false
   status: true
-  difference_cloud: true       # 差异点云发布开关（打开后还会发布 /loc_available）
+  difference_cloud: false       # 差异点云发布开关（打开后还会发布 /loc_available）

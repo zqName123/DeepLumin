@@ -1,0 +1,22 @@
+<?xml version="1.0"?>
+<package format="2">
+  <name>lio_odometry</name>
+  <version>0.0.1</version>
+  <description>LiDAR-Inertial Odometry module (ported from lm_slam_ros)</description>
+
+  <maintainer email="dev@example.com">dev</maintainer>
+  <license>TODO</license>
+
+  <buildtool_depend>catkin</buildtool_depend>
+
+  <depend>roscpp</depend>
+  <depend>sensor_msgs</depend>
+  <depend>nav_msgs</depend>
+  <depend>tf</depend>
+  <depend>pcl_conversions</depend>
+  <depend>pcl_ros</depend>
+  <depend>deeplumin_msgs</depend>
+  <depend>yaml-cpp</depend>
+  <depend>eigen</depend>
+  <depend>libpcl-all-dev</depend>
+</package>

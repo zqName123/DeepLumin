@@ -665,6 +665,14 @@ class GlobalMatcherV2Node {
         return;
       }
     }
+    // [DEBUG] 打印 GM 匹配结果
+    // ROS_INFO("[GM_DEBUG] match result: "
+    //          "initial_map_source(%.3f, %.3f) final_map_source(%.3f, %.3f) "
+    //          "final_map_base(%.3f, %.3f) success=%d inlier=%.3f",
+    //          initial_map_source(0,3), initial_map_source(1,3),
+    //          final_map_source(0,3), final_map_source(1,3),
+    //          final_map_base(0,3), final_map_base(1,3),
+    //          success, metrics.inlier_ratio);
     if (success) {
       last_map_source_ = final_map_source;
       have_last_map_source_ = true;
@@ -687,10 +695,10 @@ class GlobalMatcherV2Node {
 
     publishAligned(source_stamp, source, final_map_source);
     publishSubmap(source_stamp);
-    if (success) {
-      publishDifferenceCloud(source_stamp, final_map_source,
-                             map_manager_.targetPcl());
-    }
+    // if (success) {
+    //   publishDifferenceCloud(source_stamp, final_map_source,
+    //                          map_manager_.targetPcl());
+    // }
     const bool publish_map_source =
         config_.result_pose_frame == "source" || config_.result_pose_frame == "odom";
     const Eigen::Matrix4f result_pose = publish_map_source ? final_map_source : final_map_base;
@@ -728,18 +736,31 @@ class GlobalMatcherV2Node {
     bool have_map_base = false;
     Eigen::Matrix4f map_base = Eigen::Matrix4f::Identity();
 
+    // [FIX] TRACKING 模式：优先使用 fused_odom（tracking_map_base）计算初值，
+    // 而非 last_map_source_（上次成功结果）。
+    // 原因：last_map_source_ 不随里程计漂移更新，导致 GM 搜索范围锁定在旧位置，
+    //       无法检测到里程计漂移后的匹配失败。
+    //       使用 fused_odom 后，初值 = map_odom(上次) ⊕ odom_base(实时)，
+    //       搜索位置随里程计漂移，能正确报告匹配失败。
+    // 回退：将此 if-else 中的优先级恢复为 last_map_source_ > tracking_map_base。
     if (config_.use_tracking_initial_pose && (have_tracking || have_last_map_source_)) {
       guess.mode = MatcherRunMode::TRACKING;
-      if (have_last_map_source_) {
+      if (have_tracking) {
+        guess.reason = "tracking:fused_odom";
+        map_base = tracking_map_base;
+        have_map_base = true;
+        // [DEBUG] 打印 GM 初值来源
+        // ROS_INFO("[GM_DEBUG] use fused_odom as initial guess: "
+        //          "map_base(%.3f, %.3f, %.3f) source_odom(%.3f, %.3f, %.3f)",
+        //          map_base(0,3), map_base(1,3), map_base(2,3),
+        //          source_odom_base(0,3), source_odom_base(1,3), source_odom_base(2,3));
+      } else if (have_last_map_source_) {
         guess.reason = "tracking:last_result";
         guess.map_source = last_map_source_;
         guess.source_base = have_source_odom ? source_odom_base : Eigen::Matrix4f::Identity();
         guess.map_base = guess.map_source * guess.source_base;
         return guess;
       }
-      guess.reason = "tracking:fused_odom";
-      map_base = tracking_map_base;
-      have_map_base = true;
     } else {
       guess.mode = MatcherRunMode::BOOTSTRAP;
       if (config_.use_bootstrap_initial_pose && have_bootstrap) {
@@ -775,7 +796,13 @@ class GlobalMatcherV2Node {
       guess.source_base = Eigen::Matrix4f::Identity();
       guess.map_source = map_base;
     }
+    
     guess.map_base = guess.map_source * guess.source_base;
+    
+    // std::cout << "tracking_map_base: " << tracking_map_base(0,3) << " " << tracking_map_base(1,3) << std::endl;
+    // std::cout << "source_odom_base: " << source_odom_base(0,3) << " " << source_odom_base(1,3) << std::endl;
+    // std::cout << "map_source (=tracking*odom_inv): " << map_base(0,3) << " " << map_base(1,3) << std::endl;
+
     return guess;
   }
 

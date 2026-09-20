@@ -15,8 +15,20 @@ bool FusionCore::passesJumpGuard(const Pose3d& candidate_map_odom) const {
   if (!jump_guard_.enabled || !have_map_odom_) {
     return true;
   }
-  return translationDiff(map_odom_, candidate_map_odom) <= jump_guard_.max_translation &&
-         std::abs(yawDiffDeg(map_odom_, candidate_map_odom)) <= jump_guard_.max_yaw_deg;
+  // [FIX] 比较修正前后 fused_pose 的变化量，而非 map_odom 的绝对值差异。
+  // 原因：map_odom 是绝对状态，当 odom_base 累积大量漂移时，map_odom 的大修正是
+  //       对漂移的补偿，不会导致 fused_pose 跳变。直接比较 map_odom 绝对值会错误
+  //       拒绝这些合理修正。
+  // 回退：恢复为 translationDiff(map_odom_, candidate_map_odom) 的比较方式。
+  if (!have_slam_) {
+    // 无 slam 数据时，退化为 map_odom 绝对值比较
+    return translationDiff(map_odom_, candidate_map_odom) <= jump_guard_.max_translation &&
+           std::abs(yawDiffDeg(map_odom_, candidate_map_odom)) <= jump_guard_.max_yaw_deg;
+  }
+  const Pose3d old_fused = compose(map_odom_, odom_base_);
+  const Pose3d new_fused = compose(candidate_map_odom, odom_base_);
+  return translationDiff(old_fused, new_fused) <= jump_guard_.max_translation &&
+         std::abs(yawDiffDeg(old_fused, new_fused)) <= jump_guard_.max_yaw_deg;
 }
 
 bool FusionCore::updateFromGlobalMatch(const GlobalMatchUpdate& update) {

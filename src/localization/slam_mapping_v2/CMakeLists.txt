@@ -21,7 +21,7 @@ find_package(catkin REQUIRED COMPONENTS
 )
 find_package(PCL REQUIRED COMPONENTS common io features filters search)
 find_package(OpenCV REQUIRED)
-set(GTSAM_DIR "/home/hhy/2004ros/DeepLumin/gtsam_install/lib/cmake/GTSAM" CACHE PATH "Path to GTSAMConfig.cmake" FORCE)
+set(GTSAM_DIR "/home/hhy/2004ros/DeepLumin_zq/gtsam_install/lib/cmake/GTSAM" CACHE PATH "Path to GTSAMConfig.cmake" FORCE)
 find_package(GTSAM REQUIRED CONFIG PATHS "${GTSAM_DIR}" NO_DEFAULT_PATH)
 
 catkin_package(

@@ -1,0 +1,116 @@
+lio_odometry:
+  # -------------------- 坐标系与外参 --------------------
+  frames:
+    map: "map"
+    odom: "odom"
+    base_link: "base_link"
+    imu: "imu_link"
+    lidar: "lidar_link"
+
+  extrinsics:
+    base_to_imu:
+      translation: [0.0, 0.0, 0.0]
+      rotation: [1.0, 0.0, 0.0,
+                 0.0, 1.0, 0.0,
+                 0.0, 0.0, 1.0]
+    base_to_lidar:
+      translation: [0.0, 0.0, 0.0]
+      rotation: [1.0, 0.0, 0.0,
+                 0.0, 1.0, 0.0,
+                 0.0, 0.0, 1.0]
+
+  # -------------------- 订阅话题 --------------------
+  external:
+    imu_topic: "/ouster/imu"
+    lidar_topic: "/ouster/points"
+    wheel_topic: "/can_receive_info"
+    gnss_topic: "/gnss_chc_data"
+    correction_topic: "/slam_mapping_v2/correction"
+    use_imu: true
+    use_correction: false
+
+  outputs:
+    publish_odom: true
+    odom_topic: "/slam_odometry/odom"
+    registered_scan_topic: "/slam_odometry/cloud_registered"
+    effect_scan_topic: "/slam_odometry/cloud_effect"
+    publish_tf: false  
+    local_map_publish_interval: 10
+
+fasterlio:
+  lidar_type: 3                # 1 for Livox serials LiDAR, 2 for Velodyne LiDAR, 3 for ouster LiDAR
+  scan_line: 64
+  blind: 1.2                   # 盲区，小于盲区距离的不会处理
+  time_scale: 1e-3             # 兼容不同数据集的时间单位，仅对Velodyne LiDAR(lidar_type=2)生效
+  skip_lidar_num: 0            # 点云的跳帧情况
+  point_filter_num: 2          # 点云采样参数
+  max_iteration: 4             # 最大迭代次数（与 FAST-LIVO2 对齐）
+  filter_size_scan: 0.35      # 对scan进行的降采样
+  filter_size_map: 0.35       # 对map进行的降采样
+  esti_plane_threshold: 0.1    # default=0.1
+  use_aa: true                 # use anderson-acceleration（VoxelMap 模式下会自动禁用）
+  acc_cov: 0.2                 # 加速度计噪声（与 lm_slam_ros 对齐，更信任 IMU）
+  gyr_cov: 0.1                # 陀螺仪噪声（与 lm_slam_ros 对齐，更信任 IMU）
+  b_acc_cov: 0.0001            # 加速度计偏置噪声（与 FAST-LIVO2 对齐）
+  b_gyr_cov: 0.0001            # 陀螺仪偏置噪声（与 FAST-LIVO2 对齐）
+  extrinsic_est_en: false       # true: enable the online estimation of IMU-LiDAR extrinsic
+  extrinsic_T: [0, 0.0, 0.0]
+  extrinsic_R: [0, 1, 0,
+                -1, 0, 0,
+                0, 0, 1]
+  keep_first_imu_estimation: false   # 启用首帧 IMU 估计保持（隧道场景重要）
+  lidar_update_r: 0.001        # LIDAR Update参数R（基线 R，自适应 R 时使用）0.001
+  r_base: 0.001                # FAST-LIVO2 风格观测噪声基线 0.001
+
+# FAST-LIVO 风格 VoxelMap 配置（替换 iVox）
+# 使用直接特征值分解进行平面拟合，无 RANSAC
+# 优化：LRU 淘汰 + push_to_subvoxel + check_and_update + reinit
+voxel_map:
+  # 八叉树参数
+  max_voxel_size: 3.0          # 根体素边长 (米)
+  max_layer: 2                 # 八叉树最大深度
+  layer_init_num: [5, 5, 5, 5, 5]  # 每层初始化所需最少点数
+  max_points_num: 1000         # 单体素最大点数（停止更新阈值）
+  max_root_points_size: 5000000   # 根体素最大点数上限（达到后锁死不再加新点）
+  planner_threshold: 0.01      # 平面判定阈值（最小特征值）
+
+  # 传感器噪声（用于 CalcBodyCov 计算 body 协方差）
+  beam_err: 0.02               # 测距误差 (m)
+  dept_err: 0.05              # 角度误差 (度)
+
+  # 增量更新
+  update_size_threshold: 5     # 每 N 个新点触发一次更新
+  update_inlier_threshold: 0.1 # 内点判定阈值 (m)（对齐 R-VoxelMap）
+
+  # Mahalanobis 门控
+  sigma_num: 3.0               # 3-sigma 门控
+
+  # ===== RANSAC 平面拟合（可选，默认关闭，设为 true 启用） =====
+  use_ransac: true              # false=EVD 直接分解, true=RANSAC+EVD+平面验证
+  ransac_max_iter: 10            # RANSAC 最大迭代次数
+  ransac_sample_num: 4           # 每次采样点数
+  ransac_inlier_threshold: 0.1   # 内点距离阈值 (m)（对齐 R-VoxelMap）
+  ransac_isplane_p_threshold: 0.8 # 内点比例阈值（>此值认为平面）
+  # ===== 平面有效检查 =====
+  valid_check_max_layer: 0       # 有效检查的最大八叉树层（0=仅根层）
+  valid_check_min_points_size: 5 # 最小点数触发检查
+  valid_check_resolution: 4      # 连通域网格分辨率
+
+  # 重新初始化机制（提高平面检测召回率）
+  reinit_size_vec: [100, 200, 300, 500, 700, 1000]  # reinit 触发阈值列表
+  stop_reinit_threshold: 1000  # 停止 reinit 的点数
+
+  # LRU 缓存管理（解决静止时体素无限累积问题）
+  lru_capacity: 150000            # 体素数量上限
+
+  # 滑动窗口（与 LRU 混合使用）
+  map_sliding_en: true         # 启用滑动窗口（与 LRU 混合）
+  sliding_thresh: 20.0         # 滑动触发距离阈值 (米)（放宽，LRU 为主）
+  half_map_size: 50           # 半个地图窗口大小 (体素单位)
+
+vel_gnss:
+  use_wheel_speed: false
+  use_gnss: false
+  wheel_velocity_noise: 0.33   # 0.33
+  gnss_attitude_noise: 0.03   # 0.03
+  gnss_pitch_window_size: 50

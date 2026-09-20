@@ -105,18 +105,17 @@ class SlamOdometryV2Node {
 
         // 设置观测参数
         odom_->SetObservationParams(
-            config_.slam.wheel_velocity_noise, config_.slam.non_holonomic_noise,
-            config_.slam.gnss_attitude_noise_rad2,
-            config_.slam.min_gnss_status, config_.slam.min_gnss_nsv, config_.slam.min_lidar_points);
+            config_.slam.wheel_velocity_noise, config_.slam.gnss_attitude_noise);
 
         // 3. 订阅传感器
         imu_sub_ = nh_.subscribe(config_.sensors.imu, 200000, &SlamOdometryV2Node::onImu, this);
         lidar_sub_ = nh_.subscribe(config_.sensors.lidar, 200000, &SlamOdometryV2Node::onLidar, this);
         if (config_.slam.use_vel) {
             can_sub_ = nh_.subscribe(config_.sensors.wheel, 1000, &SlamOdometryV2Node::onCan, this);
-            if (config_.slam.use_gnss_attitude) {
-                gnss_sub_ = nh_.subscribe(config_.sensors.gnss, 100, &SlamOdometryV2Node::onGnss, this);
-            }
+        }
+        // GNSS 订阅独立于轮速开关（否则关轮速做 GNSS 隔离调试时数据源一起消失）
+        if (config_.slam.use_gnss_attitude) {
+            gnss_sub_ = nh_.subscribe(config_.sensors.gnss, 100, &SlamOdometryV2Node::onGnss, this);
         }
 
         // 4. 发布结果（话题与 slam_odometry 当前外接形式一致）
@@ -250,7 +249,9 @@ class SlamOdometryV2Node {
     }
 
     void onGnss(const deeplumin_msgs::Gpchc::ConstPtr& msg) {
-        if (!odom_ || !config_.slam.use_vel || !config_.slam.use_gnss_attitude) {
+        // GNSS 姿态数据源只由 use_gnss_attitude 门控（不与轮速 use_vel 耦合，
+        // 否则关轮速做 GNSS 隔离调试时数据源也会被切断）
+        if (!odom_ || !config_.slam.use_gnss_attitude) {
             return;
         }
         faster_lio::LaserOdometry::GnssAttitudeData gnss;

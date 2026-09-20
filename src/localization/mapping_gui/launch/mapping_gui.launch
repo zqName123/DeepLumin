@@ -2,10 +2,10 @@
   <arg name="start_mapping_manager" default="true" />
   <arg name="start_slam_mapping_backend" default="true" />
   <arg name="mapping_manager_config" default="$(find mapping_manager)/config/mapping_manager.yaml" />
-  <arg name="slam_mapping_config" default="$(find slam_mapping)/config/slam_mapping.yaml" />
+  <arg name="slam_mapping_config" default="$(find slam_mapping_v2)/config/slam_mapping_v2.yaml" />
   <arg name="gui_node_name" default="mapping_gui" />
 
-  <include if="$(arg start_slam_mapping_backend)" file="$(find slam_mapping)/launch/slam_mapping_manager_backend.launch">
+  <include if="$(arg start_slam_mapping_backend)" file="$(find slam_mapping_v2)/launch/slam_mapping_v2.launch">
     <arg name="config" value="$(arg slam_mapping_config)" />
   </include>
 

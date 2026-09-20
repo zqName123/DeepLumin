@@ -57,12 +57,8 @@ struct SlamConfig {
     double attitude_correction_gain = 0.7;
 
     // 观测更新参数
-    double wheel_velocity_noise = 0.01;      ///< 轮速观测噪声方差 (m²/s²)
-    double non_holonomic_noise = 0.01;       ///< 非完整性约束噪声方差 (m²/s²)
-    double gnss_attitude_noise_rad2 = 0.03;  ///< GNSS 姿态观测噪声方差 (rad²)，与 lm_slam 对齐
-    int min_gnss_status = 33;                ///< 最小 GNSS 状态（RTK 固定解）
-    int min_gnss_nsv = 8;                    ///< 最小 GNSS 卫星数量
-    int min_lidar_points = 100;              ///< 最小点云数量
+    double wheel_velocity_noise = 0.1089;    ///< 轮速 3D 伪观测噪声方差 (m²/s²)，σ=0.33 对齐 lm_slam
+    double gnss_attitude_noise = 1e-3;       ///< GNSS 相对姿态噪声方差 (rad²)，σ≈1.8° 对齐 lm_slam
 };
 
 struct StartupConfig {

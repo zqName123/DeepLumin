@@ -1,0 +1,55 @@
+{
+  "configurations": [
+    {
+      "browse": {
+        "databaseFilename": "${workspaceFolder}/.vscode/browse.vc.db",
+        "limitSymbolsToIncludedHeaders": false
+      },
+      "includePath": [
+        "/opt/ros/jazzy/include/**",
+        "/home/hhy/2004ros/DeepLumin/src/control/motion_controller/include/**",
+        "/home/hhy/2004ros/DeepLumin/src/control/speed_control/include/**",
+        "/home/hhy/2004ros/DeepLumin/src/control/steering_control/include/**",
+        "/home/hhy/2004ros/DeepLumin/src/localization/aruco_relocalization/include/**",
+        "/home/hhy/2004ros/DeepLumin/src/localization/dr_odometry/include/**",
+        "/home/hhy/2004ros/DeepLumin/src/localization/global_matcher_v2/include/**",
+        "/home/hhy/2004ros/DeepLumin/src/localization/localization_v2/include/**",
+        "/home/hhy/2004ros/DeepLumin/src/localization/mapping_manager/include/**",
+        "/home/hhy/2004ros/DeepLumin/src/localization/relocalization/include/**",
+        "/home/hhy/2004ros/DeepLumin/src/localization/slam_mapping_v2/include/**",
+        "/home/hhy/2004ros/DeepLumin/src/localization/slam_odometry_v2/include/**",
+        "/home/hhy/2004ros/DeepLumin/src/perception/camera_obstacle_detection/include/**",
+        "/home/hhy/2004ros/DeepLumin/src/perception/lidar_obstacle_detection/include/**",
+        "/home/hhy/2004ros/DeepLumin/src/perception/pointcloud_preprocessing/include/**",
+        "/home/hhy/2004ros/DeepLumin/src/planning/global_planner/include/**",
+        "/home/hhy/2004ros/DeepLumin/src/planning/local_planner/include/**",
+        "/home/hhy/2004ros/DeepLumin/src/planning/path_smoother/include/**",
+        "/home/hhy/2004ros/DeepLumin/src/prediction/map_based_predictor/include/**",
+        "/home/hhy/2004ros/DeepLumin/src/prediction/obstacle_predictor/include/**",
+        "/home/hhy/2004ros/DeepLumin/src/sensing/camera_driver/include/**",
+        "/home/hhy/2004ros/DeepLumin/src/sensing/gnss_driver/include/**",
+        "/home/hhy/2004ros/DeepLumin/src/sensing/imu_driver/include/**",
+        "/home/hhy/2004ros/DeepLumin/src/sensing/lidar_driver/include/**",
+        "/home/hhy/2004ros/DeepLumin/src/sensing/sensor_sync/include/**",
+        "/home/hhy/2004ros/DeepLumin/src/simulation/mine_world/include/**",
+        "/home/hhy/2004ros/DeepLumin/src/simulation/sensor_simulator/include/**",
+        "/home/hhy/2004ros/DeepLumin/src/simulation/vehicle_model/include/**",
+        "/home/hhy/2004ros/DeepLumin/src/system/communication_gateway/include/**",
+        "/home/hhy/2004ros/DeepLumin/src/system/data_logger/include/**",
+        "/home/hhy/2004ros/DeepLumin/src/system/parameter_server/include/**",
+        "/home/hhy/2004ros/DeepLumin/src/system/system_monitor/include/**",
+        "/home/hhy/2004ros/DeepLumin/src/third_party/fast_gicp/include/**",
+        "/home/hhy/2004ros/DeepLumin/src/third_party/small_gicp/include/**",
+        "/home/hhy/2004ros/DeepLumin/src/vehicle_interface/vehicle_interface_node/include/**",
+        "/home/hhy/2004ros/DeepLumin/src/vehicle_interface/vehicle_state_receiver/include/**",
+        "/usr/include/**"
+      ],
+      "name": "ros2",
+      "intelliSenseMode": "gcc-x64",
+      "compilerPath": "/usr/bin/gcc",
+      "cStandard": "gnu11",
+      "cppStandard": "c++17"
+    }
+  ],
+  "version": 4
+}

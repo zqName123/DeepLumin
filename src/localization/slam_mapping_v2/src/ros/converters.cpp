@@ -69,7 +69,7 @@ deeplumin_msgs::MappingStatus toStatusMsg(const RuntimeStatus& status,
   msg.last_loop_to = status.last_loop_to;
   msg.last_loop_score = status.last_loop_score;
   msg.loop_updated_last_frame = status.loop_updated_last_frame;
-  msg.accumulated_point_count = 0;
+  msg.accumulated_point_count = status.frame_count;
   msg.duration_sec = status.duration_sec;
   return msg;
 }

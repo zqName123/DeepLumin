@@ -63,13 +63,9 @@ NodeConfig loadNodeConfig(ros::NodeHandle& pnh) {
     pnh.param<double>("vel_gnss/attitude_diff_thresh_deg", cfg.slam.attitude_diff_thresh_deg, 2.0);
     pnh.param<double>("vel_gnss/attitude_correction_gain", cfg.slam.attitude_correction_gain, 0.7);
 
-    // 观测更新参数
-    pnh.param<double>("vel_gnss/wheel_velocity_noise", cfg.slam.wheel_velocity_noise, 0.01);
-    pnh.param<double>("vel_gnss/non_holonomic_noise", cfg.slam.non_holonomic_noise, 0.01);
-    pnh.param<double>("vel_gnss/gnss_attitude_noise_rad2", cfg.slam.gnss_attitude_noise_rad2, 0.03);
-    pnh.param<int>("vel_gnss/min_gnss_status", cfg.slam.min_gnss_status, 33);
-    pnh.param<int>("vel_gnss/min_gnss_nsv", cfg.slam.min_gnss_nsv, 8);
-    pnh.param<int>("vel_gnss/min_lidar_points", cfg.slam.min_lidar_points, 100);
+    // 观测更新参数（固定 R，对齐 lm_slam）
+    pnh.param<double>("vel_gnss/wheel_velocity_noise", cfg.slam.wheel_velocity_noise, 0.1089);
+    pnh.param<double>("vel_gnss/gnss_attitude_noise", cfg.slam.gnss_attitude_noise, 1e-3);
 
     pnh.param<bool>("node/publish_tf", cfg.publish_tf, true);
     pnh.param<int>("node/local_map_publish_interval", cfg.local_map_publish_interval, 10);

@@ -1,0 +1,193 @@
+#pragma once
+
+#include <pcl/filters/voxel_grid.h>
+#include <condition_variable>
+#include <deque>
+#include <memory>
+#include <mutex>
+#include <thread>
+#include <vector>
+
+#include "faster_lio/ivox3d/ivox3d.h"
+#include "lio_odometry/core/eskf.h"
+#include "lio_odometry/core/imu_processing.h"
+#include "lio_odometry/core/pointcloud_preprocess.h"
+#include "lio_odometry/core/types.h"
+
+inline Eigen::Matrix3f SKEW_SYM_MATRIX(const Eigen::Vector3f& v) {
+    Eigen::Matrix3f m;
+    m << 0, -v.z(), v.y(), v.z(), 0, -v.x(), -v.y(), v.x(), 0;
+    return m;
+}
+
+namespace slam_odometry {
+
+namespace fasterlio {
+constexpr double INIT_TIME = 0.1;
+constexpr int NUM_MATCH_POINTS = 5;
+constexpr int MIN_NUM_MATCH_POINTS = 3;
+extern int NUM_MAX_ITERATIONS;
+extern float ESTI_PLANE_THRESHOLD;
+extern float lidar_time_interval;
+}  // namespace fasterlio
+
+inline float calc_dist(const Vec3f& a, const Vec3f& b) {
+    return (a - b).squaredNorm();
+}
+
+bool esti_plane(Vec4f& pca_result, const PointVector& point, const float& threshold = 0.1f);
+
+struct LaserOdometryOptions {
+    bool is_in_slam_mode = true;
+    double kf_dis_th = 2.0;
+    double kf_angle_th = 15.0 * M_PI / 180.0;
+};
+
+class LaserOdometryCore {
+   public:
+    EIGEN_MAKE_ALIGNED_OPERATOR_NEW
+
+    LaserOdometryCore(const LaserOdometryOptions& options = LaserOdometryOptions());
+    ~LaserOdometryCore();
+
+    bool Init(const std::string& config_yaml);
+    bool Run();
+
+    void ProcessPointCloud(const CloudPtr& cloud, double timestamp);
+    void ProcessPointCloud(const pcl::PointCloud<OusterPoint>::Ptr& cloud, double timestamp);
+    void ProcessPointCloud(const pcl::PointCloud<VelodynePoint>::Ptr& cloud, double timestamp);
+    void ProcessIMU(const IMUPtr& msg_in);
+
+    void FeedWheelSpeed(double timestamp, double speed_kmh, int gear);
+    void FeedGnssAttitude(double heading_deg, double pitch_deg, double roll_deg);
+
+    const NavState& GetState() const { return state_point_; }
+    const NavState& GetIMUState() const;
+    CloudPtr GetScanUndist() const { return scan_undistort_; }
+    CloudPtr GetScanDownBody() const { return scan_down_body_; }
+    CloudPtr GetScanDownWorld() const { return scan_down_world_; }
+    CloudPtr GetEffectScan() const;
+
+    const ESKF& GetESKF() const { return kf_; }
+    LidarType GetLidarType() const { return preprocess_->GetLidarType(); }
+
+   private:
+    bool SyncPackages();
+    void ObsModel(NavState& s, ESKF::CustomObservationModel& obs);
+    void ObsModelWelspeed(NavState& s, ESKF::CustomObservationModel& obs);
+    void ObsModelGPS(NavState& s, ESKF::CustomObservationModel& obs);
+
+    inline void PointBodyToWorld(const PointType& pi, PointType& po) {
+        Vec3d p_global(state_point_.rot_ *
+                           (state_point_.offset_R_lidar_ * pi.getVector3fMap().cast<double>() +
+                            state_point_.offset_t_lidar_) +
+                       state_point_.pos_);
+        po.x = p_global(0);
+        po.y = p_global(1);
+        po.z = p_global(2);
+        po.intensity = pi.intensity;
+    }
+
+    void MapIncremental();
+    bool LoadParamsFromYAML(const std::string& yaml);
+
+    double filter(double new_value);
+
+   private:
+    LaserOdometryOptions options_;
+
+    std::shared_ptr<PointCloudPreprocess> preprocess_ = nullptr;
+    std::shared_ptr<ImuProcess> p_imu_ = nullptr;
+
+    using IVoxType = faster_lio::IVox<3, faster_lio::IVoxNodeType::DEFAULT, PointType>;
+    faster_lio::IVox<3, faster_lio::IVoxNodeType::DEFAULT, PointType>::Options ivox_options_;
+    std::shared_ptr<IVoxType> ivox_ = nullptr;
+
+    double filter_size_map_min_ = 0;
+
+    std::vector<double> extrinT_{3, 0.0};
+    std::vector<double> extrinR_{9, 0.0};
+
+    CloudPtr scan_undistort_{new PointCloudType()};
+    CloudPtr scan_down_body_{new PointCloudType()};
+    CloudPtr scan_down_world_{new PointCloudType()};
+    std::vector<PointVector> nearest_points_;
+    std::vector<Vec4f> corr_pts_;
+    std::vector<Vec4f> corr_norm_;
+    pcl::VoxelGrid<PointType> voxel_scan_;
+
+    std::vector<float> residuals_;
+    std::vector<bool> point_selected_surf_;
+    std::vector<Vec4f> plane_coef_;
+
+    std::mutex mtx_buffer_;
+    std::deque<double> time_buffer_;
+    std::deque<CloudPtr> lidar_buffer_;
+    std::deque<IMUPtr> imu_buffer_;
+
+    double timediff_lidar_wrt_imu_ = 0.0;
+    double last_timestamp_lidar_ = 0;
+    double lidar_end_time_ = 0;
+    double last_timestamp_imu_ = -1.0;
+    double first_lidar_time_ = 0.0;
+    bool lidar_pushed_ = false;
+
+    bool enable_skip_lidar_ = true;
+    int skip_lidar_num_ = 5;
+    int skip_lidar_cnt_ = 0;
+
+    int scan_count_ = 0;
+    int publish_count_ = 0;
+    bool flg_first_scan_ = true;
+    bool flg_EKF_inited_ = false;
+    double lidar_mean_scantime_ = 0.0;
+    int scan_num_ = 0;
+    int effect_feat_num_ = 0;
+
+    double last_lidar_time_ = 0;
+
+    MeasureGroup measures_;
+
+    ESKF kf_;
+    ESKF kf_imu_;
+
+    NavState state_point_;
+
+    Vec3d pos_lidar_;
+    SO3 euler_cur_;
+    bool extrinsic_est_en_ = true;
+    bool use_aa_ = false;
+
+    bool use_wheel_speed_ = false;
+    bool use_gnss_ = false;
+
+    double wheel_velocity_noise_ = 0.33;
+    double gnss_attitude_noise_ = 0.03;
+    double lidar_update_r_ = 0.001;
+
+    int frame_num_ = 0;
+
+    float map_trim_radius_ = 0.0f;            // iVox 局部地图剔除半径（米）；0=不剔除
+    int map_trim_interval_frames_ = 10;        // 每 N 帧执行一次剔除（控制开销）
+
+    bool keep_first_imu_estimation_ = false;
+
+    double wheel_speed_obs_ = 0.0;
+    double can_speed_double_ = 0.0;
+    bool have_new_wheel_speed_ = false;
+
+    double hc_heading_ = 0.0;
+    double hc_pitch_ = 0.0;
+    double hc_roll_ = 0.0;
+    bool have_new_gnss_ = false;
+    bool first_gnss_ = true;
+    double hc_heading_b_ = 0.0;
+    double hc_pitch_b_ = 0.0;
+    double hc_roll_b_ = 0.0;
+
+    std::deque<double> window_;
+    double sum_ = 0.0;
+    int window_size_ = 50;
+};
+
+}  // namespace slam_odometry

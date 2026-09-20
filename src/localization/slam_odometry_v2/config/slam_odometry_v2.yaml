@@ -70,35 +70,66 @@ common:
 
 # 轮速/GNSS 辅助：唯一来源（核心 yaml 读取 + 节点订阅开关共用）
 vel_gnss:
-  use_vel: true    # 与 faster_lio_ws ouster64.yaml 对齐：启用 CAN 轮速约束
+  use_vel: true    # 轮速观测（3D 世界系速度伪观测，LiDAR→轮速→GNSS 顺序更新第二级）
   use_gnss_attitude: false
   can_vel_diff_thresh_kmh: 2.0
-  can_timeout_sec: 0.1
+  can_timeout_sec: 0.5
   gnss_attitude_timeout_sec: 0.2
   attitude_diff_thresh_deg: 2.0
   attitude_correction_gain: 0.7
 
-  # 观测更新参数（卡尔曼滤波观测噪声）
-  wheel_velocity_noise: 0.001        # 轮速观测噪声方差 (m²/s²)
-  non_holonomic_noise: 0.0001         # 非完整性约束噪声方差 (m²/s²)，横向/垂向速度约束
-  gnss_attitude_noise_rad2: 0.001  # GNSS 姿态观测噪声方差 (rad²)，与 lm_slam 对齐 0.03
-  min_gnss_status: 33               # 最小 GNSS 状态（RTK 固定解）
-  min_gnss_nsv: 0                   # 最小 GNSS 卫星数量
-  min_lidar_points: 100             # 最小点云数量
+  # 观测更新参数（固定 R，严格对齐 lm_slam：轮速 R=0.33 即 σ≈0.57 m/s，GNSS R=0.03 即 σ≈9.9°）
+  wheel_velocity_noise: 0.33        # lm_slam ObsModelWelspeed 内部写死 R=0.33（调用处 0.33*0.33 被忽略）
+  gnss_attitude_noise: 0.03         # lm_slam ObsModelGPS 内部写死 R=0.03
+  gnss_update_every_frame: true     # 每帧复用最新 GNSS 缓存（lm_slam 每帧无条件三连 Update）
+  gnss_baseline_wait_frames: 0      # lm_slam 首条 GNSS 即固化基准
+  gnss_min_nsv: 0                  # GNSS 最低可见卫星数门控：低于此值跳过姿态观测
+                                   # （遮挡/隧道内 nsv=0 时接收机姿态解算漂移，实测 pitch 残差达 12°）
 
-  # IMU 重力方向观测参数（利用加速度计测量重力方向，约束 roll 和 pitch）
-  # 在隧道等GNSS失效场景中，此观测是唯一能约束roll/pitch的信息源
-  use_imu_gravity: false             # 是否使用IMU重力方向观测
-  imu_gravity_noise: 0.05           # IMU重力观测噪声方差 (m²/s²)²，0.02对应~0.01rad roll/pitch误差
+  # IMU 重力方向观测参数（兜底开关，默认关闭；LiDAR 长时间失效时再评估）
+  use_imu_gravity: false
+  imu_gravity_noise: 0.05           # IMU重力观测噪声方差 (m²/s²)²
   imu_gravity_acc_threshold: 0.2    # 低加速检测阈值 (m/s²)，|acc_norm - 9.81| < threshold
 
 dcreg:
-  use_dcreg_degeneracy: false        # 启用/禁用整个 DCReg 功能
-  use_huber_weight: true            # 启用/禁用 Huber 鲁棒损失
-  use_degeneracy_weight: true       # 启用/禁用退化方向降权
-  dcreg_condition_threshold: 10.0   # DCReg 退化条件数阈值
+  use_dcreg_degeneracy: false       # DCReg 退化检测（仅检测+日志；lm_slam 一致版不做任何滤波器干预）
+  constrain_enabled: false         # 退化干预总开关：false=纯监测（默认，对齐 lm_slam）；
+                                    # true=v4 滞回状态机+H 列缩放+地图冻结（实验路径，保留备用）
+  use_huber_weight: false           # Huber 鲁棒损失（lm_slam 原版无 Huber，对齐关闭）
+  use_degeneracy_weight: false      # 退化方向行降权（lm_slam 无此机制）
+  dcreg_condition_threshold: 25.0   # DCReg 退化条件数阈值
+                                    # score=(cond-T)/T：T=10/15 时平直路面 cond=13~19 的正常段
+                                    # 就会误判退化，给 GNSS 十几%话语权，每帧拉 pitch 0.3~0.4°
+                                    # 经"状态→地图"累积，进入退化区前就把地图掰斜。
+                                    # 25 后 cond<25 完全不置零（LM 主导），只有真正退化才拦截
   huber_k: 0.5                      # Huber 损失阈值 (m)
-  degeneracy_weight_alpha: 0.7      # 退化方向降权强度
+  degeneracy_weight_alpha: 5.0      # 退化方向降权强度（仅 use_degeneracy_weight=true 时生效）
+  score_smooth_alpha: 0.7           # 退化分数帧间平滑（当前帧权重 0.7，上一帧 0.3）：
+                                    # 抑制分数单帧抖动导致的 H 缩放"脉冲化"，让退化段持续拦截 3~5 帧
+  col_scale_score_gate: 0.05        # 二值门控：平滑分数 > gate 的方向列乘 c_min（0.05 ⟺ cond>26.3 @T=25）
+                                    # 比例映射 c=(1−s)^n 已被实车+定量双重否决：退化落在 s=0.03~0.37，
+                                    # (1−s)² 给 c=0.4~0.97 → P_pitch 钉死 1e-7、GNSS k≈1e-5 失效；
+                                    # 保 GNSS 话语权需 c≤0.0055，任何平滑多项式等效硬阈值 → 直接二值化
+  col_scale_min: 0.001              # 门控触发后的列缩放系数：保留 1e-3 弱约束，
+                                    # P_pitch 稳态 ~0.002-0.007，k_GNSS≈0.06-0.2，渐进拉回 pitch 偏差
+  hold_frames: 10                   # 退化 episode 滞回保持帧数（10Hz 下约 1 秒）：
+                                    # 任一方向过 gate 即进入并锁定方向，期间持续缩放 + 冻结地图插点，
+                                    # 切断"门控闪断→P 逐帧跳变 4 个量级→增益振荡→错配焊进地图"正反馈
+
+# 自适应测量噪声估计（基于创新序列滑动窗口的在线协方差估计）
+# 当传感器信号质量变化时（如GNSS多路径、遮挡），自动调整测量噪声
+adaptive_observation_noise:
+  use_adaptive_wheel: false         # 启用轮速自适应 R
+  use_adaptive_gnss: false          # 启用 GNSS 姿态自适应 R
+  use_adaptive_imu_gravity: false   # 启用 IMU 重力自适应 R
+  wheel_alpha: 0.01                 # 轮速指数移动平均 alpha (0.01 ≈ 200帧时间常数)
+  gnss_alpha: 0.005                 # GNSS 指数移动平均 alpha (0.005 ≈ 400帧)
+  imu_gravity_alpha: 0.005          # IMU 重力指数移动平均 alpha
+
+# 地面约束伪测量：世界系 VZ=0 约束
+ground_constraint:
+  use_ground_vz_constraint: false    # 是否启用世界系 VZ=0 约束
+  ground_vz_noise: 0.1              # 地面 VZ 约束噪声方差 (m²/s²)
 
 
 
@@ -109,8 +140,8 @@ preprocess:
   time_scale: 1e-3
 
 mapping:
-  acc_cov: 0.5
-  gyr_cov: 1.0
+  acc_cov: 0.1                    # 对齐 lm_slam default.yaml（原值 0.5）
+  gyr_cov: 0.1                    # 对齐 lm_slam default.yaml（原值 1.0）
   b_acc_cov: 0.0001
   b_gyr_cov: 0.0001
   extrinsic_est_en: false
@@ -127,9 +158,9 @@ mapping:
   #               0.0, 0.0, 1.0]
 
 point_filter_num: 2
-max_iteration: 3
-filter_size_surf: 0.35
-filter_size_map: 0.35
+max_iteration: 6
+filter_size_surf: 0.5            # 对齐 lm_slam（原 0.2）：稀疏点 → LiDAR 单帧信息量天然小一个量级，
+filter_size_map: 0.5             # 对齐 lm_slam（原 0.35）：P_pitch 不被钉死，轮速/GNSS 无需干预即有增益
 
 ivox_grid_resolution: 0.5
 ivox_nearby_type: 18     # 6 / 18 / 26

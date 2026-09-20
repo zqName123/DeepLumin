@@ -16,6 +16,13 @@ struct DCRegResult {
     // [roll, pitch, yaw, x, y, z]
     std::array<bool, 6> degenerate_mask = {false, false, false, false, false, false};
     std::array<double, 6> degeneracy_scores = {0.0, 0.0, 0.0, 0.0, 0.0, 0.0};
+    /// 对齐到物理轴的退化方向基底（来自 CharacterizeDegeneracy），用于 P 矩阵定向膨胀：
+    ///   aligned_rot_basis.col(d)   ≈ roll/pitch/yaw 轴（body 旋转切空间，d=0..2）
+    ///   aligned_trans_basis.col(d) ≈ x/y/z 轴（世界系，d=0..2）
+    /// 注意：输入 Hessian 列序须为 [rot, pos]（调用方已重排）。
+    /// 分解失败时保持 Identity（配合全退化 mask，退化为逐物理轴膨胀）。
+    Eigen::Matrix3d aligned_rot_basis = Eigen::Matrix3d::Identity();
+    Eigen::Matrix3d aligned_trans_basis = Eigen::Matrix3d::Identity();
     double cond_schur_rot = 0.0;
     double cond_schur_trans = 0.0;
 };
@@ -47,6 +54,8 @@ inline DCRegResult ComputeDCReg(const Eigen::Matrix<double, 6, 6>& hessian,
     auto characterization = dcreg::CharacterizeDegeneracy(detection, params);
     result.is_degenerate = characterization.is_degenerate;
     result.degenerate_mask = characterization.degenerate_mask;
+    result.aligned_rot_basis = characterization.aligned_rot_basis;
+    result.aligned_trans_basis = characterization.aligned_trans_basis;
 
     // ③ 计算退化分数 [0, 1]
     const double rot_max = characterization.aligned_lambda_schur_rot.maxCoeff();
@@ -78,6 +87,9 @@ inline double HuberWeight(double residual, double k) {
 }
 
 /// 退化方向降权：基于 Jacobian 行向量在各退化方向上的分量
+/// degeneracy_scores 顺序: [roll, pitch, yaw, x, y, z]
+/// J_row 列顺序:           [rot_x, rot_y, rot_z, pos_x, pos_y, pos_z]
+/// (调用者已重排，两者自然对齐)
 inline double DegeneracyWeight(const Eigen::Matrix<double, 1, 6>& J_row,
                                const std::array<double, 6>& degeneracy_scores,
                                double alpha) {
@@ -91,8 +103,9 @@ inline double DegeneracyWeight(const Eigen::Matrix<double, 1, 6>& J_row,
             penalty += degeneracy_scores[d] * contribution;
         }
     }
-    // 截断下限避免完全丢弃
-    return std::max(0.1, 1.0 / (1.0 + alpha * penalty));
+    // penalty² 指数衰减：轻度退化几乎不受影响，严重退化被强力抑制
+    // alpha=5 时: score=0.01→0.05%, score=0.1→5%, score=0.5→71%, score=1.0→99.3%
+    return std::max(0.001, std::exp(-alpha * penalty * penalty));
 }
 
 }  // namespace faster_lio

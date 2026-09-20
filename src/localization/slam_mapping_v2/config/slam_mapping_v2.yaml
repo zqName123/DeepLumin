@@ -16,8 +16,8 @@ frames:
   base_link: "base_link"
 
 input:
-  odom_topic: "/localization/slam_odom"
-  scan_topic: "/localization/cloud_registered"
+  odom_topic: "/slam_odometry/odom"
+  scan_topic: "/slam_odometry/cloud_registered"
   gnss_topic: "/gnss_chc_data"
   image_topic: "/camera/li_image"  # 视觉回环用
 

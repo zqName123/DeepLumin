@@ -12,7 +12,8 @@
     roslaunch localization_v2 localization_v2.launch start_relocalization:=true
 -->
 <launch>
-  <arg name="slam_config" default="$(find slam_odometry_v2)/config/slam_odometry_v2.yaml" />
+  <!-- <arg name="slam_config" default="$(find slam_odometry_v2)/config/slam_odometry_v2.yaml" /> -->
+  <arg name="slam_config" default="$(find lio_odometry)/config/lio_odometry.yaml" />
   <!-- <arg name="global_matcher_config" default="$(find global_matcher_v2)/config/global_matcher.yaml" /> -->
   <arg name="relocalization_config" default="$(find relocalization)/config/relocalization.yaml" />
 
@@ -28,16 +29,21 @@
   <arg name="bag_delay" default="2.0" />
   <arg name="clock" default="false" />
 
-  <!-- <arg name="pcd_path" default="/home/hhy/2004ros/relocalization_ws/global_map_manual_imu.pcd" /> -->
-  <arg name="pcd_path" default="/home/hhy/2004ros/deeplumin_mapping_2/manual_mapping/map.pcd" />
+  <arg name="pcd_path" default="/home/hhy/2004ros/relocalization_ws/global_map_manual_imu.pcd" />
+  <!-- <arg name="pcd_path" default="/home/hhy/2004ros/data/manual_mapping_out/global.pcd" /> -->
   
   <param name="/use_sim_time" value="$(arg clock)" />
 
   <!-- 1. slam_odometry_v2：局部里程计 -->
-  <node if="$(arg start_slam)" pkg="slam_odometry_v2" type="slam_odometry_v2_node"
+  <!-- <node if="$(arg start_slam)" pkg="slam_odometry_v2" type="slam_odometry_v2_node"
         name="slam_odometry_v2" output="screen">
     <rosparam file="$(arg slam_config)" command="load" />
     <param name="node/faster_lio_config_yaml" value="$(arg slam_config)" />
+    <param name="node/publish_tf" value="false" />
+  </node> -->
+  <node if="$(arg start_slam)" pkg="lio_odometry" type="lio_odometry_node"
+        name="lio_odometry" output="screen">
+    <param name="config_path" value="$(arg slam_config)" />
     <param name="node/publish_tf" value="false" />
   </node>
 
@@ -49,10 +55,12 @@
     <param name="frames/odom" value="odom" />
     <param name="frames/base_link" value="base_link" />
 
-    <param name="topics/slam_odom" value="/localization/slam_odom" />
+    <!-- <param name="topics/slam_odom" value="/localization/slam_odom" /> -->
+    <param name="topics/slam_odom" value="/slam_odometry/odom" />
     <param name="topics/global_matcher_result" value="/localization/global_matcher/result" />
     <param name="topics/initial_pose" value="/initialpose" />
-    <param name="topics/source_cloud" value="/localization/cloud_registered_effect" />
+    <param name="topics/source_cloud" value="/slam_odometry/cloud_effect" />
+    <!-- <param name="topics/source_cloud" value="/localization/cloud_registered_effect" /> -->
     <param name="topics/fused_odom" value="/localization_v2/odom" />
     <param name="topics/map_to_odom" value="/localization_v2/map_to_odom" />
     <param name="topics/fused_path" value="/localization_v2/path" />
@@ -68,7 +76,9 @@
 
     <param name="global_matcher/result_pose_frame" value="odom" />
     <param name="global_matcher/enable_jump_guard" value="true" />
-    <param name="global_matcher/max_jump_translation" value="200.0" />
+    <!-- [FIX] jump guard 现在比较 fused_pose 变化量（而非 map_odom 绝对值），
+         阈值应设为单帧最大合理位移（米），而非 map_odom 的绝对值差 -->
+    <param name="global_matcher/max_jump_translation" value="10.0" />
     <param name="global_matcher/max_jump_yaw_deg" value="20.0" />
 
     <param name="initialization/require_initial_pose" value="false" />
@@ -112,9 +122,11 @@
     <param name="map/mode" value="$(arg map_mode)" />
     <param name="map/pcd_path" value="$(arg pcd_path)" />
     <param name="map/map_dir" value="$(arg map_dir)" />
-    <param name="topics/source_cloud" value="/localization/cloud_registered_effect" />
+    <param name="topics/source_cloud" value="/slam_odometry/cloud_effect" />
+    <!-- <param name="topics/source_cloud" value="/localization/cloud_registered_effect" /> -->
     <param name="topics/initial_pose" value="/localization_v2/odom" />
-    <param name="topics/source_odom" value="/localization/slam_odom" />
+    <param name="topics/source_odom" value="/slam_odometry/odom" />
+    <!-- <param name="topics/source_odom" value="/localization/slam_odom" /> -->
     <param name="runtime/source_cloud_is_odom_frame" value="true" />
     <param name="runtime/source_cloud_frame" value="odom" />
     <param name="result/pose_frame" value="odom" />

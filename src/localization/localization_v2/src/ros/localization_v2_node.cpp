@@ -214,6 +214,12 @@ class LocalizationV2Node {
     update.fitness_score = msg->fitness_score;
     update.inlier_ratio = msg->inlier_ratio;
 
+    // [DEBUG] 打印 GM 原始结果
+    // ROS_INFO("[LOC_DEBUG] GM raw result: pose(%.3f, %.3f, %.3f) pose_is_map_base=%d "
+    //          "success=%d inlier=%.3f",
+    //          update.pose.position.x(), update.pose.position.y(), update.pose.position.z(),
+    //          update.pose_is_map_base, update.success, update.inlier_ratio);
+
     if (!update.success) {
       // 跟踪失败检测：计数器由状态机统一管理
       if (state_machine_.state() == LocalizationStateMachine::State::kTracking) {
@@ -301,6 +307,12 @@ class LocalizationV2Node {
     } else {
       gm_candidate_map_odom_ = update.pose;
     }
+    // [DEBUG] 打印 gm_candidate_map_odom_ 计算结果
+    // ROS_INFO("[LOC_DEBUG] gm_candidate_map_odom computed: (%.3f, %.3f, %.3f) "
+    //          "odom_base(%.3f, %.3f, %.3f) pose_is_map_base=%d",
+    //          gm_candidate_map_odom_.position.x(), gm_candidate_map_odom_.position.y(), gm_candidate_map_odom_.position.z(),
+    //          fusion_.odomBase().position.x(), fusion_.odomBase().position.y(), fusion_.odomBase().position.z(),
+    //          update.pose_is_map_base);
 
     // 未进入 TRACKING：不应用 jump guard（门限仅 TRACKING 生效）
     if (state_machine_.state() != LocalizationStateMachine::State::kTracking) {
@@ -387,10 +399,26 @@ class LocalizationV2Node {
     }
 
     // TRACKING：jump guard / bypass 校验后应用
+    // [DEBUG] 打印 jump guard 比较的值（fused_pose 变化量）
+    {
+      const Pose3d old_fused = compose(fusion_.mapOdom(), fusion_.odomBase());
+      const Pose3d new_fused = compose(gm_candidate_map_odom_, fusion_.odomBase());
+      // ROS_INFO("[LOC_DEBUG] jump guard check: "
+      //          "old_fused(%.3f, %.3f) new_fused(%.3f, %.3f) fused_diff=%.3fm "
+      //          "map_odom(%.3f, %.3f) gm_candidate(%.3f, %.3f)",
+      //          old_fused.position.x(), old_fused.position.y(),
+      //          new_fused.position.x(), new_fused.position.y(),
+      //          translationDiff(old_fused, new_fused),
+      //          fusion_.mapOdom().position.x(), fusion_.mapOdom().position.y(),
+      //          gm_candidate_map_odom_.position.x(), gm_candidate_map_odom_.position.y());
+    }
     const bool accepted = fusion_.updateFromGlobalMatch(update);
     if (!accepted) {
-      const double jump_dx = translationDiff(fusion_.mapOdom(), gm_candidate_map_odom_);
-      const double jump_dyaw = yawDiffDeg(fusion_.mapOdom(), gm_candidate_map_odom_);
+      // 计算 fused_pose 变化量（与 jump guard 内部逻辑一致）
+      const Pose3d old_fused = compose(fusion_.mapOdom(), fusion_.odomBase());
+      const Pose3d new_fused = compose(gm_candidate_map_odom_, fusion_.odomBase());
+      const double jump_dx = translationDiff(old_fused, new_fused);
+      const double jump_dyaw = yawDiffDeg(old_fused, new_fused);
       const bool dx_exceed = jump_dx > config_.max_jump_translation;
       const bool yaw_exceed = std::abs(jump_dyaw) > config_.max_jump_yaw_deg;
       ROS_WARN_THROTTLE(

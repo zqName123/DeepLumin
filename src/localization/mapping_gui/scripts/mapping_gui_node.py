@@ -24,6 +24,42 @@ from deeplumin_msgs.srv import (
 )
 
 
+# 建图状态中文映射
+STATE_MAPPING = {
+    "IDLE": "空闲",
+    "CHECKING_ENV": "检测环境中",
+    "READY": "就绪",
+    "STARTING": "启动中",
+    "RUNNING": "正在建图",
+    "STOPPING": "停止中",
+    "SAVING_RESULTS": "保存中",
+    "SAVING": "保存中",
+    "FINISHED": "已完成",
+    "FAILED": "失败",
+    "ERROR": "错误",
+}
+
+# 录制状态中文映射
+RECORD_STATE_MAPPING = {
+    "REC_IDLE": "未录制",
+    "REC_STARTING": "启动中",
+    "REC_RUNNING": "录制中",
+    "REC_STOPPING": "停止中",
+    "REC_SAVED": "已保存",
+    "REC_FAILED": "录制失败",
+}
+
+
+def map_state(state_str):
+    """将英文状态映射为中文"""
+    return STATE_MAPPING.get(state_str, state_str or "未知")
+
+
+def map_record_state(state_str):
+    """将英文录制状态映射为中文"""
+    return RECORD_STATE_MAPPING.get(state_str, state_str or "未知")
+
+
 class MappingGuiNode:
     def __init__(self):
         rospy.init_node("mapping_gui", anonymous=False)
@@ -81,6 +117,8 @@ class MappingGuiNode:
         self.result_traj_path_var = tk.StringVar(value="-")
         self.result_keyframe_dir_var = tk.StringVar(value="-")
         self.result_keyframe_pose_path_var = tk.StringVar(value="-")
+        self.frame_count_var = tk.StringVar(value="0")
+        self.keyframe_count_var = tk.StringVar(value="0")
         self.loop_info_var = tk.StringVar(value="-")
 
     def _build_layout(self):
@@ -147,9 +185,10 @@ class MappingGuiNode:
         self._add_readonly_row(box, 1, "任务 ID", self.task_id_var)
         self._add_readonly_row(box, 2, "输出目录", self.task_output_dir_var)
         self._add_readonly_row(box, 3, "状态说明", self.task_message_var)
-        self._add_readonly_row(box, 4, "录包状态", self.record_state_var)
-        self._add_readonly_row(box, 5, "Bag 路径", self.record_bag_path_var)
-        self._add_readonly_row(box, 6, "最近回环", self.loop_info_var)
+        self._add_readonly_row(box, 4, "帧数 / 关键帧数", self.frame_count_var)
+        self._add_readonly_row(box, 5, "录包状态", self.record_state_var)
+        self._add_readonly_row(box, 6, "Bag 路径", self.record_bag_path_var)
+        self._add_readonly_row(box, 7, "最近回环", self.loop_info_var)
 
     def _build_environment_panel(self, parent):
         box = ttk.LabelFrame(parent, text="环境检测 / 接口约定", padding=10)
@@ -277,10 +316,9 @@ class MappingGuiNode:
         save_keyframe_poses = True
         save_trajectory = True
         if status.frame_count == 0 or status.keyframe_count == 0:
-            only_stop = messagebox.askyesno(
-                "无关键帧提示",
-                "当前还没有有效关键帧，保存地图大概率会失败。\n是否仅停止建图而不保存？"
-            )
+            msg = (f"当前状态：总帧数 {status.frame_count}，关键帧数 {status.keyframe_count}\n"
+                   "没有有效关键帧，保存地图大概率会失败。\n是否仅停止建图而不保存？")
+            only_stop = messagebox.askyesno("无关键帧提示", msg)
             if only_stop:
                 save_map = False
                 save_keyframes = False
@@ -340,11 +378,12 @@ class MappingGuiNode:
             environment = self._environment_status
             log_lines = list(self._last_log_lines)
 
-        self.state_var.set(status.state or "未知")
+        self.state_var.set(map_state(status.state))
         self.task_id_var.set(status.task_id or "-")
         self.task_output_dir_var.set(status.output_dir or "-")
         self.task_message_var.set(status.status_message or "-")
-        self.record_state_var.set(record.state or "未知")
+        self.frame_count_var.set(f"{status.frame_count} / {status.keyframe_count}")
+        self.record_state_var.set(map_record_state(record.state))
         self.record_bag_path_var.set(record.bag_path or "-")
         self.result_map_path_var.set(status.map_path or "-")
         self.result_traj_path_var.set(status.trajectory_path or "-")
@@ -365,16 +404,42 @@ class MappingGuiNode:
                 env_lines.append(f"[{item.level}] {item.name}: {'通过' if item.ok else '失败'}")
                 if item.detail:
                     env_lines.append(f"  {item.detail}")
-        self._replace_text(self.env_text, "\n".join(env_lines))
-        self._replace_text(self.log_text, "\n".join(log_lines))
+        env_content = "\n".join(env_lines)
+        # 仅在内容变化时更新环境面板，避免无效重绘导致滚动位置重置
+        if not hasattr(self, '_last_env_content') or self._last_env_content != env_content:
+            self._last_env_content = env_content
+            self._replace_text(self.env_text, env_content)
+        # 日志面板：仅在行数变化时全量更新（滚动位置由 _replace_text 保持）
+        if not hasattr(self, '_last_log_count') or self._last_log_count != len(log_lines):
+            self._last_log_count = len(log_lines)
+            self._replace_text(self.log_text, "\n".join(log_lines))
 
         self.root.after(500, self._refresh_ui)
 
     def _replace_text(self, widget, content):
+        """更新文本控件内容，保持滚动位置不变"""
+        # 保存当前滚动位置（相对于总高度比例）
+        try:
+            old_frac = float(widget.yview()[0])
+            at_bottom = widget.yview()[1] >= 0.99
+        except (ValueError, tk.TclError):
+            old_frac = 0.0
+            at_bottom = True
+
         widget.configure(state=tk.NORMAL)
         widget.delete("1.0", tk.END)
         widget.insert(tk.END, content)
         widget.configure(state=tk.DISABLED)
+
+        # 如果之前已经在底部或接近底部，则自动滚到底部（适合日志更新）
+        # 否则保持原来的滚动位置不变
+        try:
+            if at_bottom:
+                widget.yview(tk.MOVETO, 1.0)
+            else:
+                widget.yview(tk.MOVETO, old_frac)
+        except tk.TclError:
+            pass
 
     def log(self, line):
         stamp = time.strftime("%H:%M:%S")
