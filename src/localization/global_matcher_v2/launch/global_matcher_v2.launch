@@ -11,6 +11,7 @@
   <node pkg="global_matcher_v2" type="global_matcher_v2_node" name="global_matcher_v2"
         output="screen">
     <rosparam file="$(arg config)" command="load" />
+    <param name="log_dir" value="$(find global_matcher_v2)/../loclog" />
     <param name="map/mode" value="$(arg map_mode)" />
     <param name="map/pcd_path" value="$(arg pcd_path)" />
     <param name="map/map_dir" value="$(arg map_dir)" />

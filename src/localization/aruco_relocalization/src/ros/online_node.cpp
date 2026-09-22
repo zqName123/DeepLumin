@@ -35,11 +35,19 @@
 #include <atomic>
 #include <mutex>
 #include <sstream>
+#include <deeplumin_health_checker/health_checker/health_checker.h>
+
 
 class ArucoRelocNode {
  public:
   ArucoRelocNode() : pnh_("~"), tf_listener_(tf_buffer_) {
     config_ = aruco_reloc::loadOnlineNodeConfig(pnh_);
+
+    health_checker_ = std::make_shared<deeplumin_health_checker::HealthChecker>(nh_, pnh_);
+    health_checker_->ENABLE();
+    health_checker_->NODE_ACTIVATE();
+
+    std::cout << "ArucoRelocNode: HealthChecker enabled and activated." << std::endl;
 
     // 加载 marker 地图
     if (!map_loader_.loadFromFile(config_.marker_map_path)) {
@@ -351,6 +359,8 @@ class ArucoRelocNode {
   ros::Publisher result_pub_;
   ros::Publisher pose_pub_;
   ros::Publisher status_pub_;
+  
+  std::shared_ptr<deeplumin_health_checker::HealthChecker> health_checker_;
 
   aruco_reloc::OnlineNodeConfig config_;
   aruco_reloc::MarkerDetector detector_;

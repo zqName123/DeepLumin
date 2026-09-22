@@ -23,6 +23,7 @@
 #include <chrono>
 #include <limits>
 #include <cmath>
+#include "syslog/logger.h"
 
 namespace relocalization {
 
@@ -132,20 +133,26 @@ MatchResult GicpGlobalMatcher::alignCandidates(const CloudConstPtr& source,
   bool has_failure = false;
   int idx = 0;
   for (const auto& candidate : candidates) {
-    std::cout  << "[GICP] start candidate " << idx
-      << "/" << candidates.size()
-      << " id=" << candidate.keyframe_id
-      << " sc_score=" << candidate.score << std::endl;
+    // std::cout  << "[GICP] start candidate " << idx
+    //   << "/" << candidates.size()
+    //   << " id=" << candidate.keyframe_id
+    //   << " sc_score=" << candidate.score << std::endl;
     MatchResult result = alignOne(source, candidate, database);
-    std::cout << "[GICP] done candidate " << idx
-      << " id=" << candidate.keyframe_id
-      << " success=" << result.success
-      << " converged=" << result.converged
-      << " fitness=" << result.fitness
-      << " inlier_ratio=" << result.inlier_ratio
-      << " pts=" << result.gicp_source_points
-      << "/" << result.gicp_target_points
-      << " elapsed_ms=" << result.elapsed_ms << std::endl;
+    // std::cout << "[GICP] done candidate " << idx
+    //   << " id=" << candidate.keyframe_id
+    //   << " success=" << result.success
+    //   << " converged=" << result.converged
+    //   << " fitness=" << result.fitness
+    //   << " inlier_ratio=" << result.inlier_ratio
+    //   << " pts=" << result.gicp_source_points
+    //   << "/" << result.gicp_target_points
+    //   << " elapsed_ms=" << result.elapsed_ms << std::endl;
+    SYS_LOG(syslog::LogSeverity::INFO, false) 
+             << "GICP] done candidate " << idx << " id=" << candidate.keyframe_id
+                << " success=" << result.success << " converged=" << result.converged
+                << " fitness=" << result.fitness << " inlier_ratio=" << result.inlier_ratio
+                << " pts=" << result.gicp_source_points << "/" << result.gicp_target_points
+                << " elapsed_ms=" << result.elapsed_ms;
     ++idx;
 
     if (result.success) {

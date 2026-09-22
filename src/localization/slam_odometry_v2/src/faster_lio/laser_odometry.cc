@@ -15,8 +15,28 @@
 
 #include "laser_odometry.h"
 #include "utils.h"
+#include "syslog/logger.h"
+#include <chrono>
 
 namespace faster_lio {
+
+/// 每行号独立的节流器（替代 ROS_INFO_THROTTLE）
+template<int Line>
+struct ThrottleByLine {
+  static bool shouldLog(double rate) {
+    static std::chrono::steady_clock::time_point last_log_time;
+    auto now = std::chrono::steady_clock::now();
+    auto elapsed = std::chrono::duration<double>(now - last_log_time).count();
+    if (elapsed >= rate) {
+      last_log_time = now;
+      return true;
+    }
+    return false;
+  }
+};
+
+#define SHOULD_LOG(rate) ThrottleByLine<__LINE__>::shouldLog(rate)
+
 
 /// 将角度归一化到 [-180, 180] 度范围
 static float NormalizePitchRoll(float angle_deg) {
@@ -37,7 +57,8 @@ static Eigen::Quaterniond AnglesToQuaternion(double heading_deg, double pitch_de
 }
 
 bool LaserOdometry::InitWithoutROS(const std::string &config_yaml) {
-    LOG(INFO) << "init laser odometry from " << config_yaml;
+    // LOG(INFO) << "init laser odometry from " << config_yaml;
+    SYS_LOG(syslog::LogSeverity::INFO, true) << "init laser odometry from " << config_yaml;
     if (!LoadParamsFromYAML(config_yaml)) {
         return false;
     }
@@ -59,9 +80,11 @@ bool LaserOdometry::InitWithoutROS(const std::string &config_yaml) {
         options::NUM_MAX_ITERATIONS, epsi.data());
 
     if (std::is_same<IVoxType, IVox<3, IVoxNodeType::PHC, pcl::PointXYZI>>::value == true) {
-        LOG(INFO) << "using phc ivox";
+        // LOG(INFO) << "using phc ivox";
+        SYS_LOG(syslog::LogSeverity::INFO, true) << "using phc ivox";
     } else if (std::is_same<IVoxType, IVox<3, IVoxNodeType::DEFAULT, pcl::PointXYZI>>::value == true) {
-        LOG(INFO) << "using default ivox";
+        // LOG(INFO) << "using default ivox";
+        SYS_LOG(syslog::LogSeverity::INFO, true) << "using default ivox";
     }
 
     return true;
@@ -138,31 +161,39 @@ bool LaserOdometry::LoadParamsFromYAML(const std::string &yaml_file) {
         ivox_options_.resolution_ = yaml["ivox_grid_resolution"].as<float>();
         ivox_nearby_type = yaml["ivox_nearby_type"].as<int>();
     } catch (...) {
-        LOG(ERROR) << "bad conversion";
+        // LOG(ERROR) << "bad conversion";
+        SYS_LOG(syslog::LogSeverity::ERROR, true) << "bad conversion";
         return false;
     }
 
     LOG(INFO) << "lidar_type " << lidar_type;
     if (lidar_type == 1) {
         preprocess_->SetLidarType(LidarType::AVIA);
-        LOG(INFO) << "Using AVIA Lidar (livox_ros_driver::CustomMsg)";
+        // LOG(INFO) << "Using AVIA Lidar (livox_ros_driver::CustomMsg)";
+        SYS_LOG(syslog::LogSeverity::INFO, false) << "Using AVIA Lidar (livox_ros_driver::CustomMsg)";
     } else if (lidar_type == 2) {
         preprocess_->SetLidarType(LidarType::VELO32);
-        LOG(INFO) << "Using Velodyne 32 Lidar";
+        // LOG(INFO) << "Using Velodyne 32 Lidar";
+        SYS_LOG(syslog::LogSeverity::INFO, false) << "Using Velodyne 32 Lidar";
     } else if (lidar_type == 3) {
         preprocess_->SetLidarType(LidarType::OUST64);
-        LOG(INFO) << "Using OUST 64 Lidar";
+        // LOG(INFO) << "Using OUST 64 Lidar";
+        SYS_LOG(syslog::LogSeverity::INFO, false) << "Using OUST 64 Lidar";
     } else if (lidar_type == 4) {
         preprocess_->SetLidarType(LidarType::HESAIxt32);
-        LOG(INFO) << "Using Hesai Pandar 32 Lidar";
+        // LOG(INFO) << "Using Hesai Pandar 32 Lidar";
+        SYS_LOG(syslog::LogSeverity::INFO, false) << "Using Hesai Pandar 32 Lidar";
     } else if (lidar_type == 5) {
         preprocess_->SetLidarType(LidarType::ROBOSENSE);
-        LOG(INFO) << "Using Robosense Lidar";
+        // LOG(INFO) << "Using Robosense Lidar";
+        SYS_LOG(syslog::LogSeverity::INFO, false) << "Using Robosense Lidar";
     } else if (lidar_type == 6) {
         preprocess_->SetLidarType(LidarType::LIVOX);
-        LOG(INFO) << "Using Livox Lidar (sensor_msgs::PointCloud2)";
+        // LOG(INFO) << "Using Livox Lidar (sensor_msgs::PointCloud2)";
+        SYS_LOG(syslog::LogSeverity::INFO, false) << "Using Livox Lidar (sensor_msgs::PointCloud2)";
     } else {
-        LOG(WARNING) << "unknown lidar_type";
+        // LOG(WARNING) << "unknown lidar_type";
+        SYS_LOG(syslog::LogSeverity::WARNING, true) << "unknown lidar_type";
         return false;
     }
 
@@ -175,7 +206,8 @@ bool LaserOdometry::LoadParamsFromYAML(const std::string &yaml_file) {
     } else if (ivox_nearby_type == 26) {
         ivox_options_.nearby_type_ = IVoxType::NearbyType::NEARBY26;
     } else {
-        LOG(WARNING) << "unknown ivox_nearby_type, use NEARBY18";
+        // LOG(WARNING) << "unknown ivox_nearby_type, use NEARBY18";
+        SYS_LOG(syslog::LogSeverity::WARNING, true) << "unknown ivox_nearby_type, use NEARBY18";
         ivox_options_.nearby_type_ = IVoxType::NearbyType::NEARBY18;
     }
 
@@ -183,11 +215,11 @@ bool LaserOdometry::LoadParamsFromYAML(const std::string &yaml_file) {
 
     // 编译时间戳自报：启动第一行即可确认二进制新旧（避免 strings /proc/exe 误判——
     // 诊断字符串在 libslam_odometry_v2_core.so 中，节点 exe 本身查不到）
-    LOG(INFO) << "[Build] laser_odometry compiled at " << __DATE__ << " " << __TIME__
-              << " | use_vel=" << use_vel_ << " use_gnss_attitude=" << use_gnss_attitude_
-              << " gnss_every_frame=" << gnss_update_every_frame_
-              << " wheel_noise=" << wheel_velocity_noise_
-              << " gnss_noise=" << gnss_attitude_noise_;
+    // LOG(INFO) << "[Build] laser_odometry compiled at " << __DATE__ << " " << __TIME__
+    //           << " | use_vel=" << use_vel_ << " use_gnss_attitude=" << use_gnss_attitude_
+    //           << " gnss_every_frame=" << gnss_update_every_frame_
+    //           << " wheel_noise=" << wheel_velocity_noise_
+    //           << " gnss_noise=" << gnss_attitude_noise_;
 
     lidar_T_wrt_IMU = common::VecFromArray<double>(extrinT_);
     lidar_R_wrt_IMU = common::MatFromArray<double>(extrinR_);
@@ -224,10 +256,12 @@ void LaserOdometry::SetObservationParams(double wheel_velocity_noise,
                                          double gnss_attitude_noise) {
     wheel_velocity_noise_ = wheel_velocity_noise;
     gnss_attitude_noise_ = gnss_attitude_noise;
-    LOG(INFO) << "[Obs] params: wheel_noise=" << wheel_velocity_noise_
-              << " gnss_attitude_noise=" << gnss_attitude_noise_;
+    // LOG(INFO) << "[Obs] params: wheel_noise=" << wheel_velocity_noise_
+    //           << " gnss_attitude_noise=" << gnss_attitude_noise_;
+    SYS_LOG(syslog::LogSeverity::INFO, false) << "[Obs] params: wheel_noise=" << wheel_velocity_noise_
+                                             << " gnss_attitude_noise=" << gnss_attitude_noise_;    
 }
-
+    
 SensorHealth LaserOdometry::GetSensorHealth() const {
     std::lock_guard<std::mutex> lock(health_mutex_);
     return sensor_health_;
@@ -242,8 +276,9 @@ void LaserOdometry::UpdateSensorHealth() {
         sensor_health_.can_age = current_time - sensor_health_.can_last_update;
         if (sensor_health_.can_age > can_timeout_sec_) {
             if (sensor_health_.can_healthy) {
-                LOG_FIRST_N(WARNING, 1) << "[Health] wheel speed timeout: age="
-                                        << sensor_health_.can_age;
+                // LOG_FIRST_N(WARNING, 1) << "[Health] wheel speed timeout: age="
+                //                         << sensor_health_.can_age;
+                SYS_LOG(syslog::LogSeverity::WARNING, true) << "[Health] wheel speed timeout: age=" << sensor_health_.can_age;
             }
             sensor_health_.can_healthy = false;
         }
@@ -254,8 +289,9 @@ void LaserOdometry::UpdateSensorHealth() {
         sensor_health_.gnss_age = current_time - sensor_health_.gnss_last_update;
         if (sensor_health_.gnss_age > gnss_attitude_timeout_sec_) {
             if (sensor_health_.gnss_healthy) {
-                LOG_FIRST_N(WARNING, 1) << "[Health] GNSS timeout: age="
-                                        << sensor_health_.gnss_age;
+                // LOG_FIRST_N(WARNING, 1) << "[Health] GNSS timeout: age="
+                //                         << sensor_health_.gnss_age;
+                SYS_LOG(syslog::LogSeverity::WARNING, true) << "[Health] GNSS timeout: age=" << sensor_health_.gnss_age;
             }
             sensor_health_.gnss_healthy = false;
         }
@@ -785,10 +821,14 @@ bool LaserOdometry::ApplyVelocityGnssAid() {
             kf_.change_x(state);
             ++attitude_reset_count_;
             changed = true;
-            LOG(INFO) << "[VelAid] GNSS attitude correction: pitch=" << pitch_deg
-                      << " -> " << modified_pitch_deg << " roll=" << roll_deg
-                      << " -> " << modified_roll_deg << " gnss_age=" << gnss_age_sec
-                      << " reset_count=" << attitude_reset_count_;
+            // LOG(INFO) << "[VelAid] GNSS attitude correction: pitch=" << pitch_deg
+            //           << " -> " << modified_pitch_deg << " roll=" << roll_deg
+            //           << " -> " << modified_roll_deg << " gnss_age=" << gnss_age_sec
+            //           << " reset_count=" << attitude_reset_count_;
+            SYS_LOG(syslog::LogSeverity::INFO, true) << "[VelAid] GNSS attitude correction: pitch=" << pitch_deg
+                << " -> " << modified_pitch_deg << " roll=" << roll_deg
+                << " -> " << modified_roll_deg << " gnss_age=" << gnss_age_sec
+                << " reset_count=" << attitude_reset_count_;
         }
     }
 
@@ -807,10 +847,14 @@ bool LaserOdometry::ApplyVelocityGnssAid() {
         kf_.change_x(state);
         ++vel_reset_count_;
         changed = true;
-        LOG(INFO) << "[VelAid] CAN velocity correction: LiDAR=" << lidar_speed_kmh
-                  << " km/h, CAN=" << can_speed_correct << " km/h"
-                  << " reset_count=" << vel_reset_count_
-                  << " vel=(" << state.vel(0) << ", " << state.vel(1) << ", " << state.vel(2) << ")";
+        // LOG(INFO) << "[VelAid] CAN velocity correction: LiDAR=" << lidar_speed_kmh
+        //           << " km/h, CAN=" << can_speed_correct << " km/h"
+        //           << " reset_count=" << vel_reset_count_
+        //           << " vel=(" << state.vel(0) << ", " << state.vel(1) << ", " << state.vel(2) << ")";
+        SYS_LOG(syslog::LogSeverity::INFO, true) << "[VelAid] CAN velocity correction: LiDAR=" << lidar_speed_kmh
+            << " km/h, CAN=" << can_speed_correct << " km/h"
+            << " reset_count=" << vel_reset_count_
+            << " vel=(" << state.vel(0) << ", " << state.vel(1) << ", " << state.vel(2) << ")";
     }
     return changed;
 }
@@ -823,7 +867,8 @@ bool LaserOdometry::Run() {
     /// IMU process, kf prediction, undistortion
     p_imu_->Process(measures_, kf_, scan_undistort_);
     if (scan_undistort_->empty() || (scan_undistort_ == nullptr)) {
-        LOG(WARNING) << "No point, skip this scan!";
+        // LOG(WARNING) << "No point, skip this scan!";
+        SYS_LOG(syslog::LogSeverity::WARNING, true) << "No point, skip this scan!";
         return false;
     }
 
@@ -854,7 +899,8 @@ bool LaserOdometry::Run() {
 
     int cur_pts = scan_down_body_->size();
     if (cur_pts < 5) {
-        LOG(WARNING) << "Too few points, skip this scan!" << scan_undistort_->size() << ", " << scan_down_body_->size();
+        // LOG(WARNING) << "Too few points, skip this scan!" << scan_undistort_->size() << ", " << scan_down_body_->size();
+        SYS_LOG(syslog::LogSeverity::WARNING, true) << "Too few points, skip this scan!" << scan_undistort_->size() << ", " << scan_down_body_->size();
         return false;
     }
     scan_down_world_->resize(cur_pts);
@@ -904,8 +950,10 @@ bool LaserOdometry::Run() {
     // 退化 episode 期间冻结增量：错配帧（实测 effect num 可暴跌至 152）的点不插入 iVox，
     // 阻止"错配状态→地图污染→后续全量更新焊死误差"正反馈。冻结不做剔除，地图保持冻结前规模。
     if (dcreg_constrain_enabled_ && map_freeze_this_frame_) {
-        LOG_EVERY_N(WARNING, 4) << "[DCReg] map incremental FROZEN (hold="
-                                << degenerate_hold_counter_ << "), effect num=" << effect_feat_num_;
+        // LOG_EVERY_N(WARNING, 4) << "[DCReg] map incremental FROZEN (hold="
+        //                         << degenerate_hold_counter_ << "), effect num=" << effect_feat_num_;
+        SYS_LOG(syslog::LogSeverity::WARNING, true) << "[DCReg] map incremental FROZEN (hold="
+            << degenerate_hold_counter_ << "), effect num=" << effect_feat_num_;
     } else {
         Timer::Evaluate([&, this]() { MapIncremental(); }, "    Incremental Mapping");
     }
@@ -918,8 +966,16 @@ bool LaserOdometry::Run() {
         ivox_->RemoveFarPoints(center, map_trim_radius_);
     }
 
-    LOG(INFO) << "[ mapping ]: In num: " << scan_undistort_->points.size() << " downsamp " << cur_pts
-              << " Map grid num: " << ivox_->NumValidGrids() << " effect num : " << effect_feat_num_;
+    // LOG(INFO) << "[ mapping ]: In num: " << scan_undistort_->points.size() << " downsamp " << cur_pts
+    //           << " Map grid num: " << ivox_->NumValidGrids() << " effect num : " << effect_feat_num_;
+
+    if (SHOULD_LOG(2.0)) {
+        SYS_LOG(syslog::LogSeverity::INFO, true) << "[ mapping ]: In num: " << scan_undistort_->points.size() << " downsamp " << cur_pts
+        << " Map grid num: " << ivox_->NumValidGrids() << " effect num : " << effect_feat_num_;
+    }
+    
+
+
 
     // Debug variables
     frame_num_++;
@@ -1039,7 +1095,8 @@ void LaserOdometry::StandardPCLCallBack(const sensor_msgs::PointCloud2::ConstPtr
         [&, this]() {
             scan_count_++;
             if (msg->header.stamp.toSec() < last_timestamp_lidar_) {
-                LOG(ERROR) << "lidar loop back, clear buffer";
+                // LOG(ERROR) << "lidar loop back, clear buffer";
+                SYS_LOG(syslog::LogSeverity::ERROR, true) << "lidar loop back, clear buffer";
                 lidar_buffer_.clear();
             }
 
@@ -1064,7 +1121,8 @@ void LaserOdometry::IMUCallBack(const sensor_msgs::Imu::ConstPtr &msg_in) {
 
     mtx_buffer_.lock();
     if (timestamp < last_timestamp_imu_) {
-        LOG(WARNING) << "imu loop back, clear buffer";
+        // LOG(WARNING) << "imu loop back, clear buffer";
+        SYS_LOG(syslog::LogSeverity::WARNING, true) << "imu loop back, clear buffer";
         imu_buffer_.clear();
     }
 
@@ -1134,7 +1192,8 @@ bool LaserOdometry::SyncPackages() {
         measures_.lidar_bag_time_ = time_buffer_.front();
 
         if (measures_.lidar_->points.size() <= 1) {
-            LOG(WARNING) << "Too few input point cloud!";
+            // LOG(WARNING) << "Too few input point cloud!";
+            SYS_LOG(syslog::LogSeverity::WARNING, true) << "Too few input point cloud!";
             lidar_end_time_ = measures_.lidar_bag_time_ + lidar_mean_scantime_;
         } else if (measures_.lidar_->points.back().curvature / double(1000) < 0.5 * lidar_mean_scantime_) {
             lidar_end_time_ = measures_.lidar_bag_time_ + lidar_mean_scantime_;
@@ -1170,8 +1229,10 @@ bool LaserOdometry::SyncPackages() {
 }
 
 void LaserOdometry::PrintState(const state_ikfom &s) {
-    LOG(INFO) << "state r: " << s.rot.coeffs().transpose() << ", t: " << s.pos.transpose()
-              << ", off r: " << s.offset_R_L_I.coeffs().transpose() << ", t: " << s.offset_T_L_I.transpose();
+    // LOG(INFO) << "state r: " << s.rot.coeffs().transpose() << ", t: " << s.pos.transpose()
+    //           << ", off r: " << s.offset_R_L_I.coeffs().transpose() << ", t: " << s.offset_T_L_I.transpose();
+    SYS_LOG(syslog::LogSeverity::INFO, true) << "state r: " << s.rot.coeffs().transpose() << ", t: " << s.pos.transpose()
+        << ", off r: " << s.offset_R_L_I.coeffs().transpose() << ", t: " << s.offset_T_L_I.transpose();
 }
 
 void LaserOdometry::MapIncremental() {
@@ -1365,7 +1426,8 @@ void LaserOdometry::ObsModel(state_ikfom &s, esekfom::dyn_share_datastruct<doubl
     // 无有效匹配点 → 标记观测无效
     if (effect_feat_num_ < 1) {
         ekfom_data.valid = false;
-        LOG(WARNING) << "No Effective Points!";
+        // LOG(WARNING) << "No Effective Points!";
+        SYS_LOG(syslog::LogSeverity::WARNING, true) << "No Effective Points!";
         return;
     }
 
@@ -1466,7 +1528,8 @@ void LaserOdometry::Finish() {
     scan_down_body_ = nullptr;
     scan_undistort_ = nullptr;
     scan_down_world_ = nullptr;
-    LOG(INFO) << "laser odometry finish done";
+    // LOG(INFO) << "laser odometry finish done";
+    SYS_LOG(syslog::LogSeverity::INFO, true) << "laser odometry finish done";
 }
 
 }  // namespace faster_lio

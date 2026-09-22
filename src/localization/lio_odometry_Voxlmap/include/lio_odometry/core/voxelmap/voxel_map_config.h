@@ -38,6 +38,9 @@ struct VoxelMapConfig {
     int reinit_threshold_ = 100;           // 旧版 reinit 阈值（每 N 个点 reinit 一次）
 
     // ===== Mahalanobis 门控 =====
+    bool neighbor_search_on_failure_ = true;
+    int matching_threads_ = 4;
+    int neighbor_search_radius_ = 1; // root voxel shells; 0=current only
     double sigma_num_ = 3.0;               // 3-sigma 门控
 
     // ===== 平面有效检查 =====

@@ -1,6 +1,6 @@
 #include "pointcloud_preprocess.h"
 
-#include <glog/logging.h>
+#include "syslog/logger.h"
 #include <execution>
 
 namespace faster_lio {
@@ -36,7 +36,8 @@ void PointCloudPreprocess::Process(const sensor_msgs::PointCloud2::ConstPtr &msg
             break;
 
         default:
-            LOG(ERROR) << "Error LiDAR Type";
+            // LOG(ERROR) << "Error LiDAR Type";
+            SYS_LOG(syslog::LogSeverity::ERROR, true) << "Error LiDAR Type";
             break;
     }
     *pcl_out = cloud_out_;

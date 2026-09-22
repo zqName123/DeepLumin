@@ -114,17 +114,12 @@ inline Eigen::Matrix<T, 3, 3> Exp(const Eigen::Matrix<T, 3, 1>& ang_vel, const T
     }
 }
 
-template <typename T>
-inline Eigen::Matrix<T, 3, 3> exp(const Eigen::Matrix<T, 3, 1>& ang, const double scale = 1.0) {
-    T ang_norm = ang.norm() * scale;
-    Eigen::Matrix<T, 3, 3> Eye3 = Eigen::Matrix<T, 3, 3>::Identity();
-    if (ang_norm > 0.0000001) {
-        Eigen::Matrix<T, 3, 1> r_axis = ang / ang.norm();
-        Eigen::Matrix<T, 3, 3> K = SKEW_SYM_MATRIX(r_axis);
-        return Eye3 + std::sin(ang_norm) * K + (1.0 - std::cos(ang_norm)) * K * K;
-    } else {
-        return Eye3;
-    }
+// Quaternion exponential: a rotation vector theta requires scale=0.5.
+inline SO3 exp(const Vec3d& vec, double scale = 1.0) {
+    const double angle = std::abs(scale) * vec.norm();
+    const double sinc = angle < 1e-6 ? 1.0 - angle * angle / 6.0 : std::sin(angle) / angle;
+    const Vec3d qv = (scale * sinc) * vec;
+    return SO3(Quatd(std::cos(angle), qv.x(), qv.y(), qv.z()));
 }
 
 template <typename T>
@@ -132,7 +127,7 @@ inline Eigen::Matrix<T, 3, 3> A_matrix(const Eigen::Matrix<T, 3, 1>& v) {
     Eigen::Matrix<T, 3, 3> res;
     double squared_norm = v[0] * v[0] + v[1] * v[1] + v[2] * v[2];
     double norm = std::sqrt(squared_norm);
-    if (norm < 1e-11) {
+    if (norm < 1e-5) {
         res = Eigen::Matrix<T, 3, 3>::Identity();
     } else {
         res = Eigen::Matrix<T, 3, 3>::Identity() +

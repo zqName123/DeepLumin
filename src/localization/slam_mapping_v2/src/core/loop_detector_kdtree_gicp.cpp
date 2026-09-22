@@ -11,6 +11,7 @@
 #include <iostream>
 #include <limits>
 #include <memory>
+#include "syslog/logger.h"
 
 namespace slam_mapping_v2 {
 
@@ -48,7 +49,8 @@ PointCloudPtr sanitizeCloud(const PointCloudPtr& cloud) {
 }
 
 void debugLoopLog(const std::string& msg) {
-  std::cerr << "[slam_mapping_v2][loop_debug] " << msg << std::endl;
+  // std::cerr << "[slam_mapping_v2][loop_debug] " << msg << std::endl;
+  SYS_LOG(syslog::LogSeverity::INFO, true) << "loop_debug: " << msg;
 }
 
 }  // namespace
@@ -82,7 +84,8 @@ bool KdtreeGicpLoopDetector::shouldCheck(const std::vector<Keyframe>& kfs, int c
       (current_idx - last_loop_check_index_) < cfg_.loop_kf_gap) {
     return false;
   }
-  std::cout << "[Loop] shouldCheck: " << current_idx << std::endl;
+  // std::cout << "[Loop] shouldCheck: " << current_idx << std::endl;
+  SYS_LOG(syslog::LogSeverity::INFO, true) << "shouldCheck: " << current_idx;
   return true;
 }
 

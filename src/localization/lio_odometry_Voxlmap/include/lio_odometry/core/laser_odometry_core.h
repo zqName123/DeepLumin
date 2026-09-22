@@ -158,6 +158,9 @@ class LaserOdometryCore {
     double wheel_velocity_noise_ = 0.33;
     double gnss_attitude_noise_ = 0.03;
     double lidar_update_r_ = 0.001;
+    bool use_adaptive_r_ = true;
+    int min_effective_points_ = 20;
+    double min_effective_ratio_ = 0.05;
     double r_base_ = 0.001;                // FAST-LIVO2 风格观测噪声基线
 
     int frame_num_ = 0;

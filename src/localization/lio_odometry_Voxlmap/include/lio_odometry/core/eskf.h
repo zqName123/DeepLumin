@@ -25,6 +25,7 @@ class ESKF {
     };
 
     struct CustomObservationModel {
+        Eigen::VectorXd variance_; // LiDAR diagonal R; empty means scalar fallback.
         bool valid_ = true;
         bool converge_ = true;
 
@@ -79,16 +80,18 @@ class ESKF {
 
     void Predict(const double& dt, const ProcessNoiseType& Q, const Vec3d& gyro, const Vec3d& acce);
 
-    void Update(ObsType obs, const double& R);
+    bool Update(ObsType obs, const double& R);
 
     const NavState& GetX() const { return x_; }
     const CovType& GetP() const { return P_; }
+    const CovType& GetObservationPriorP() const { return observation_prior_P_; }
     const double& GetStamp() const { return stamp_; }
 
     void ChangeX(const NavState& state) { x_ = state; }
     void ChangeP(const CovType& P) { P_ = P; }
     void ChangeStamp(const double& stamp) { stamp_ = stamp; }
 
+    bool GetUseAA() const { return use_aa_; }
     void SetUseAA(bool use_aa) { use_aa_ = use_aa; }
     void SetTime(double timestamp) { x_.timestamp_ = timestamp; }
 
@@ -100,6 +103,7 @@ class ESKF {
 
     NavState x_;
     CovType P_ = CovType::Identity();
+    CovType observation_prior_P_ = CovType::Identity();
     CovType F_x1_ = CovType::Identity();
     CovType L_ = CovType::Identity();
 

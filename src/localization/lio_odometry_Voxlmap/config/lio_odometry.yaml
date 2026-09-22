@@ -43,12 +43,19 @@ fasterlio:
   blind: 1.2                   # 盲区，小于盲区距离的不会处理
   time_scale: 1e-3             # 兼容不同数据集的时间单位，仅对Velodyne LiDAR(lidar_type=2)生效
   skip_lidar_num: 0            # 点云的跳帧情况
-  point_filter_num: 2          # 点云采样参数
+  point_filter_num: 1          # 点云采样参数
   max_iteration: 4             # 最大迭代次数（与 FAST-LIVO2 对齐）
   filter_size_scan: 0.35      # 对scan进行的降采样
   filter_size_map: 0.35       # 对map进行的降采样
   esti_plane_threshold: 0.1    # default=0.1
-  use_aa: true                 # use anderson-acceleration（VoxelMap 模式下会自动禁用）
+  use_aa: false               # 关闭 AA（99% 匹配率下 AA 收敛检测过于敏感）
+  use_adaptive_r: true         # 平面+测量点方差；false 使用 lidar_update_r
+  use_pose_convergence: true   # true=仅位姿收敛（更稳定）
+  converged_times_required: 1  # 连续收敛次数
+  rotation_convergence_deg: 0.05
+  position_convergence_m: 0.0015
+  min_effective_points: 20
+  min_effective_ratio: 0.05
   acc_cov: 0.2                 # 加速度计噪声（与 lm_slam_ros 对齐，更信任 IMU）
   gyr_cov: 0.1                # 陀螺仪噪声（与 lm_slam_ros 对齐，更信任 IMU）
   b_acc_cov: 0.0001            # 加速度计偏置噪声（与 FAST-LIVO2 对齐）
@@ -68,10 +75,10 @@ fasterlio:
 voxel_map:
   # 八叉树参数
   max_voxel_size: 3.0          # 根体素边长 (米)
-  max_layer: 2                 # 八叉树最大深度
+  max_layer: 4                 # 八叉树最大深度
   layer_init_num: [5, 5, 5, 5, 5]  # 每层初始化所需最少点数
   max_points_num: 1000         # 单体素最大点数（停止更新阈值）
-  max_root_points_size: 5000000   # 根体素最大点数上限（达到后锁死不再加新点）
+  max_root_points_size: 2000   # 根体素最大点数上限（达到后锁死不再加新点）
   planner_threshold: 0.01      # 平面判定阈值（最小特征值）
 
   # 传感器噪声（用于 CalcBodyCov 计算 body 协方差）
@@ -80,16 +87,20 @@ voxel_map:
 
   # 增量更新
   update_size_threshold: 5     # 每 N 个新点触发一次更新
-  update_inlier_threshold: 0.1 # 内点判定阈值 (m)（对齐 R-VoxelMap）
+  update_inlier_threshold: 0.3 # 内点判定阈值 (m)（对齐 R-VoxelMap）
 
   # Mahalanobis 门控
+  neighbor_search_on_failure: true # 当前格无匹配才搜索邻格，避免跨平面抢配
+  matching_threads: 4         # 匹配线程数
+  neighbor_search_radius: 1    # 根体素邻域半径：0/1/2 格
   sigma_num: 3.0               # 3-sigma 门控
 
   # ===== RANSAC 平面拟合（可选，默认关闭，设为 true 启用） =====
   use_ransac: true              # false=EVD 直接分解, true=RANSAC+EVD+平面验证
+  sample_seed: 42
   ransac_max_iter: 10            # RANSAC 最大迭代次数
   ransac_sample_num: 4           # 每次采样点数
-  ransac_inlier_threshold: 0.1   # 内点距离阈值 (m)（对齐 R-VoxelMap）
+  ransac_inlier_threshold: 0.3   # 内点距离阈值 (m)（对齐 R-VoxelMap）
   ransac_isplane_p_threshold: 0.8 # 内点比例阈值（>此值认为平面）
   # ===== 平面有效检查 =====
   valid_check_max_layer: 0       # 有效检查的最大八叉树层（0=仅根层）
@@ -97,7 +108,7 @@ voxel_map:
   valid_check_resolution: 4      # 连通域网格分辨率
 
   # 重新初始化机制（提高平面检测召回率）
-  reinit_size_vec: [100, 200, 300, 500, 700, 1000]  # reinit 触发阈值列表
+  reinit_size_vec: [100, 200, 300, 500, 700, 1000, 1300, 1500]  # reinit 触发阈值列表
   stop_reinit_threshold: 1000  # 停止 reinit 的点数
 
   # LRU 缓存管理（解决静止时体素无限累积问题）
@@ -109,7 +120,7 @@ voxel_map:
   half_map_size: 50           # 半个地图窗口大小 (体素单位)
 
 vel_gnss:
-  use_wheel_speed: false
+  use_wheel_speed: true
   use_gnss: false
   wheel_velocity_noise: 0.33   # 0.33
   gnss_attitude_noise: 0.03   # 0.03

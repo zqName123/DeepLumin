@@ -7,6 +7,7 @@ find_package(catkin REQUIRED COMPONENTS
   nav_msgs
   sensor_msgs
   message_generation
+  rosgraph_msgs
 )
 
 add_message_files(
@@ -52,7 +53,10 @@ add_message_files(
   VehicleStatus.msg
   Gpchc.msg
   CanReceiveInfo.msg
-
+  DiagnosticStatus.msg
+  DiagnosticStatusArray.msg
+  HardwareStatus.msg
+  NodeStatus.msg
 )
 
 add_service_files(
@@ -76,8 +80,9 @@ generate_messages(
   geometry_msgs
   nav_msgs
   sensor_msgs
+  rosgraph_msgs
 )
 
 catkin_package(
-  CATKIN_DEPENDS std_msgs geometry_msgs nav_msgs sensor_msgs message_runtime
+  CATKIN_DEPENDS std_msgs geometry_msgs nav_msgs sensor_msgs rosgraph_msgs message_runtime
 )

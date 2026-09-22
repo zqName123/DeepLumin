@@ -4,7 +4,7 @@
 #include <pcl/common/transforms.h>
 #include <pcl/filters/voxel_grid.h>
 #include <pcl/io/pcd_io.h>
-#include <ros/ros.h>
+#include "syslog/logger.h"
 
 #include <filesystem>
 #include <fstream>
@@ -125,8 +125,9 @@ bool MapSaver::saveKeyframes(const std::string& dir, const std::string& images_d
     }
   }
 
-  ROS_INFO("[slam_mapping_v2] saved %d keyframes (cloud: %d, image: %d) to %s",
-           static_cast<int>(keyframes.size()), saved_cloud, saved_image, dir.c_str());
+  // ROS_INFO("[slam_mapping_v2] saved %d keyframes (cloud: %d, image: %d) to %s",
+  //          static_cast<int>(keyframes.size()), saved_cloud, saved_image, dir.c_str());
+  SYS_LOG(syslog::LogSeverity::INFO, true) << "saved " << saved_image << " images to " << images_dir;
   return ok;
 }
 

@@ -21,6 +21,8 @@ find_package(catkin REQUIRED COMPONENTS
   small_gicp
   visualization_msgs
   deeplumin_msgs
+  syslog_ros_wrap
+  deeplumin_health_checker
 )
 find_package(PCL ${DEEPLUMIN_PCL_VERSION} EXACT REQUIRED COMPONENTS common io filters registration kdtree)
 find_package(Eigen3 ${DEEPLUMIN_EIGEN_VERSION} EXACT REQUIRED)

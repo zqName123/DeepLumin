@@ -11,8 +11,12 @@ RelocalizationRosAdapter::RelocalizationRosAdapter(ros::NodeHandle& nh,
     : nh_(nh), result_topic_(result_topic), command_topic_(command_topic) {
   result_sub_ = nh_.subscribe(result_topic_, 2, &RelocalizationRosAdapter::onResult, this);
   command_pub_ = nh_.advertise<std_msgs::String>(command_topic_, 1, true);
-  ROS_INFO("[localization_v2] relocalization adapter: result=%s command=%s",
-           result_topic_.c_str(), command_topic_.c_str());
+  // ROS_INFO("[localization_v2] relocalization adapter: result=%s command=%s",
+  //          result_topic_.c_str(), command_topic_.c_str());
+  SYS_LOG(syslog::LogSeverity::INFO, true)
+          << "relocalization adapter: result=" << result_topic_ << " command=" << command_topic_;
+
+
 }
 
 void RelocalizationRosAdapter::setResultCallback(RelocalizationResultCallback callback) {
@@ -21,12 +25,16 @@ void RelocalizationRosAdapter::setResultCallback(RelocalizationResultCallback ca
 
 void RelocalizationRosAdapter::start() {
   publishCommand("start");
-  ROS_INFO("[localization_v2] relocalization start requested");
+  // ROS_INFO("[localization_v2] relocalization start requested");
+  SYS_LOG(syslog::LogSeverity::INFO, true) 
+          << "relocalization start requested";
 }
 
 void RelocalizationRosAdapter::stop() {
   publishCommand("stop");
-  ROS_INFO("[localization_v2] relocalization stop requested");
+  // ROS_INFO("[localization_v2] relocalization stop requested");
+  SYS_LOG(syslog::LogSeverity::INFO, true) 
+          << "relocalization stop requested";
 }
 
 void RelocalizationRosAdapter::publishCommand(const std::string& command) {

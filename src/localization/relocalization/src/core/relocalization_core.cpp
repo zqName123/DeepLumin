@@ -4,7 +4,7 @@
 #include <relocalization/matcher/gicp_global_matcher.hpp>
 #include <relocalization/matcher/vgicp_global_matcher.hpp>
 
-#include <ros/ros.h>
+#include "syslog/logger.h"
 
 namespace relocalization {
 
@@ -33,17 +33,20 @@ std::unique_ptr<IGlobalMatcher> createGlobalMatcher(const std::string& type,
 bool RelocalizationCore::initialize(const RelocalizationCoreConfig& config) {
   config_ = config;
   if (!database_.load(config_.database)) {
-    ROS_ERROR("[relocalization] failed to load keyframe database");
+    // ROS_ERROR("[relocalization] failed to load keyframe database");
+    SYS_LOG(syslog::LogSeverity::ERROR, true) << "failed to load keyframe database";
     return false;
   }
 
   descriptor_ = createDescriptor(config_.descriptor_type, config_.csc);
   if (!descriptor_) {
-    ROS_ERROR("[relocalization] unsupported descriptor_type: %s", config_.descriptor_type.c_str());
+    // ROS_ERROR("[relocalization] unsupported descriptor_type: %s", config_.descriptor_type.c_str());
+    SYS_LOG(syslog::LogSeverity::ERROR, true) << "unsupported descriptor_type: " << config_.descriptor_type;
     return false;
   }
   if (!descriptor_->load(config_.descriptor_db)) {
-    ROS_ERROR_STREAM("[relocalization] failed to load descriptor database: " << config_.descriptor_db);
+    // ROS_ERROR_STREAM("[relocalization] failed to load descriptor database: " << config_.descriptor_db);
+    SYS_LOG(syslog::LogSeverity::ERROR, true) << "failed to load descriptor database: " << config_.descriptor_db;
     return false;
   }
   descriptor_->setRingKeyCandidates(config_.descriptor_type == "csc" ? config_.csc.ring_key_candidates
@@ -51,12 +54,15 @@ bool RelocalizationCore::initialize(const RelocalizationCoreConfig& config) {
 
   matcher_ = createGlobalMatcher(config_.matcher_type, config_.matcher);
   if (!matcher_) {
-    ROS_ERROR("[relocalization] unsupported matcher_type: %s", config_.matcher_type.c_str());
+    // ROS_ERROR("[relocalization] unsupported matcher_type: %s", config_.matcher_type.c_str());
+    SYS_LOG(syslog::LogSeverity::ERROR, true) << "unsupported matcher_type: " << config_.matcher_type;
     return false;
   }
 
-  ROS_INFO_STREAM("[relocalization] descriptor: " << descriptor_->summary());
-  ROS_INFO_STREAM("[relocalization] matcher: " << matcher_->summary());
+  // ROS_INFO_STREAM("[relocalization] descriptor: " << descriptor_->summary());
+  SYS_LOG(syslog::LogSeverity::INFO, true) << "descriptor: " << descriptor_->summary();
+  // ROS_INFO_STREAM("[relocalization] matcher: " << matcher_->summary());
+  SYS_LOG(syslog::LogSeverity::INFO, true) << "matcher: " << matcher_->summary();
   return true;
 }
 

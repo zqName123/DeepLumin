@@ -58,7 +58,7 @@ class AndersonAcceleration {
 
             current_u_ =
                 G - prev_dG_.block(0, 0, D, m_k) * ((theta_.head(m_k).array() / dF_scale_.head(m_k).array()).matrix());
-            col_idx_ = (col_idx_ + 1) % D;
+            col_idx_ = (col_idx_ + 1) % m;
             prev_dF_.col(col_idx_) = -current_F_;
             prev_dG_.col(col_idx_) = -G;
         }

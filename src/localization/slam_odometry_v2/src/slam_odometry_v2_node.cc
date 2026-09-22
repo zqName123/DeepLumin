@@ -19,6 +19,7 @@
 #include <deeplumin_msgs/Gpchc.h>
 #include <nav_msgs/Odometry.h>
 #include <pcl_conversions/pcl_conversions.h>
+#include <pcl/console/print.h>
 #include <ros/ros.h>
 #include <sensor_msgs/Imu.h>
 #include <sensor_msgs/PointCloud2.h>
@@ -28,6 +29,8 @@
 #include <cstdint>
 #include <memory>
 #include <string>
+#include <deeplumin_health_checker/health_checker/health_checker.h>
+#include <syslog/logger.h>
 
 namespace slam_odometry_v2 {
 
@@ -78,11 +81,18 @@ OdomResult transformSensorOdomToBase(const OdomResult& sensor_odom,
 class SlamOdometryV2Node {
    public:
     explicit SlamOdometryV2Node(ros::NodeHandle& nh) : nh_(nh), pnh_("~") {
+        pcl::console::setVerbosityLevel(pcl::console::L_ERROR); // 屏蔽pclerror一下的日志   
+        
+        // ---- 健康监测------
+        health_checker_ = std::make_shared<deeplumin_health_checker::HealthChecker>(nh_, pnh_);
+        health_checker_->ENABLE();
+        health_checker_->NODE_ACTIVATE();
         // 1. 加载配置
         config_ = loadNodeConfig(pnh_);
 
         if (config_.slam.faster_lio_config_yaml.empty()) {
-            ROS_ERROR("[slam_odometry_v2] node/faster_lio_config_yaml is empty, cannot init faster-lio");
+            // ROS_ERROR("[slam_odometry_v2] node/faster_lio_config_yaml is empty, cannot init faster-lio");
+            SYS_LOG(syslog::LogSeverity::ERROR, true) << "node/faster_lio_config_yaml is empty, cannot init faster-lio";
             ros::shutdown();
             return;
         }
@@ -90,8 +100,9 @@ class SlamOdometryV2Node {
         // 2. 初始化 faster-lio 里程计核心（faster_lio_ws 原始算法）
         odom_ = std::make_unique<faster_lio::LaserOdometry>();
         if (!odom_->InitWithoutROS(config_.slam.faster_lio_config_yaml)) {
-            ROS_ERROR("[slam_odometry_v2] faster-lio InitWithoutROS failed: %s",
-                      config_.slam.faster_lio_config_yaml.c_str());
+            // ROS_ERROR("[slam_odometry_v2] faster-lio InitWithoutROS failed: %s",
+            //           config_.slam.faster_lio_config_yaml.c_str());
+            SYS_LOG(syslog::LogSeverity::ERROR, true) << "faster-lio InitWithoutROS failed: " << config_.slam.faster_lio_config_yaml;
             odom_.reset();
             ros::shutdown();
             return;
@@ -125,16 +136,20 @@ class SlamOdometryV2Node {
             nh_.advertise<sensor_msgs::PointCloud2>(config_.outputs.registered_scan, 10);
         effect_scan_pub_ = nh_.advertise<sensor_msgs::PointCloud2>(config_.outputs.effect_scan, 10);
 
-        ROS_INFO("[slam_odometry_v2] imu=%s lidar=%s can=%s gnss=%s odom=%s local_map=%s registered_scan=%s effect_scan=%s",
-                 config_.sensors.imu.c_str(), config_.sensors.lidar.c_str(),
-                 config_.sensors.wheel.c_str(), config_.sensors.gnss.c_str(),
-                 config_.outputs.odom.c_str(), config_.outputs.local_map.c_str(),
-                 config_.outputs.registered_scan.c_str(), config_.outputs.effect_scan.c_str());
-        ROS_INFO("[slam_odometry_v2] use_vel=%s use_gnss_attitude=%s publish_tf=%s faster_lio_yaml=%s",
-                 config_.slam.use_vel ? "true" : "false",
-                 config_.slam.use_gnss_attitude ? "true" : "false",
-                 config_.publish_tf ? "true" : "false",
-                 config_.slam.faster_lio_config_yaml.c_str());
+        // ROS_INFO("[slam_odometry_v2] imu=%s lidar=%s can=%s gnss=%s odom=%s local_map=%s registered_scan=%s effect_scan=%s",
+        //          config_.sensors.imu.c_str(), config_.sensors.lidar.c_str(),
+        //          config_.sensors.wheel.c_str(), config_.sensors.gnss.c_str(),
+        //          config_.outputs.odom.c_str(), config_.outputs.local_map.c_str(),
+        //          config_.outputs.registered_scan.c_str(), config_.outputs.effect_scan.c_str());
+        SYS_LOG(syslog::LogSeverity::INFO, true) << "imu=" << config_.sensors.imu << " lidar=" << config_.sensors.lidar << " can=" << config_.sensors.wheel << " gnss=" << config_.sensors.gnss << " odom=" << config_.outputs.odom << " local_map=" << config_.outputs.local_map << " registered_scan=" << config_.outputs.registered_scan << " effect_scan=" << config_.outputs.effect_scan;
+
+
+        // ROS_INFO("[slam_odometry_v2] use_vel=%s use_gnss_attitude=%s publish_tf=%s faster_lio_yaml=%s",
+        //          config_.slam.use_vel ? "true" : "false",
+        //          config_.slam.use_gnss_attitude ? "true" : "false",
+        //          config_.publish_tf ? "true" : "false",
+        //          config_.slam.faster_lio_config_yaml.c_str());
+        SYS_LOG(syslog::LogSeverity::INFO, true) << "use_vel=" << (config_.slam.use_vel ? "true" : "false") << " use_gnss_attitude=" << (config_.slam.use_gnss_attitude ? "true" : "false") << " publish_tf=" << (config_.publish_tf ? "true" : "false") << " faster_lio_yaml=" << config_.slam.faster_lio_config_yaml;
     }
 
     void tick() {
@@ -225,9 +240,10 @@ class SlamOdometryV2Node {
         if (!canFeedLidar()) {
             ++dropped_lidar_before_warmup_;
             if (dropped_lidar_before_warmup_ == 1 || dropped_lidar_before_warmup_ % 20 == 0) {
-                ROS_INFO("[slam_odometry_v2] drop lidar before IMU warmup: dropped=%lu imu_samples=%lu lidar_t=%.9f",
-                         static_cast<unsigned long>(dropped_lidar_before_warmup_),
-                         static_cast<unsigned long>(imu_warmup_samples_), msg->header.stamp.toSec());
+                // ROS_INFO("[slam_odometry_v2] drop lidar before IMU warmup: dropped=%lu imu_samples=%lu lidar_t=%.9f",
+                //          static_cast<unsigned long>(dropped_lidar_before_warmup_),
+                //          static_cast<unsigned long>(imu_warmup_samples_), msg->header.stamp.toSec());
+                SYS_LOG(syslog::LogSeverity::INFO, true) << "drop lidar before IMU warmup: dropped=" << dropped_lidar_before_warmup_ << " imu_samples=" << imu_warmup_samples_ << " lidar_t=" << msg->header.stamp.toSec();
             }
             return;
         }
@@ -267,9 +283,9 @@ class SlamOdometryV2Node {
         odom_->FeedGnssAttitude(gnss);
 
         // 调试日志
-        LOG_FIRST_N(INFO, 20) << "[GNSS] received: heading=" << msg->heading
-                              << " pitch=" << msg->pitch << " roll=" << msg->roll
-                              << " status=" << msg->status << " nsv=" << gnss.nsv;
+        // LOG_FIRST_N(INFO, 20) << "[GNSS] received: heading=" << msg->heading
+        //                       << " pitch=" << msg->pitch << " roll=" << msg->roll
+        //                       << " status=" << msg->status << " nsv=" << gnss.nsv;
     }
 
     void publishCloud(const PointCloudType::Ptr& cloud, double stamp,
@@ -324,9 +340,10 @@ class SlamOdometryV2Node {
         if (duration >= config_.startup.imu_warmup_duration &&
             imu_warmup_samples_ >= static_cast<std::uint64_t>(std::max(1, config_.startup.min_imu_samples))) {
             imu_warmup_ready_ = true;
-            ROS_INFO("[slam_odometry_v2] IMU warmup ready: samples=%lu duration=%.3fs dropped_lidar=%lu",
-                     static_cast<unsigned long>(imu_warmup_samples_), duration,
-                     static_cast<unsigned long>(dropped_lidar_before_warmup_));
+            // ROS_INFO("[slam_odometry_v2] IMU warmup ready: samples=%lu duration=%.3fs dropped_lidar=%lu",
+            //          static_cast<unsigned long>(imu_warmup_samples_), duration,
+            //          static_cast<unsigned long>(dropped_lidar_before_warmup_));
+            SYS_LOG(syslog::LogSeverity::INFO, true) << "IMU warmup ready: samples=" << imu_warmup_samples_ << " duration=" << duration << " dropped_lidar=" << dropped_lidar_before_warmup_;
         }
     }
 
@@ -348,6 +365,7 @@ class SlamOdometryV2Node {
     ros::Publisher registered_scan_pub_;
     ros::Publisher effect_scan_pub_;
     tf::TransformBroadcaster tf_broadcaster_;
+    std::shared_ptr<deeplumin_health_checker::HealthChecker> health_checker_;
 
     double first_imu_stamp_ = 0.0;
     double last_imu_stamp_ = 0.0;
@@ -362,6 +380,13 @@ class SlamOdometryV2Node {
 int main(int argc, char** argv) {
     ros::init(argc, argv, "slam_odometry_v2");
     ros::NodeHandle nh;
+    ros::NodeHandle pnh("~");
+    std::string log_dir;
+    pnh.param<std::string>("log_dir", log_dir, "");
+    SYS_LOG_INIT_FULL(log_dir,
+                    syslog::LogSeverity::INFO,
+                    50,
+                    "slam_odometry_v2");
 
     slam_odometry_v2::SlamOdometryV2Node node(nh);
 

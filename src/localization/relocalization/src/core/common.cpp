@@ -12,15 +12,13 @@
 #include <pcl/common/transforms.h>
 #include <pcl/filters/voxel_grid.h>
 #include <pcl/io/pcd_io.h>
-#include <pcl_conversions/pcl_conversions.h>
-#include <sensor_msgs/PointCloud2.h>
-
 #include <algorithm>
 #include <cmath>
 #include <dirent.h>
 #include <fstream>
 #include <sstream>
 #include <stdexcept>
+#include "syslog/logger.h"
 
 namespace relocalization {
 
@@ -162,12 +160,6 @@ PoseLookupResult lookupPoseByTimestamp(const std::vector<Pose>& poses, double ti
   return result;
 }
 
-CloudPtr cloudFromRosMsg(const sensor_msgs::PointCloud2& msg) {
-  CloudPtr cloud(new CloudT);
-  pcl::fromROSMsg(msg, *cloud);
-  return cloud;
-}
-
 std::string joinPath(const std::string& a, const std::string& b) {
   if (a.empty()) {
     return b;
@@ -294,10 +286,11 @@ CloudPtr preprocessCloud(const CloudConstPtr& cloud, const PreprocessConfig& cfg
         return downsampled;
       }
     } else {
-      ROS_WARN_THROTTLE(10.0, "[preprocessCloud] VoxelGrid would overflow (leaf=%.3f, extent=%.1fx%.1fx%.1f). "
-                        "Returning range-filtered cloud without downsampling. "
-                        "Consider reducing max_range (<=50m) or increasing voxel_leaf (>=0.1m).",
-                        cfg.voxel_leaf, mx.x - mn.x, mx.y - mn.y, mx.z - mn.z);
+      // ROS_WARN_THROTTLE(10.0, "[preprocessCloud] VoxelGrid would overflow (leaf=%.3f, extent=%.1fx%.1fx%.1f). "
+      //                   "Returning range-filtered cloud without downsampling. "
+      //                   "Consider reducing max_range (<=50m) or increasing voxel_leaf (>=0.1m).",
+      //                   cfg.voxel_leaf, mx.x - mn.x, mx.y - mn.y, mx.z - mn.z);
+      SYS_LOG(syslog::LogSeverity::WARNING, true) << "[preprocessCloud] VoxelGrid would overflow (leaf=" << cfg.voxel_leaf << ", extent=" << mx.x - mn.x << "x" << mx.y - mn.y << "x" << mx.z - mn.z << "). Returning range-filtered cloud without downsampling. Consider reducing max_range (<=50m) or increasing voxel_leaf (>=0.1m).";
     }
   }
 

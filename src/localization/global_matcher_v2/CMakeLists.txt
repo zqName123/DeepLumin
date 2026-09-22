@@ -18,6 +18,8 @@ find_package(catkin REQUIRED COMPONENTS
   deeplumin_msgs
   small_gicp
   fast_gicp
+  deeplumin_health_checker
+  syslog_ros_wrap
 )
 find_package(PCL ${DEEPLUMIN_PCL_VERSION} EXACT REQUIRED COMPONENTS common io filters)
 find_package(Eigen3 ${DEEPLUMIN_EIGEN_VERSION} EXACT REQUIRED)

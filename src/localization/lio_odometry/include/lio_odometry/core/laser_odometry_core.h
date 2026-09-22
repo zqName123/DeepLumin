@@ -13,6 +13,7 @@
 #include "lio_odometry/core/imu_processing.h"
 #include "lio_odometry/core/pointcloud_preprocess.h"
 #include "lio_odometry/core/types.h"
+#include "syslog/logger.h"
 
 inline Eigen::Matrix3f SKEW_SYM_MATRIX(const Eigen::Vector3f& v) {
     Eigen::Matrix3f m;
@@ -73,6 +74,7 @@ class LaserOdometryCore {
 
    private:
     bool SyncPackages();
+    void ResetTracking();
     void ObsModel(NavState& s, ESKF::CustomObservationModel& obs);
     void ObsModelWelspeed(NavState& s, ESKF::CustomObservationModel& obs);
     void ObsModelGPS(NavState& s, ESKF::CustomObservationModel& obs);
@@ -117,7 +119,7 @@ class LaserOdometryCore {
     pcl::VoxelGrid<PointType> voxel_scan_;
 
     std::vector<float> residuals_;
-    std::vector<bool> point_selected_surf_;
+    std::vector<uint8_t> point_selected_surf_;
     std::vector<Vec4f> plane_coef_;
 
     std::mutex mtx_buffer_;

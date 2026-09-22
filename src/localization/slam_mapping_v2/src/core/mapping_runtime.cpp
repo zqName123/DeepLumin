@@ -11,7 +11,7 @@
  */
 
 #include "slam_mapping_v2/core/mapping_runtime.hpp"
-#include <ros/ros.h>
+#include "syslog/logger.h"
 
 #include "slam_mapping_v2/core/loop_detector_kdtree_gicp.hpp"
 #include "slam_mapping_v2/core/loop_detector_factory.hpp"
@@ -27,6 +27,23 @@
 namespace slam_mapping_v2 {
 
 namespace {
+
+/// 每行号独立的节流器（替代 ROS_INFO_THROTTLE）
+template<int Line>
+struct ThrottleByLine {
+  static bool shouldLog(double rate) {
+    static std::chrono::steady_clock::time_point last_log_time;
+    auto now = std::chrono::steady_clock::now();
+    auto elapsed = std::chrono::duration<double>(now - last_log_time).count();
+    if (elapsed >= rate) {
+      last_log_time = now;
+      return true;
+    }
+    return false;
+  }
+};
+
+#define SHOULD_LOG(rate) ThrottleByLine<__LINE__>::shouldLog(rate)
 
 /**
  * @brief 从FrameInput提取位姿信息生成Pose对象
@@ -122,8 +139,10 @@ bool MappingRuntime::start(const StartRequest& req, double now_sec) {
     status_.start_time = now_sec;
   }
   loop_enabled_ = req.enable_loop_closure;
-  ROS_INFO("[slam_mapping_v2] start RUNNING task=%s output=%s loop=%d",
-           req.task_name.c_str(), req.output_dir.c_str(), req.enable_loop_closure ? 1 : 0);
+  // ROS_INFO("[slam_mapping_v2] start RUNNING task=%s output=%s loop=%d",
+  //          req.task_name.c_str(), req.output_dir.c_str(), req.enable_loop_closure ? 1 : 0);
+  SYS_LOG(syslog::LogSeverity::INFO, true)
+          << "start RUNNING task=" << req.task_name << " output=" << req.output_dir << " loop=" << (req.enable_loop_closure ? 1 : 0);
   return true;
 }
 
@@ -383,16 +402,22 @@ bool MappingRuntime::popFrame(FrameInput* odom, FrameInput* scan) {
 bool MappingRuntime::processOnce() {
   // 检查是否已初始化且处于运行状态
   if (!initialized_ || statusSnapshot().state != RuntimeState::RUNNING) {
-    ROS_WARN_THROTTLE(5.0, "[slam_mapping_v2] processOnce skip: state=%s (call start or set runtime/auto_start)",
-                      toString(statusSnapshot().state).c_str());
+    // ROS_WARN_THROTTLE(5.0, "[slam_mapping_v2] processOnce skip: state=%s (call start or set runtime/auto_start)",
+    //                   toString(statusSnapshot().state).c_str());
+    if (SHOULD_LOG(5.0)) {
+      SYS_LOG(syslog::LogSeverity::WARNING, true) << "processOnce skip: state=" << toString(statusSnapshot().state) << " (call start or set runtime/auto_start)";
+    }
     return false;
   }
   // 检查输入队列状态
   {
     std::lock_guard<std::mutex> lock(input_mutex_);
     if (odom_queue_.empty() || scan_queue_.empty()) {
-      ROS_WARN_THROTTLE(5.0, "[slam_mapping_v2] waiting input: odom_q=%zu scan_q=%zu",
-                        odom_queue_.size(), scan_queue_.size());
+      // ROS_WARN_THROTTLE(5.0, "[slam_mapping_v2] waiting input: odom_q=%zu scan_q=%zu",
+      //                   odom_queue_.size(), scan_queue_.size());
+      if (SHOULD_LOG(5.0)) {
+        SYS_LOG(syslog::LogSeverity::WARNING, true) << "waiting input: odom_q=" << odom_queue_.size() << " scan_q=" << scan_queue_.size();
+      }
     }
   }
 
@@ -410,10 +435,12 @@ bool MappingRuntime::processOnce() {
   // 获取时间同步的帧对
   FrameInput odom, scan;
   if (!popFrame(&odom, &scan)) return false;
-  ROS_INFO_THROTTLE(2.0, "[slam_mapping_v2] consumed frame ts=%.3f odom_valid=%d pts=%zu",
-                    odom.timestamp, odom.valid ? 1 : 0, scan.cloud ? scan.cloud->size() : 0);
-  ROS_INFO_THROTTLE(2.0, "[slam_mapping_v2] consumed frame ts=%.3f odom_valid=%d pts=%zu",
-                    odom.timestamp, odom.valid ? 1 : 0, scan.cloud ? scan.cloud->size() : 0);
+  // ROS_INFO_THROTTLE(2.0, "[slam_mapping_v2] consumed frame ts=%.3f odom_valid=%d pts=%zu",
+  //                   odom.timestamp, odom.valid ? 1 : 0, scan.cloud ? scan.cloud->size() : 0);
+  if (SHOULD_LOG(2.0)) {
+    SYS_LOG(syslog::LogSeverity::INFO, false) << "consumed frame ts=" << odom.timestamp << " odom_valid=" << (odom.valid ? 1 : 0) << " pts=" << (scan.cloud ? scan.cloud->size() : 0);
+  }
+  
   // 验证数据有效性
   if (!odom.valid || !scan.cloud || scan.cloud->empty()) return false;
 
@@ -453,8 +480,11 @@ bool MappingRuntime::processOnce() {
     // 保存最新图像到关键帧（用于离线 marker map 构建）
     {
       std::lock_guard<std::mutex> img_lock(image_mutex_);
-      ROS_INFO_THROTTLE(2.0, "[Keyframe] kf_ts=%.3f image_queue_size=%zu",
-                        kf.timestamp, image_queue_.size());
+      // ROS_INFO_THROTTLE(2.0, "[Keyframe] kf_ts=%.3f image_queue_size=%zu",
+      //                   kf.timestamp, image_queue_.size());
+      if (SHOULD_LOG(2.0)) {
+        SYS_LOG(syslog::LogSeverity::INFO, false) << "kf_ts=" << kf.timestamp << " image_queue_size=" << image_queue_.size();
+      }
       if (!image_queue_.empty()) {
         // 找到时间戳最接近的图像
         auto best_it = image_queue_.begin();
@@ -466,19 +496,28 @@ bool MappingRuntime::processOnce() {
             best_it = it;
           }
         }
-        ROS_INFO_THROTTLE(2.0, "[Keyframe] best_dt=%.3f img_ts=%.3f kf_ts=%.3f",
-                          best_dt, best_it->second, kf.timestamp);
-        if (best_dt < 0.1) {  // 100ms 容差
+        // ROS_INFO_THROTTLE(2.0, "[Keyframe] best_dt=%.3f img_ts=%.3f kf_ts=%.3f",
+        //                   best_dt, best_it->second, kf.timestamp);
+        if (SHOULD_LOG(2.0)) {
+          SYS_LOG(syslog::LogSeverity::INFO, false) << "best_dt=" << best_dt << " img_ts=" << best_it->second << " kf_ts=" << kf.timestamp;
+        }
+        if (best_dt < 0.05) {  // 50ms 容差
           kf.has_visual = true;
           kf.image_timestamp = best_it->second;
           kf.image = best_it->first.clone();
-          ROS_INFO_THROTTLE(2.0, "[Keyframe] saved image for kf %d, img_size=%dx%d",
-                            kf.id, kf.image.cols, kf.image.rows);
+          // ROS_INFO_THROTTLE(2.0, "[Keyframe] saved image for kf %d, img_size=%dx%d",
+          //                   kf.id, kf.image.cols, kf.image.rows);
         } else {
-          ROS_WARN_THROTTLE(2.0, "[Keyframe] no matching image: best_dt=%.3f > 0.1", best_dt);
+          // ROS_WARN_THROTTLE(2.0, "[Keyframe] no matching image: best_dt=%.3f > 0.05", best_dt);
+          if (SHOULD_LOG(2.0)) {
+            SYS_LOG(syslog::LogSeverity::WARNING, true) << "no matching image: best_dt=" << best_dt << " > 0.05";
+          }
         }
       } else {
-        ROS_WARN_THROTTLE(2.0, "[Keyframe] image_queue is empty");
+        // ROS_WARN_THROTTLE(2.0, "[Keyframe] image_queue is empty");
+        if (SHOULD_LOG(2.0)) {
+          SYS_LOG(syslog::LogSeverity::WARNING, true) << "image_queue is empty";
+        }
       }
     }
 
@@ -622,8 +661,11 @@ void MappingRuntime::backendLoop() {
       
       // 记录最新关键帧
       if (!keyframes_.empty()) latest_kf = &keyframes_.back();
-      ROS_INFO_THROTTLE(1.0, "[slam_mapping_v2] backend merged: kfs=%zu loops=%zu gnss_factors=%zu",
-                        keyframes_.size(), detector_->loopPairs().size(), gnss_.factorCount());
+      // ROS_INFO_THROTTLE(1.0, "[slam_mapping_v2] backend merged: kfs=%zu loops=%zu gnss_factors=%zu",
+      //                   keyframes_.size(), detector_->loopPairs().size(), gnss_.factorCount());
+      if (SHOULD_LOG(2.0)) {  
+        SYS_LOG(syslog::LogSeverity::INFO, true) << "backend merged: kfs=" << keyframes_.size() << " loops=" << detector_->loopPairs().size() << " gnss_factors=" << gnss_.factorCount();
+      }
       // 判断是否有新的回环更新
       r.updated = !keyframes_.empty() && loop_enabled_ &&
                   !detector_->loopPairs().empty() &&
@@ -724,8 +766,9 @@ void MappingRuntime::startThreads() {
     feat_provider_ = std::make_unique<OrbFeatureProvider>();
     feat_provider_->configure(cfg_.loop_closure.visual);
     visual_feat_thread_ = std::thread(&MappingRuntime::visualFeatLoop, this);
-    ROS_INFO("[slam_mapping_v2] Visual feature thread started (detector_type=%s)",
-             cfg_.loop_closure.detector_type.c_str());
+    // ROS_INFO("[slam_mapping_v2] Visual feature thread started (detector_type=%s)",
+    //          cfg_.loop_closure.detector_type.c_str());
+    SYS_LOG(syslog::LogSeverity::INFO, true) << "Visual feature thread started (detector_type=" << cfg_.loop_closure.detector_type << ")";
   }
 }
 
@@ -861,7 +904,8 @@ void MappingRuntime::feedImage(const cv::Mat& image, double timestamp) {
  * 4. 写入特征缓冲区
  */
 void MappingRuntime::visualFeatLoop() {
-  ROS_INFO("[slam_mapping_v2] Visual feature thread started");
+  // ROS_INFO("[slam_mapping_v2] Visual feature thread started");
+  SYS_LOG(syslog::LogSeverity::INFO, true) << "Visual feature thread started";
 
   while (!stop_threads_) {
     std::deque<std::pair<cv::Mat, double>> batch;
@@ -873,8 +917,8 @@ void MappingRuntime::visualFeatLoop() {
       batch.swap(image_queue_);
     }
 
-    ROS_INFO_THROTTLE(2.0, "[VisualFeat] batch_size=%zu image_queue_size after swap=%zu",
-                      batch.size(), image_queue_.size());
+    // ROS_INFO_THROTTLE(2.0, "[VisualFeat] batch_size=%zu image_queue_size after swap=%zu",
+    //                   batch.size(), image_queue_.size());
 
     if (batch.empty()) continue;
 
@@ -906,8 +950,11 @@ void MappingRuntime::visualFeatLoop() {
         auto frame = feat_provider_->extract(image, ts, kf_id);
         if (frame.features_ready) {
           feat_buffer_->insert(frame);
-          ROS_INFO_THROTTLE(2.0, "[VisualFeat] Extracted kf %d: img_ts=%.3f kf_ts=%.3f dt=%.3fs keypoints=%zu buf_size=%zu",
-                            kf_id, ts, kf_ts, ts - kf_ts, frame.keypoints.size(), feat_buffer_->size());
+          // ROS_INFO_THROTTLE(2.0, "[VisualFeat] Extracted kf %d: img_ts=%.3f kf_ts=%.3f dt=%.3fs keypoints=%zu buf_size=%zu",
+          //                   kf_id, ts, kf_ts, ts - kf_ts, frame.keypoints.size(), feat_buffer_->size());
+          if (SHOULD_LOG(2.0)) {
+            SYS_LOG(syslog::LogSeverity::INFO, true) << "Extracted kf " << kf_id << ": img_ts=" << ts << " kf_ts=" << kf_ts << " dt=" << ts - kf_ts << " keypoints=" << frame.keypoints.size() << " buf_size=" << feat_buffer_->size();
+          }
         }
       } else {
         double latest_kf_ts = -1;
@@ -915,13 +962,17 @@ void MappingRuntime::visualFeatLoop() {
           std::shared_lock<std::shared_mutex> kf_lock(kf_mutex_);
           if (!keyframes_.empty()) latest_kf_ts = keyframes_.back().timestamp;
         }
-        ROS_INFO_THROTTLE(2.0, "[VisualFeat] No match: img_ts=%.3f latest_kf_ts=%.3f kf_count=%zu",
-                          ts, latest_kf_ts, keyframes_.size());
+        // ROS_INFO_THROTTLE(2.0, "[VisualFeat] No match: img_ts=%.3f latest_kf_ts=%.3f kf_count=%zu",
+        //                   ts, latest_kf_ts, keyframes_.size());
+        if (SHOULD_LOG(2.0)) {
+          SYS_LOG(syslog::LogSeverity::INFO, true) << "No match: img_ts=" << ts << " latest_kf_ts=" << latest_kf_ts << " kf_count=" << keyframes_.size();
+        }
       }
     }
   }
 
-  ROS_INFO("[slam_mapping_v2] Visual feature thread stopped");
+  // ROS_INFO("[slam_mapping_v2] Visual feature thread stopped");
+  SYS_LOG(syslog::LogSeverity::INFO, true) << "Visual feature thread stopped";
 }
 
 }  // namespace slam_mapping_v2

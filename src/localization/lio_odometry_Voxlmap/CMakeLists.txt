@@ -12,6 +12,7 @@ find_package(catkin REQUIRED COMPONENTS
     pcl_conversions
     pcl_ros
     deeplumin_msgs
+    syslog_ros_wrap
 )
 
 find_package(PCL REQUIRED)
@@ -73,3 +74,11 @@ target_link_libraries(lio_odometry_voxelmap_node
     ${TBB_LIB}
     OpenMP::OpenMP_CXX
 )
+
+if(CATKIN_ENABLE_TESTING)
+    add_executable(lio_voxelmap_optimization_regression EXCLUDE_FROM_ALL tests/optimization_regression.cpp)
+    target_link_libraries(lio_voxelmap_optimization_regression lio_odometry_voxelmap_core ${PCL_LIBRARIES} ${YAML_CPP_LIB} OpenMP::OpenMP_CXX)
+    add_test(NAME lio_voxelmap_optimization_regression
+        COMMAND lio_voxelmap_optimization_regression ${CMAKE_CURRENT_SOURCE_DIR}/config/lio_odometry.yaml)
+    set_tests_properties(lio_voxelmap_optimization_regression PROPERTIES ENVIRONMENT "OMP_NUM_THREADS=2")
+endif()

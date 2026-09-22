@@ -114,17 +114,13 @@ inline Eigen::Matrix<T, 3, 3> Exp(const Eigen::Matrix<T, 3, 1>& ang_vel, const T
     }
 }
 
-template <typename T>
-inline Eigen::Matrix<T, 3, 3> exp(const Eigen::Matrix<T, 3, 1>& ang, const double scale = 1.0) {
-    T ang_norm = ang.norm() * scale;
-    Eigen::Matrix<T, 3, 3> Eye3 = Eigen::Matrix<T, 3, 3>::Identity();
-    if (ang_norm > 0.0000001) {
-        Eigen::Matrix<T, 3, 1> r_axis = ang / ang.norm();
-        Eigen::Matrix<T, 3, 3> K = SKEW_SYM_MATRIX(r_axis);
-        return Eye3 + std::sin(ang_norm) * K + (1.0 - std::cos(ang_norm)) * K * K;
-    } else {
-        return Eye3;
-    }
+// MTK quaternion exponential convention: scale is applied to the HALF angle.
+// For a rotation vector theta use exp(theta, 0.5), or SO3::exp(theta).
+inline SO3 exp(const Vec3d& vec, const double scale = 1.0) {
+    const double ang = std::abs(scale) * vec.norm();
+    const double sinc = ang < 1e-6 ? 1.0 - ang * ang / 6.0 : std::sin(ang) / ang;
+    const Vec3d result = (sinc * scale) * vec;
+    return SO3(Quatd(std::cos(ang), result.x(), result.y(), result.z()));
 }
 
 template <typename T>
@@ -132,7 +128,7 @@ inline Eigen::Matrix<T, 3, 3> A_matrix(const Eigen::Matrix<T, 3, 1>& v) {
     Eigen::Matrix<T, 3, 3> res;
     double squared_norm = v[0] * v[0] + v[1] * v[1] + v[2] * v[2];
     double norm = std::sqrt(squared_norm);
-    if (norm < 1e-11) {
+    if (norm < 1e-5) {
         res = Eigen::Matrix<T, 3, 3>::Identity();
     } else {
         res = Eigen::Matrix<T, 3, 3>::Identity() +
@@ -186,7 +182,7 @@ struct S2 {
     Eigen::Matrix<double, 3, 2> S2_Mx(const Eigen::Matrix<double, 2, 1>& delta) const {
         Eigen::Matrix<double, 3, 2> res;
         Eigen::Matrix<double, 3, 2> Bx = S2_Bx();
-        if (delta.norm() < 1e-5) {
+        if (delta.norm() < 1e-10) {
             res = -SO3::hat(vec_) * Bx;
         } else {
             Vec3d Bu = Bx * delta;
@@ -426,7 +422,7 @@ struct PointXYZIT {
     EIGEN_MAKE_ALIGNED_OPERATOR_NEW
 };
 
-struct VelodynePoint {
+struct EIGEN_ALIGN16 VelodynePoint {
     PCL_ADD_POINT4D
     float intensity;
     float time;
@@ -434,7 +430,7 @@ struct VelodynePoint {
     EIGEN_MAKE_ALIGNED_OPERATOR_NEW
 };
 
-struct OusterPoint {
+struct EIGEN_ALIGN16 OusterPoint {
     PCL_ADD_POINT4D
     EIGEN_MAKE_ALIGNED_OPERATOR_NEW
 
@@ -450,7 +446,7 @@ struct OusterPoint {
 
 // clang-format off
 POINT_CLOUD_REGISTER_POINT_STRUCT(slam_odometry::PointXYZIT,
-    (float, x, x)(float, y, y)(float, z, z)(float, intensity, intensity)(double, time, time))
+    (float, x, x)(float, y, y)(float, z, z)(float, intensity, intensity)(double, time, timestamp))
 
 POINT_CLOUD_REGISTER_POINT_STRUCT(slam_odometry::VelodynePoint,
     (float, x, x)(float, y, y)(float, z, z)(float, intensity, intensity)

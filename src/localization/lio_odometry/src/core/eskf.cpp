@@ -105,7 +105,7 @@ void ESKF::Predict(const double& dt, const ESKF::ProcessNoiseType& Q, const Vec3
     P_ = (F_x1_)*P_ * (F_x1_).transpose() + (dt * f_w_final) * Q * (dt * f_w_final).transpose();
 }
 
-void ESKF::Update(ESKF::ObsType obs, const double& R) {
+bool ESKF::Update(ESKF::ObsType obs, const double& R) {
     custom_obs_model_.valid_ = true;
     custom_obs_model_.converge_ = true;
 
@@ -118,6 +118,12 @@ void ESKF::Update(ESKF::ObsType obs, const double& R) {
 
     NavState start_x = x_;
     NavState last_x = x_;
+    const auto reject = [&]() {
+        x_ = start_x;
+        P_ = P_propagated;
+        return false;
+    };
+    if (!std::isfinite(R) || R <= 0.0) return reject();
 
     int converged_times = 0;
     double last_lidar_res = 0;
@@ -139,8 +145,18 @@ void ESKF::Update(ESKF::ObsType obs, const double& R) {
 
         if (use_aa_ && i > -1 && (obs == ObsType::LIDAR || obs == ObsType::WHEEL_SPEED_AND_LIDAR) &&
             custom_obs_model_.lidar_residual_mean_ >= last_lidar_res * 1.01) {
+            // 与原版 lightning-lm 一致：回退到上一个被接受的状态后结束迭代。
+            // 注意 P_ 必须原样保留——此刻它是上一轮迭代中重线性化后的传播协方差
+            // (J·P_propagated·Jᵀ，位于 last_x 切空间)，不能重置回 start_x 切空间
+            // 下的 P_propagated。
             x_ = last_x;
-            break;
+            // 在被接受的状态上重算一次观测，使 nearest_points_ 与最终位姿一致，
+            // 供 MapIncremental 使用；原版直接 break，最近邻停留在回退前的状态。
+            lidar_obs_func_(x_, custom_obs_model_);
+            if (!custom_obs_model_.valid_) {
+                return reject();
+            }
+            return true;
         }
         iterated_num += 1;
 
@@ -155,8 +171,10 @@ void ESKF::Update(ESKF::ObsType obs, const double& R) {
                 P_ * h_x_cur.transpose() * (h_x_cur * P_ * h_x_cur.transpose() + custom_obs_model_.R_).inverse();
             dx_current = K * custom_obs_model_.residual_;
             P_ = P_ - K * h_x_cur * P_;
+            if (!dx_current.allFinite() || !P_.allFinite()) return reject();
             x_ = x_.boxplus(dx_current);
-            break;
+            P_ = (0.5 * (P_ + P_.transpose())).eval();
+            return true;
         } else if (obs == ObsType::GPS) {
             Eigen::MatrixXd h_x_cur = Eigen::MatrixXd::Zero(3, state_dim_);
             h_x_cur.block(0, 3, 3, 3) = custom_obs_model_.h_x_;
@@ -164,8 +182,10 @@ void ESKF::Update(ESKF::ObsType obs, const double& R) {
                 P_ * h_x_cur.transpose() * (h_x_cur * P_ * h_x_cur.transpose() + custom_obs_model_.R_).inverse();
             dx_current = K * custom_obs_model_.residual_;
             P_ = P_ - K * h_x_cur * P_;
+            if (!dx_current.allFinite() || !P_.allFinite()) return reject();
             x_ = x_.boxplus(dx_current);
-            break;
+            P_ = (0.5 * (P_ + P_.transpose())).eval();
+            return true;
         }
 
         if (i == -1) {
@@ -229,8 +249,6 @@ void ESKF::Update(ESKF::ObsType obs, const double& R) {
             K_r = K * custom_obs_model_.residual_;
             K_H = K * h_x_cur;
         } else {
-            double R_inv = 1.0 / (R * dof_measurement);
-
             Eigen::Matrix<double, 12, 12> HTH = custom_obs_model_.h_x_.transpose() * custom_obs_model_.h_x_;
 
             CovType P_temp = (P_ / R).inverse();
@@ -246,11 +264,7 @@ void ESKF::Update(ESKF::ObsType obs, const double& R) {
 
         dx_current = K_r + (K_H - Eigen::Matrix<double, 23, 23>::Identity()) * dx_current;
 
-        for (int j = 0; j < 23; ++j) {
-            if (std::isnan(dx_current(j, 0))) {
-                return;
-            }
-        }
+        if (!dx_current.allFinite()) return reject();
 
         if (!use_aa_) {
             x_ = x_.boxplus(dx_current);
@@ -266,8 +280,12 @@ void ESKF::Update(ESKF::ObsType obs, const double& R) {
             }
         }
 
-        last_x = x_;
+        // Keep dx_current as the KF increment (before AA), matching the original
+        // lightning-lm behavior.  Convergence and covariance reset must both use
+        // the KF step, not the (typically larger) AA actual-manifold increment.
+        if (!dx_current.allFinite()) return reject();
 
+        last_x = x_;
         last_lidar_res = custom_obs_model_.lidar_residual_mean_;
         custom_obs_model_.converge_ = true;
 
@@ -287,62 +305,24 @@ void ESKF::Update(ESKF::ObsType obs, const double& R) {
         }
 
         if (converged_times > 0 || i == maximum_iter_ - 1) {
-            L_ = P_;
-            Mat3d res_temp_SO3;
-            Vec3d seg_SO3;
-            for (const auto& it : x_.SO3_states_) {
-                int idx = it.idx_;
-                for (int j = 0; j < 3; j++) {
-                    seg_SO3(j) = dx_current(j + idx);
-                }
-
-                res_temp_SO3 = math::A_matrix(seg_SO3).transpose();
-                for (int j = 0; j < 23; j++) {
-                    L_.block<3, 1>(idx, j) = res_temp_SO3 * (P_.block<3, 1>(idx, j));
-                }
-
-                for (int j = 0; j < 15; j++) {
-                    K_H.block<3, 1>(idx, j) = res_temp_SO3 * (K_H.block<3, 1>(idx, j));
-                }
-
-                for (int j = 0; j < 23; j++) {
-                    L_.block<1, 3>(j, idx) = (L_.block<1, 3>(j, idx)) * res_temp_SO3.transpose();
-                    P_.block<1, 3>(j, idx) = (P_.block<1, 3>(j, idx)) * res_temp_SO3.transpose();
-                }
+            // Reset posterior covariance into the tangent space of the accepted state.
+            CovType J = CovType::Identity();
+            for (const auto& st : x_.SO3_states_) {
+                const Vec3d d = dx_current.segment<3>(st.idx_);
+                J.block<3, 3>(st.idx_, st.idx_) = math::A_matrix(d).transpose();
             }
-
-            Mat2d res_temp_S2;
-            Vec2d seg_S2;
-            for (const auto& it : x_.S2_states_) {
-                int idx = it.idx_;
-
-                for (int j = 0; j < 2; j++) {
-                    seg_S2(j) = dx_current(j + idx);
-                }
-
-                Eigen::Matrix<double, 2, 3> Nx = x_.grav_.S2_Nx_yy();
-                Eigen::Matrix<double, 3, 2> Mx = start_x.grav_.S2_Mx(seg_S2);
-                res_temp_S2 = Nx * Mx;
-
-                for (int j = 0; j < 23; j++) {
-                    L_.block<2, 1>(idx, j) = res_temp_S2 * (P_.block<2, 1>(idx, j));
-                }
-
-                for (int j = 0; j < 15; j++) {
-                    K_H.block<2, 1>(idx, j) = res_temp_S2 * (K_H.block<2, 1>(idx, j));
-                }
-
-                for (int j = 0; j < 23; j++) {
-                    L_.block<1, 2>(j, idx) = (L_.block<1, 2>(j, idx)) * res_temp_S2.transpose();
-                    P_.block<1, 2>(j, idx) = (P_.block<1, 2>(j, idx)) * res_temp_S2.transpose();
-                }
-            }
-
-            P_ = L_ - K_H.block<23, 15>(0, 0) * P_.template block<15, 23>(0, 0);
-
-            break;
+            const Vec2d dg = dx_current.segment<2>(21);
+            // dx_current 的 S2 分量表达在 start_x 切空间，Mx 的基点必须是 start_x，
+            // 与原版 eskf.cc 收敛后验块一致（不能用迭代中间状态 before_update）。
+            J.block<2, 2>(21, 21) = x_.grav_.S2_Nx_yy() * start_x.grav_.S2_Mx(dg);
+            const CovType posterior = (CovType::Identity() - K_H) * P_;
+            P_ = J * posterior * J.transpose();
+            P_ = (0.5 * (P_ + P_.transpose())).eval();
+            if (!P_.allFinite()) return reject();
+            return true;
         }
     }
+    return reject();
 }
 
 }  // namespace slam_odometry

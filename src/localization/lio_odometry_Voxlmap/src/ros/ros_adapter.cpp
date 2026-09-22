@@ -1,10 +1,13 @@
 #include "lio_odometry/ros/ros_adapter.h"
 
 #include <pcl_conversions/pcl_conversions.h>
+#include <pcl/console/print.h>
+#include "syslog/logger.h"
 
 namespace slam_odometry_ros {
 
 bool RosAdapter::Init(ros::NodeHandle& nh, ros::NodeHandle& pnh) {
+    pcl::console::setVerbosityLevel(pcl::console::L_ERROR);
     std::string config_path;
     pnh.param<std::string>("config_path", config_path, "");
     // 加载配置文件
@@ -78,6 +81,9 @@ void RosAdapter::tick() {
 
     if (config_.outputs.publish_odom && state.pose_is_ok_) {
         PublishOdometry(state, timestamp);
+        // PublishTF(state, timestamp);
+    }
+    if (config_.outputs.publish_tf) {
         PublishTF(state, timestamp);
     }
 

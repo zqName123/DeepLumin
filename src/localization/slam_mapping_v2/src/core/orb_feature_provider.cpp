@@ -7,7 +7,7 @@
 #include "slam_mapping_v2/common/config.hpp"
 #include "ORBextractor.h"
 
-#include <ros/ros.h>
+#include "syslog/logger.h"
 
 namespace slam_mapping_v2 {
 
@@ -26,8 +26,9 @@ void OrbFeatureProvider::configure(const VisualLoopConfig& cfg) {
       cfg.ini_th_fast,
       cfg.min_th_fast);
 
-  ROS_INFO("[OrbFeatureProvider] Configured: nfeatures=%d, scale=%.1f, levels=%d",
-           cfg.nfeatures, cfg.scale_factor, cfg.nlevels);
+  // ROS_INFO("[OrbFeatureProvider] Configured: nfeatures=%d, scale=%.1f, levels=%d",
+  //          cfg.nfeatures, cfg.scale_factor, cfg.nlevels);
+  SYS_LOG(syslog::LogSeverity::INFO, true) << "OrbFeatureProvider Configured: nfeatures=" << cfg.nfeatures << " scale=" << cfg.scale_factor << " levels=" << cfg.nlevels;
 }
 
 VisualFrame OrbFeatureProvider::extract(const cv::Mat& image,
@@ -38,7 +39,8 @@ VisualFrame OrbFeatureProvider::extract(const cv::Mat& image,
   frame.image = image.clone();
 
   if (image.empty() || !extractor_) {
-    ROS_WARN("[OrbFeatureProvider] Empty image or extractor not initialized");
+    // ROS_WARN("[OrbFeatureProvider] Empty image or extractor not initialized");
+    SYS_LOG(syslog::LogSeverity::WARNING, true) << "Empty image or extractor not initialized";
     return frame;
   }
 
@@ -49,7 +51,8 @@ VisualFrame OrbFeatureProvider::extract(const cv::Mat& image,
   } else if (image.channels() == 1) {
     gray = image;
   } else {
-    ROS_WARN("[OrbFeatureProvider] Unsupported image channels: %d", image.channels());
+    // ROS_WARN("[OrbFeatureProvider] Unsupported image channels: %d", image.channels());
+    SYS_LOG(syslog::LogSeverity::WARNING, true) << "Unsupported image channels: " << image.channels();
     return frame;
   }
 

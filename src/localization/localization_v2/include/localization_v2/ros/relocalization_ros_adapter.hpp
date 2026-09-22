@@ -18,6 +18,7 @@
 #include <string>
 
 #include "localization_v2/interface/relocalization_interface.hpp"
+#include <syslog/logger.h>
 
 namespace localization_v2 {
 

@@ -15,7 +15,7 @@
 #include <relocalization/core/keyframe_database.hpp>
 
 #include <pcl/filters/crop_box.h>
-#include <ros/ros.h>
+#include "syslog/logger.h"
 
 #include <algorithm>
 #include <cctype>
@@ -47,8 +47,9 @@ bool KeyframeDatabase::load(const KeyframeDatabaseConfig& config) {
       // 否则只保留原点附近 100m 内的点，远处 query 裁剪结果为空
       const double map_voxel = std::max(config.preprocess.voxel_leaf, 0.5);
       global_map_ = voxelDownsampleCloud(loadPcd(config.global_map_pcd), map_voxel);
-      ROS_INFO_STREAM("Loaded global map: " << (global_map_ ? global_map_->size() : 0)
-                      << " points, voxel_leaf=" << map_voxel);
+      // ROS_INFO_STREAM("Loaded global map: " << (global_map_ ? global_map_->size() : 0)
+      //                 << " points, voxel_leaf=" << map_voxel);
+      SYS_LOG(syslog::LogSeverity::INFO, true) << "（no for visualization）Loaded global map: " << (global_map_ ? global_map_->size() : 0) << " points, voxel_leaf=" << map_voxel;
     } catch (...) {
       global_map_.reset();
     }

@@ -22,6 +22,7 @@ void VoxelOctoTreeFASTLIVO::init_plane(const std::list<pointWithVar> &points, Vo
     plane->normal_ = Eigen::Vector3d::Zero();
     plane->points_size_ = points.size();
     plane->radius_ = 0;
+    if (points.size() < 3) { plane->is_plane_ = false; return; }
 
     // 计算累积和 sum_ppt 和中心
     for (const auto &pv : points) {
@@ -54,7 +55,8 @@ void VoxelOctoTreeFASTLIVO::init_plane(const std::list<pointWithVar> &points, Vo
            0, 1.0 / plane->points_size_, 0,
            0, 0, 1.0 / plane->points_size_;
 
-    if (evals(evalsMin) < planer_threshold_) {
+    if (evals.allFinite() && evals(0) >= -1e-9 && evals(1) - evals(0) > 1e-9 &&
+        evals(evalsMin) < planer_threshold_) {
         // 计算平面协方差传播
         for (const auto &pv : points) {
             Eigen::Matrix<double, 6, 3> J;
@@ -169,12 +171,14 @@ void VoxelOctoTreeFASTLIVO::init_plane_ransac() {
     }
 
     if (new_points_.size() > 0) {
+        plane->center_ *= plane->points_size_; // recover sum before removing rejected points
         for (auto iter = new_points_.begin(); iter != new_points_.end(); iter++) {
             Eigen::Vector3d point = iter->point_w;
             sum_ppt -= point * point.transpose();
             plane->center_ -= point;
         }
         plane->points_size_ -= static_cast<int>(new_points_.size());
+        if (plane->points_size_ < 3) { plane->is_plane_ = false; return; }
         plane->center_ = plane->center_ / plane->points_size_;
         plane->sum_ppt_ = sum_ppt;
         plane->covariance_ = sum_ppt / plane->points_size_ - plane->center_ * plane->center_.transpose();
@@ -187,7 +191,8 @@ void VoxelOctoTreeFASTLIVO::init_plane_ransac() {
         not_plane_points_.splice(not_plane_points_.end(), new_points_);
     }
 
-    if (evals(evalsMin) < planer_threshold_) {
+    if (evals.allFinite() && evals(0) >= -1e-9 && evals(1) - evals(0) > 1e-9 &&
+        evals(evalsMin) < planer_threshold_) {
         Eigen::Matrix3d J_Q;
         J_Q << 1.0 / plane->points_size_, 0, 0,
                0, 1.0 / plane->points_size_, 0,
@@ -332,10 +337,8 @@ bool VoxelOctoTreeFASTLIVO::plane_valid_check() {
         double x_coord = relative_point.dot(x_axis);
         double y_coord = relative_point.dot(y_axis);
 
-        double grid_x_f = x_coord / resolution;
-        if (x_coord < 0) grid_x_f += -1;
-        double grid_y_f = y_coord / resolution;
-        if (y_coord < 0) grid_y_f += -1;
+        double grid_x_f = std::floor(x_coord / resolution);
+        double grid_y_f = std::floor(y_coord / resolution);
 
         int grid_x = (int)grid_x_f;
         int grid_y = (int)grid_y_f;
@@ -403,6 +406,8 @@ void VoxelOctoTreeFASTLIVO::init_octo_tree() {
             init_plane_ransac();
         } else {
             init_plane(new_points_, plane_ptr_);
+            if (plane_ptr_->is_plane_) plane_points_.splice(plane_points_.end(), new_points_);
+            else not_plane_points_.splice(not_plane_points_.end(), new_points_);
         }
         if (plane_ptr_->is_plane_) {
             octo_state_ = 0;
@@ -438,6 +443,7 @@ void VoxelOctoTreeFASTLIVO::cut_octo_tree() {
                 max_layer_, layer_ + 1, layer_init_num_[layer_ + 1],
                 max_points_num_, planer_threshold_);
             leaves_[leafnum]->root = root;
+            leaves_[leafnum]->update_size_threshold_ = update_size_threshold_;
             leaves_[leafnum]->layer_init_num_ = layer_init_num_;
             leaves_[leafnum]->reinit_size_vec_ = reinit_size_vec_;
             leaves_[leafnum]->update_inlier_threshold_ = update_inlier_threshold_;
@@ -472,15 +478,14 @@ void VoxelOctoTreeFASTLIVO::update_octo_tree() {
         return;
     }
 
-    // reinit 机制：当点数达到阈值时重新初始化八叉树
+    // Check bounds BEFORE indexing: a batch can cross every remaining threshold.
+    if (reinit_state_ >= static_cast<int>(reinit_size_vec_.size())) stop_reinit_ = true;
     if (!stop_reinit_ && all_points_num_root_ > reinit_size_vec_[reinit_state_]) {
         reinit_octo_tree();
-        while (all_points_num_root_ > reinit_size_vec_[reinit_state_]) {
-            reinit_state_ += 1;
-        }
-        if (reinit_state_ > static_cast<int>(reinit_size_vec_.size()) - 1) {
-            stop_reinit_ = true;
-        }
+        while (reinit_state_ < static_cast<int>(reinit_size_vec_.size()) &&
+               all_points_num_root_ > reinit_size_vec_[reinit_state_]) ++reinit_state_;
+        stop_reinit_ = reinit_state_ >= static_cast<int>(reinit_size_vec_.size()) ||
+            (config_ptr_ && all_points_num_root_ >= config_ptr_->stop_reinit_threshold_);
         return;
     }
 
@@ -519,6 +524,10 @@ void VoxelOctoTreeFASTLIVO::update_single_voxel() {
         Eigen::Matrix3d evecs = es.eigenvectors();
         Eigen::Vector3d evals = es.eigenvalues();
 
+        if (!evals.allFinite() || evals(1) - evals(0) <= 1e-9) {
+            plane_ptr_->is_plane_ = false;
+            return;
+        }
         Eigen::Matrix3d J_Q;
         J_Q << 1.0 / plane_ptr_->points_size_, 0, 0,
                0, 1.0 / plane_ptr_->points_size_, 0,
@@ -619,6 +628,7 @@ VoxelOctoTreeFASTLIVO *VoxelOctoTreeFASTLIVO::push_to_subvoxel(const pointWithVa
             last_voxel->layer_init_num_[last_voxel->layer_ + 1],
             last_voxel->max_points_num_, last_voxel->planer_threshold_);
         last_voxel->leaves_[leafnum]->root = root;
+        last_voxel->leaves_[leafnum]->update_size_threshold_ = update_size_threshold_;
         last_voxel->leaves_[leafnum]->layer_init_num_ = layer_init_num_;
         last_voxel->leaves_[leafnum]->reinit_size_vec_ = reinit_size_vec_;
         last_voxel->leaves_[leafnum]->update_inlier_threshold_ = update_inlier_threshold_;
@@ -747,7 +757,7 @@ void VoxelOctoTreeFASTLIVO::build_single_residual(
             (plane.center_(0) - p_w(0)) * (plane.center_(0) - p_w(0)) +
             (plane.center_(1) - p_w(1)) * (plane.center_(1) - p_w(1)) +
             (plane.center_(2) - p_w(2)) * (plane.center_(2) - p_w(2));
-        float range_dis = sqrt(dis_to_center - dis_to_plane * dis_to_plane);
+        float range_dis = sqrt(std::max(0.0f, dis_to_center - dis_to_plane * dis_to_plane));
 
         if (range_dis <= radius_k * plane.radius_) {
             Eigen::Matrix<double, 1, 6> J_nq;
@@ -755,7 +765,7 @@ void VoxelOctoTreeFASTLIVO::build_single_residual(
             J_nq.block<1, 3>(0, 3) = -plane.normal_;
             double sigma_l = J_nq * plane.plane_var_ * J_nq.transpose();
             sigma_l += plane.normal_.transpose() * pv.var * plane.normal_;
-            if (dis_to_plane < sigma_num * sqrt(sigma_l)) {
+            if (std::isfinite(sigma_l) && sigma_l > 0 && dis_to_plane < sigma_num * sqrt(sigma_l)) {
                 is_success = true;
                 double this_prob = 1.0 / (sqrt(sigma_l)) *
                                    exp(-0.5 * dis_to_plane * dis_to_plane /
@@ -771,6 +781,8 @@ void VoxelOctoTreeFASTLIVO::build_single_residual(
                     single_ptpl.center_ = plane.center_;
                     single_ptpl.d_ = plane.d_;
                     single_ptpl.layer_ = current_layer;
+                    single_ptpl.is_valid_ = true;
+                    single_ptpl.eigen_value_ = plane.min_eigen_value_;
                     single_ptpl.dis_to_plane_ =
                         plane.normal_(0) * p_w(0) +
                         plane.normal_(1) * p_w(1) +
@@ -833,11 +845,9 @@ void VoxelMapManagerFASTLIVO::UpdateMap(const std::vector<pointWithVar> &input_p
 
     for (uint i = 0; i < plsize; i++) {
         const pointWithVar &p_v = input_points[i];
-        float loc_xyz[3];
-        for (int j = 0; j < 3; j++) {
-            loc_xyz[j] = p_v.point_w[j] / voxel_size_;
-            if (loc_xyz[j] < 0) loc_xyz[j] -= 1.0;
-        }
+        if (!p_v.point_w.allFinite() || !p_v.var.allFinite()) continue;
+        double loc_xyz[3];
+        for (int j = 0; j < 3; j++) loc_xyz[j] = std::floor(p_v.point_w[j] / voxel_size_);
         VOXEL_LOCATION position((int64_t)loc_xyz[0], (int64_t)loc_xyz[1],
                                  (int64_t)loc_xyz[2]);
         auto iter = voxel_map_.find(position);
@@ -855,6 +865,7 @@ void VoxelMapManagerFASTLIVO::UpdateMap(const std::vector<pointWithVar> &input_p
                                            config_.planner_threshold_);
             voxel_map_[position] = octo_tree;
             octo_tree->root = octo_tree;
+            octo_tree->update_size_threshold_ = config_.update_size_threshold_;
             octo_tree->layer_init_num_ = config_.layer_init_num_;
             octo_tree->reinit_size_vec_ = config_.reinit_size_vec_;
             octo_tree->update_inlier_threshold_ = config_.update_inlier_threshold_;
@@ -868,13 +879,14 @@ void VoxelMapManagerFASTLIVO::UpdateMap(const std::vector<pointWithVar> &input_p
             octo_tree->new_points_.push_back(p_v);
             octo_tree->all_points_num_root_++;
         }
+        ++total_points_num_;
         // 记录到 update_cache
         update_cache[position] = voxel_map_[position];
 
         // 更新 LRU
         UpdateLRU(position);
     }
-    total_points_num_ += input_points.size();
+
 
     auto t_insert_end = std::chrono::high_resolution_clock::now();
     double ms_insert = std::chrono::duration<double, std::milli>(t_insert_end - t_insert_start).count();
@@ -923,80 +935,47 @@ void VoxelMapManagerFASTLIVO::BuildResidualListOMP(
 
     int max_layer = config_.max_layer_;
     double sigma_num = config_.sigma_num_;
-    std::mutex mylock;
     ptpl_list.clear();
-    std::vector<PointToPlane> all_ptpl_list(pv_list.size());
-    std::vector<bool> useful_ptpl(pv_list.size());
+    std::vector<PointToPlane> matches(pv_list.size());
+    std::vector<uint8_t> valid(pv_list.size(), 0);
+    std::vector<VOXEL_LOCATION> selected_keys(pv_list.size());
+#pragma omp parallel for num_threads(config_.matching_threads_)
     for (size_t i = 0; i < pv_list.size(); ++i) {
-        useful_ptpl[i] = false;
-    }
-#ifdef MP_EN
-#pragma omp parallel for
-#endif
-    for (size_t i = 0; i < pv_list.size(); i++) {
-        const pointWithVar &pv = pv_list[i];
-        float loc_xyz[3];
-        for (int j = 0; j < 3; j++) {
-            loc_xyz[j] = pv.point_w[j] / voxel_size_;
-            if (loc_xyz[j] < 0) loc_xyz[j] -= 1.0;
+        pointWithVar pv = pv_list[i]; // matching may set the normal; do not const_cast input
+        if (!pv.point_w.allFinite() || !pv.var.allFinite()) continue;
+        const VOXEL_LOCATION key(static_cast<int64_t>(std::floor(pv.point_w.x()/voxel_size_)),
+                                 static_cast<int64_t>(std::floor(pv.point_w.y()/voxel_size_)),
+                                 static_cast<int64_t>(std::floor(pv.point_w.z()/voxel_size_)));
+        bool success = false;
+        double prob = 0.0;
+        const int radius = config_.neighbor_search_radius_;
+        const auto search = [&](const VOXEL_LOCATION& candidate) {
+            auto iter = voxel_map_.find(candidate);
+            if (iter == voxel_map_.end()) return;
+            const double old_prob = prob;
+            iter->second->build_single_residual(pv, 0, success, prob, matches[i], sigma_num, max_layer);
+            if (prob > old_prob) selected_keys[i] = candidate;
+        };
+        search(key);
+        // Keep a valid current-root association by default. Cross-plane neighbors may
+        // have lower variance but a worse geometric fit during map initialization.
+        if (!success || !config_.neighbor_search_on_failure_) {
+            for (int x=-radius; x<=radius; ++x) for (int y=-radius; y<=radius; ++y)
+                for (int z=-radius; z<=radius; ++z) {
+                    if (x==0 && y==0 && z==0) continue;
+                    search(VOXEL_LOCATION(key.x+x, key.y+y, key.z+z));
+                }
         }
-        VOXEL_LOCATION position((int64_t)loc_xyz[0], (int64_t)loc_xyz[1],
-                                 (int64_t)loc_xyz[2]);
-        auto iter = voxel_map_.find(position);
-        if (iter != voxel_map_.end()) {
-            // 更新 LRU（读操作）
-            {
-                std::lock_guard<std::mutex> lock(lru_mutex_);
-                UpdateLRU(position);
-            }
-
-            VoxelOctoTreeFASTLIVO *current_octo = iter->second;
-            PointToPlane single_ptpl;
-            bool is_success = false;
-            double prob = 0;
-            current_octo->build_single_residual(
-                const_cast<pointWithVar &>(pv), 0, is_success, prob,
-                single_ptpl, sigma_num, max_layer);
-            if (!is_success) {
-                VOXEL_LOCATION near_position = position;
-                if (loc_xyz[0] > (current_octo->voxel_center_[0] +
-                                  current_octo->quater_length_)) {
-                    near_position.x = near_position.x + 1;
-                } else if (loc_xyz[0] < (current_octo->voxel_center_[0] -
-                                          current_octo->quater_length_)) {
-                    near_position.x = near_position.x - 1;
-                }
-                if (loc_xyz[1] > (current_octo->voxel_center_[1] +
-                                  current_octo->quater_length_)) {
-                    near_position.y = near_position.y + 1;
-                } else if (loc_xyz[1] < (current_octo->voxel_center_[1] -
-                                          current_octo->quater_length_)) {
-                    near_position.y = near_position.y - 1;
-                }
-                if (loc_xyz[2] > (current_octo->voxel_center_[2] +
-                                  current_octo->quater_length_)) {
-                    near_position.z = near_position.z + 1;
-                } else if (loc_xyz[2] < (current_octo->voxel_center_[2] -
-                                          current_octo->quater_length_)) {
-                    near_position.z = near_position.z - 1;
-                }
-                auto iter_near = voxel_map_.find(near_position);
-                if (iter_near != voxel_map_.end()) {
-                    iter_near->second->build_single_residual(
-                        const_cast<pointWithVar &>(pv), 0, is_success, prob,
-                        single_ptpl, sigma_num, max_layer);
-                }
-            }
-            if (is_success) {
-                std::lock_guard<std::mutex> lock(mylock);
-                useful_ptpl[i] = true;
-                all_ptpl_list[i] = single_ptpl;
-            }
-        }
+        valid[i] = success && prob > 0;
     }
-    for (size_t i = 0; i < useful_ptpl.size(); i++) {
-        if (useful_ptpl[i]) ptpl_list.push_back(all_ptpl_list[i]);
+    // Touch each matched root once outside the parallel loop, avoiding a lock per point.
+    std::unordered_set<VOXEL_LOCATION, std::hash<VOXEL_LOCATION>> touched;
+    for (size_t i=0; i<pv_list.size(); ++i) if (valid[i]) {
+        matches[i].source_idx_ = i;
+        ptpl_list.push_back(matches[i]);
+        touched.insert(selected_keys[i]);
     }
+    for (const auto& key : touched) UpdateLRU(key);
 
     // ===== [TIME_LOG] BuildResidualListOMP 耗时 =====
     auto t_residual_end = std::chrono::high_resolution_clock::now();
@@ -1018,11 +997,8 @@ void VoxelMapManagerFASTLIVO::MapSliding(const Eigen::Vector3d &center) {
         return;
     }
     last_slide_pos_ = center;
-    float loc_xyz[3];
-    for (int j = 0; j < 3; j++) {
-        loc_xyz[j] = center[j] / voxel_size_;
-        if (loc_xyz[j] < 0) loc_xyz[j] -= 1.0;
-    }
+    double loc_xyz[3];
+    for (int j=0; j<3; ++j) loc_xyz[j] = std::floor(center[j] / voxel_size_);
     clearMemOutOfMap((int64_t)loc_xyz[0] + config_.half_map_size_,
                      (int64_t)loc_xyz[0] - config_.half_map_size_,
                      (int64_t)loc_xyz[1] + config_.half_map_size_,
@@ -1085,38 +1061,17 @@ void VoxelMapManagerFASTLIVO::clearMemOutOfMap(int x_max, int x_min, int y_max,
 void VoxelMapManagerFASTLIVO::CalcBodyCov(const Eigen::Vector3d &point,
                                           double ranging_cov, double angle_cov,
                                           Eigen::Matrix3d &body_var) {
-    // 原始实现（设计文档要求无变化）
-    Eigen::Vector3d p = point;
-    if (point[2] == 0) {
-        p[2] = 0.0001;
+    // Isotropic angular uncertainty in the tangent plane; valid also at z=0.
+    const double range = point.norm();
+    const double range_var = ranging_cov * ranging_cov;
+    if (!point.allFinite() || range < 1e-9) {
+        body_var = Eigen::Matrix3d::Identity() * range_var;
         return;
     }
-    double range = p.norm();
-    Eigen::Vector3d direction(p);
-    direction.normalize();
-    double range_var = ranging_cov * ranging_cov;
-    // double angle_var = pow(sin(angle_cov * M_PI / 180.0), 2);
-    Eigen::Matrix2d angle_var;
-    angle_var << pow(sin(angle_cov * M_PI / 180.0), 2), 0, 0, pow(sin(angle_cov * M_PI / 180.0), 2);
-    Eigen::Matrix3d direction_hat;
-    direction_hat << 0, -direction(2), direction(1),
-                     direction(2), 0, -direction(0),
-                     -direction(1), direction(0), 0;
-    // Eigen::Vector3d base_vector1 = direction.cross(Eigen::Vector3d::UnitX());
-    // if (base_vector1.norm() < 1e-6) {
-    //     base_vector1 = direction.cross(Eigen::Vector3d::UnitY());
-    // }
-    Eigen::Vector3d base_vector1(1, 1, -(direction(0) + direction(1)) / direction(2));
-    base_vector1.normalize();
-    Eigen::Vector3d base_vector2 = base_vector1.cross(direction);
-    base_vector2.normalize();
-    Eigen::Matrix<double, 3, 2> N;
-    N << base_vector1(0), base_vector2(0),
-         base_vector1(1), base_vector2(1),
-         base_vector1(2), base_vector2(2);
-    Eigen::Matrix<double, 3, 2> A = range * direction_hat * N;
-    body_var = direction * range_var * direction.transpose() +
-               A * angle_var * A.transpose();
+    const Eigen::Vector3d direction = point / range;
+    const Eigen::Matrix3d radial = direction * direction.transpose();
+    const double angle_var = std::pow(std::sin(angle_cov * M_PI / 180.0), 2);
+    body_var = range_var * radial + range * range * angle_var * (Eigen::Matrix3d::Identity() - radial);
 }
 
 } // namespace slam_odometry

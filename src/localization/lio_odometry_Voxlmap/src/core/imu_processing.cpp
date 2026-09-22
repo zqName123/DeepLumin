@@ -185,7 +185,7 @@ void ImuProcess::UndistortPcl(const MeasureGroup& meas, ESKF& kf_state, CloudPtr
         for (; it_pcl->time / 1000.0 > head->offset_time; it_pcl--) {
             dt = it_pcl->time / 1000.0 - head->offset_time;
 
-            Mat3d R_i(R_imu * math::exp(angvel_avr, dt));
+            Mat3d R_i = R_imu * SO3::exp(angvel_avr * dt).matrix();
 
             Vec3d P_i(it_pcl->x, it_pcl->y, it_pcl->z);
             Vec3d T_ei(pos_imu + vel_imu * dt + 0.5 * acc_imu * dt * dt - imu_state.pos_);

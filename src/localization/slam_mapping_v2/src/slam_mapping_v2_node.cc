@@ -27,6 +27,10 @@
 #include <std_srvs/Trigger.h>
 #include <tf2_ros/transform_broadcaster.h>
 
+#include "deeplumin_health_checker/health_checker/health_checker.h"
+#include "syslog/logger.h"
+
+
 #include <pcl/common/transforms.h>
 
 #include <atomic>
@@ -40,10 +44,16 @@ class SlamMappingV2Node {
   bool initialize(ros::NodeHandle& nh, ros::NodeHandle& pnh) {
     cfg_ = slam_mapping_v2_ros::loadConfig(pnh);
     if (!runtime_.initialize(cfg_)) {
-      ROS_ERROR("[slam_mapping_v2] runtime initialize failed");
+      // ROS_ERROR("[slam_mapping_v2] runtime initialize failed");
+      SYS_LOG(syslog::LogSeverity::ERROR, true) << "runtime initialize failed";
       return false;
     }
     pubs_.initialize(nh, cfg_);
+    health_checker_ = std::make_shared<deeplumin_health_checker::HealthChecker>(nh, pnh);
+    health_checker_->ENABLE();
+    health_checker_->NODE_ACTIVATE();
+
+    std::cout << "SlamMappingV2Node: HealthChecker enabled and activated." << std::endl;
 
     odom_sub_ = nh.subscribe(cfg_.input.odom_topic, 200, &SlamMappingV2Node::onOdom, this);
     scan_sub_ = nh.subscribe(cfg_.input.scan_topic, 200, &SlamMappingV2Node::onScan, this);
@@ -55,13 +65,15 @@ class SlamMappingV2Node {
       if (cfg_.input.image_topic.find("compressed") != std::string::npos) {
         image_compressed_sub_ = nh.subscribe(cfg_.input.image_topic, 10,
                                              &SlamMappingV2Node::onCompressedImage, this);
-        ROS_INFO("[slam_mapping_v2] Subscribing to compressed image topic: %s",
-                 cfg_.input.image_topic.c_str());
+        // ROS_INFO("[slam_mapping_v2] Subscribing to compressed image topic: %s",
+        //          cfg_.input.image_topic.c_str());
+        SYS_LOG(syslog::LogSeverity::INFO, true) << "Subscribing to compressed image topic: " << cfg_.input.image_topic;
       } else {
         image_sub_ = nh.subscribe(cfg_.input.image_topic, 10,
                                   &SlamMappingV2Node::onImage, this);
-        ROS_INFO("[slam_mapping_v2] Subscribing to image topic: %s",
-                 cfg_.input.image_topic.c_str());
+        // ROS_INFO("[slam_mapping_v2] Subscribing to image topic: %s",
+        //          cfg_.input.image_topic.c_str());
+        SYS_LOG(syslog::LogSeverity::INFO, true) << "Subscribing to image topic: " << cfg_.input.image_topic;
       }
     }
 
@@ -77,7 +89,8 @@ class SlamMappingV2Node {
         cfg_.loop_closure.detector_type == "hybrid") {
       debug_image_pub_ = nh.advertise<sensor_msgs::Image>(
           "/slam_mapping_v2/debug_image", 1);
-      ROS_INFO("[slam_mapping_v2] Debug image topic: /slam_mapping_v2/debug_image");
+      // ROS_INFO("[slam_mapping_v2] Debug image topic: /slam_mapping_v2/debug_image");
+      SYS_LOG(syslog::LogSeverity::INFO, true) << "Debug image topic: /slam_mapping_v2/debug_image";
     }
 
     if (cfg_.runtime.auto_start) {
@@ -87,8 +100,9 @@ class SlamMappingV2Node {
       req.output_dir = cfg_.runtime.output_root + "/" + cfg_.runtime.task_name;
       req.enable_loop_closure = cfg_.loop_closure.enable;
       runtime_.start(req, ros::Time::now().toSec());
-      ROS_INFO("[slam_mapping_v2] auto_start task=%s output=%s", req.task_name.c_str(),
-               req.output_dir.c_str());
+      // ROS_INFO("[slam_mapping_v2] auto_start task=%s output=%s", req.task_name.c_str(),
+      //          req.output_dir.c_str());
+      SYS_LOG(syslog::LogSeverity::INFO, true) << "auto_start task=" << req.task_name << " output=" << req.output_dir;
     }
     return true;
   }
@@ -146,12 +160,14 @@ class SlamMappingV2Node {
     try {
       image = cv_bridge::toCvShare(msg, "mono8")->image;
     } catch (const cv_bridge::Exception& e) {
-      ROS_ERROR("[slam_mapping_v2] cv_bridge exception: %s", e.what());
+      // ROS_ERROR("[slam_mapping_v2] cv_bridge exception: %s", e.what());
+      SYS_LOG(syslog::LogSeverity::ERROR, true) << "cv_bridge exception: " << e.what();
       return;
     }
 
-    ROS_INFO_THROTTLE(5.0, "[slam_mapping_v2] Image received: %dx%d ch=%d stamp=%.3f",
-                      image.cols, image.rows, image.channels(), msg->header.stamp.toSec());
+    // ROS_INFO_THROTTLE(5.0, "[slam_mapping_v2] Image received: %dx%d ch=%d stamp=%.3f",
+    //                   image.cols, image.rows, image.channels(), msg->header.stamp.toSec());
+    SYS_LOG(syslog::LogSeverity::INFO, false) << "Image received: " << image.cols << "x" << image.rows << "x" << image.channels() << " " << msg->header.stamp.toSec();
 
     publishDebugImage(image, msg->header.stamp);
     cv::rotate(image, image, cv::ROTATE_90_COUNTERCLOCKWISE);
@@ -163,16 +179,19 @@ class SlamMappingV2Node {
     try {
       image = cv::imdecode(cv::Mat(msg->data), cv::IMREAD_GRAYSCALE);
     } catch (const std::exception& e) {
-      ROS_ERROR("[slam_mapping_v2] Compressed image decode exception: %s", e.what());
+      // ROS_ERROR("[slam_mapping_v2] Compressed image decode exception: %s", e.what());
+      SYS_LOG(syslog::LogSeverity::ERROR, true) << "Compressed image decode exception: " << e.what();
       return;
     }
     if (image.empty()) {
-      ROS_ERROR("[slam_mapping_v2] Failed to decode compressed image");
+      // ROS_ERROR("[slam_mapping_v2] Failed to decode compressed image");
+      SYS_LOG(syslog::LogSeverity::ERROR, true) << "Failed to decode compressed image";
       return;
     }
 
-    ROS_INFO_THROTTLE(5.0, "[slam_mapping_v2] Compressed image received: %dx%d ch=%d stamp=%.3f",
-                      image.cols, image.rows, image.channels(), msg->header.stamp.toSec());
+    // ROS_INFO_THROTTLE(5.0, "[slam_mapping_v2] Compressed image received: %dx%d ch=%d stamp=%.3f",
+    //                   image.cols, image.rows, image.channels(), msg->header.stamp.toSec());
+    SYS_LOG(syslog::LogSeverity::INFO, false) << "Compressed image received: " << image.cols << "x" << image.rows << "x" << image.channels() << " " << msg->header.stamp.toSec();
 
     publishDebugImage(image, ros::Time(msg->header.stamp));
     cv::rotate(image, image, cv::ROTATE_90_COUNTERCLOCKWISE);
@@ -186,8 +205,9 @@ class SlamMappingV2Node {
       std::this_thread::sleep_for(interval);
       const auto st = runtime_.status();
       if (st.state != RuntimeState::RUNNING) {
-        ROS_WARN_THROTTLE(5.0, "[slam_mapping_v2] viz idle: state=%s (call %s or set runtime/auto_start)",
-                          toString(st.state).c_str(), cfg_.services.start.c_str());
+        // ROS_WARN_THROTTLE(5.0, "[slam_mapping_v2] viz idle: state=%s (call %s or set runtime/auto_start)",
+        //                   toString(st.state).c_str(), cfg_.services.start.c_str());
+        SYS_LOG(syslog::LogSeverity::WARNING, true) << "viz idle: state=" << toString(st.state) << " " << cfg_.services.start;
         continue;
       }
       const auto kfs = runtime_.keyframes();
@@ -335,6 +355,8 @@ class SlamMappingV2Node {
   std::atomic<bool> stop_viz_{false};
   std::thread viz_thread_;
   ros::WallTime last_status_pub_time_;
+
+  std::shared_ptr<deeplumin_health_checker::HealthChecker> health_checker_; // 健康检查器
 };
 
 }  // namespace slam_mapping_v2
@@ -343,10 +365,19 @@ int main(int argc, char** argv) {
   ros::init(argc, argv, "slam_mapping_v2");
   ros::NodeHandle nh;
   ros::NodeHandle pnh("~");
+  // 初始化日志
+  std::string log_dir;
+  pnh.param<std::string>("log_dir", log_dir, "");
+  SYS_LOG_INIT_FULL(log_dir,
+                    syslog::LogSeverity::INFO,
+                    50,
+                    "slam_mapping_v2");
+
 
   slam_mapping_v2::SlamMappingV2Node node;
   if (!node.initialize(nh, pnh)) {
-    ROS_ERROR("[slam_mapping_v2] initialize failed");
+    // ROS_ERROR("[slam_mapping_v2] initialize failed");
+    SYS_LOG(syslog::LogSeverity::ERROR, true) << "initialize failed";
     return 1;
   }
   node.startThreads();

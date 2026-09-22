@@ -123,6 +123,9 @@ struct IVoxNode<PointT, dim>::DistPoint {
 template <typename PointT, int dim>
 void IVoxNode<PointT, dim>::InsertPoint(const PointT& pt) {
     points_.template emplace_back(pt);
+    if (points_.size() >= 10) {
+        points_.erase(points_.begin());
+    }
 }
 
 template <typename PointT, int dim>

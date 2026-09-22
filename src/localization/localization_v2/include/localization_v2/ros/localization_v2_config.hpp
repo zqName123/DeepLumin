@@ -43,6 +43,7 @@ struct LocalizationV2Config {
   bool publish_odom_to_base_tf = false;  // slam_odometry_v2 默认已发布 odom->base，避免重复
   bool publish_path = true;
   bool publish_current_scan_in_map = true;
+  double base_yaw_offset = 0.0;
 
   // ---- global_matcher 结果语义与门控 ----
   std::string gm_result_pose_frame = "odom";  // "odom"=结果为 map->odom；"base"=结果为 map->base_link

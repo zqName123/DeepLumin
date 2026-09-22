@@ -1,3 +1,4 @@
+#include "lio_odometry/core/voxelmap/point_covariance.h"
 #include "lio_odometry/core/laser_odometry_core.h"
 
 #include <yaml-cpp/yaml.h>
@@ -7,6 +8,7 @@
 #include <fstream>
 
 #include "lio_odometry/core/eskf.h"
+#include <chrono>
 
 namespace slam_odometry {
 
@@ -15,6 +17,24 @@ int NUM_MAX_ITERATIONS = 4;
 float ESTI_PLANE_THRESHOLD = 0.1f;
 float lidar_time_interval = 0.1;
 }  // namespace fasterlio
+
+// 每行号独立的节流器（替代 ROS_INFO_THROTTLE）
+template<int Line>
+struct ThrottleByLine {
+  static bool shouldLog(double rate) {
+    static std::chrono::steady_clock::time_point last_log_time;
+    auto now = std::chrono::steady_clock::now();
+    auto elapsed = std::chrono::duration<double>(now - last_log_time).count();
+    if (elapsed >= rate) {
+      last_log_time = now;
+      return true;
+    }
+    return false;
+  }
+};
+
+#define SHOULD_LOG(rate) ThrottleByLine<__LINE__>::shouldLog(rate)
+
 
 bool esti_plane(Vec4f& pca_result, const PointVector& point, const float& threshold) {
     if (point.size() < fasterlio::MIN_NUM_MATCH_POINTS) {
@@ -135,12 +155,20 @@ bool LaserOdometryCore::Init(const std::string& config_yaml) {
         ObsModelWelspeed(s, obs);
     };
     eskf_options.gps_obs_func_ = [this](NavState& s, ESKF::CustomObservationModel& obs) { ObsModelGPS(s, obs); };
-    // VoxelMap 模式下禁用 AA（与 FAST-LIVO2 一致）
-    eskf_options.use_aa_ = true;
-    // VoxelMap 模式使用 Pose-only 收敛准则（与 FAST-LIVO2 一致）
-    eskf_options.use_pose_converge_for_lidar_ = false;
-    eskf_options.lidar_converged_times_required_ = 1;
+    const auto solver = YAML::LoadFile(config_yaml)["fasterlio"];
+    eskf_options.use_aa_ = use_aa_;
+    eskf_options.use_pose_converge_for_lidar_ = solver["use_pose_convergence"].as<bool>(false);
+    eskf_options.lidar_converged_times_required_ = solver["converged_times_required"].as<int>(1);
+    eskf_options.lidar_rot_converge_deg_ = solver["rotation_convergence_deg"].as<double>(0.01);
+    eskf_options.lidar_pos_converge_m_ = solver["position_convergence_m"].as<double>(0.00015);
+    if (eskf_options.lidar_converged_times_required_ < 1 ||
+        eskf_options.lidar_rot_converge_deg_ <= 0 || eskf_options.lidar_pos_converge_m_ <= 0) return false;
     kf_.Init(eskf_options);
+    std::cout << "[voxelmap] AA=" << use_aa_ << " adaptive_R=" << use_adaptive_r_
+              << " pose_convergence=" << eskf_options.use_pose_converge_for_lidar_
+              << " required_convergences=" << eskf_options.lidar_converged_times_required_
+              << " neighbor_radius=" << vm_config_.neighbor_search_radius_
+              << " matching_threads=" << vm_config_.matching_threads_ << std::endl;
 
     return true;
 }
@@ -184,6 +212,11 @@ bool LaserOdometryCore::LoadParamsFromYAML(const std::string& yaml_file) {
         window_size_ = yaml["vel_gnss"]["gnss_pitch_window_size"].as<int>(50);
         lidar_update_r_ = yaml["fasterlio"]["lidar_update_r"].as<double>(0.001);
         r_base_ = yaml["fasterlio"]["r_base"].as<double>(0.001);
+        use_adaptive_r_ = yaml["fasterlio"]["use_adaptive_r"].as<bool>(true);
+        min_effective_points_ = yaml["fasterlio"]["min_effective_points"].as<int>(20);
+        min_effective_ratio_ = yaml["fasterlio"]["min_effective_ratio"].as<double>(0.05);
+        if (!std::isfinite(r_base_) || r_base_ <= 0 || min_effective_points_ < 3 ||
+            min_effective_ratio_ < 0 || min_effective_ratio_ > 1) return false;
         keep_first_imu_estimation_ = yaml["fasterlio"]["keep_first_imu_estimation"].as<bool>(false);
 
         // ===== VoxelMap 配置加载 =====
@@ -217,6 +250,22 @@ bool LaserOdometryCore::LoadParamsFromYAML(const std::string& yaml_file) {
         vm_config_.valid_check_min_points_size_ = yaml["voxel_map"]["valid_check_min_points_size"].as<int>(5);
         vm_config_.valid_check_resolution_ = yaml["voxel_map"]["valid_check_resolution"].as<int>(4);
 
+        vm_config_.neighbor_search_on_failure_ = yaml["voxel_map"]["neighbor_search_on_failure"].as<bool>(true);
+        vm_config_.matching_threads_ = yaml["voxel_map"]["matching_threads"].as<int>(4);
+        vm_config_.neighbor_search_radius_ = yaml["voxel_map"]["neighbor_search_radius"].as<int>(1);
+        vm_config_.sample_seed_ = yaml["voxel_map"]["sample_seed"].as<int>(42);
+        if (vm_config_.matching_threads_ < 1 || vm_config_.lru_capacity_ < 1 ||
+            vm_config_.update_size_threshold_ < 1 || vm_config_.sigma_num_ <= 0 ||
+            vm_config_.beam_err_ <= 0 || vm_config_.dept_err_ < 0 ||
+            vm_config_.max_points_num_ < 3 || vm_config_.max_root_points_size_ < 3 ||
+            vm_config_.ransac_max_iter_ < 1 || vm_config_.ransac_sample_num_ < 3 ||
+            vm_config_.ransac_isplane_p_threshold_ <= 0 || vm_config_.ransac_isplane_p_threshold_ >= 1 ||
+            vm_config_.max_layer_ < 0 || vm_config_.max_layer_ >= int(vm_config_.layer_init_num_.size()) ||
+            vm_config_.max_voxel_size_ <= 0 || vm_config_.neighbor_search_radius_ < 0 ||
+            vm_config_.neighbor_search_radius_ > 2 || vm_config_.valid_check_resolution_ < 1 ||
+            !std::is_sorted(vm_config_.reinit_size_vec_.begin(), vm_config_.reinit_size_vec_.end()) ||
+            std::any_of(vm_config_.layer_init_num_.begin(), vm_config_.layer_init_num_.end(), [](int n){return n<3;}) ||
+            std::any_of(vm_config_.reinit_size_vec_.begin(), vm_config_.reinit_size_vec_.end(), [](int n){return n<1;})) return false;
         // 初始化 VoxelMapManager
         voxel_map_mgr_.Init(vm_config_);
 
@@ -369,8 +418,7 @@ bool LaserOdometryCore::Run() {
         scan_down_world_->resize(cur_pts);
 
         // 从 ESKF 获取状态协方差（用于协方差传播）
-        const Mat3d R_cov = kf_.GetP().block<3, 3>(0, 0);
-        const Mat3d t_cov = kf_.GetP().block<3, 3>(3, 3);
+
         const Mat3d off_R = state_point_.offset_R_lidar_.matrix();
         const Vec3d off_t = state_point_.offset_t_lidar_;
         const Mat3d R_wl = state_point_.rot_.matrix();
@@ -382,7 +430,6 @@ bool LaserOdometryCore::Run() {
             slam_odometry::pointWithVar &pv = pv_list_[i];
             const auto &pt = scan_down_body_->points[i];
             pv.point_b << pt.x, pt.y, pt.z;
-            if (pv.point_b[2] == 0) pv.point_b[2] = 0.001;
 
             // 计算 body 协方差
             // 参数顺序: (point, ranging_cov, angle_cov, body_var)
@@ -401,14 +448,8 @@ bool LaserOdometryCore::Run() {
             scan_down_world_->points[i].z = p_global(2);
 
             // 世界坐标系协方差（完整传播，含状态协方差）
-            Mat3d term1 = R_wl * pv.body_var * R_wl.transpose();
-            Mat3d point_imu_cross;
-            point_imu_cross << 0.0, -pv.point_i[2], pv.point_i[1],
-                                pv.point_i[2], 0.0, -pv.point_i[0],
-                               -pv.point_i[1], pv.point_i[0], 0.0;
-            Mat3d term2 = R_wl * point_imu_cross * R_cov * point_imu_cross.transpose() * R_wl.transpose();
-            pv.var = term1 + term2 + t_cov;
-            pv.var_nostate = term1;
+            pv.var_nostate = SensorCovarianceWorld(state_point_, pv.body_var);
+            pv.var = PointCovarianceWorld(state_point_, kf_.GetP(), pv.point_b, pv.body_var, extrinsic_est_en_);
         }
 
         // R-VoxelMap 首帧建图
@@ -463,11 +504,15 @@ bool LaserOdometryCore::Run() {
     scan_down_world_->resize(cur_pts);
 
     auto old_state = kf_.GetX();
+    const auto old_cov = kf_.GetP();
 
     // ===== [TIME_LOG] ESKF Update 耗时（包含 ObsModel + BuildResidualListOMP） =====
     auto t_eskf_start = std::chrono::high_resolution_clock::now();
 
-    kf_.Update(ESKF::ObsType::LIDAR, lidar_update_r_);
+    if (!kf_.Update(ESKF::ObsType::LIDAR, lidar_update_r_)) {
+        std::cerr << "[voxelmap] LiDAR update rejected; map unchanged" << std::endl;
+        return false;
+    }
 
     auto t_eskf_end = std::chrono::high_resolution_clock::now();
     double ms_eskf = std::chrono::duration<double, std::milli>(t_eskf_end - t_eskf_start).count();
@@ -475,10 +520,12 @@ bool LaserOdometryCore::Run() {
     if (use_wheel_speed_ && have_new_wheel_speed_) {
         kf_.Update(ESKF::ObsType::WHEEL_SPEED, wheel_velocity_noise_ * wheel_velocity_noise_);
         have_new_wheel_speed_ = false;
+        std::cout << "wheel speed done" << std::endl;
     }
     if (use_gnss_ && have_new_gnss_) {
         kf_.Update(ESKF::ObsType::GPS, 1e-3);
         have_new_gnss_ = false;
+        std::cout << "gnss speed done" << std::endl;
     }
 
     state_point_ = kf_.GetX();
@@ -487,7 +534,8 @@ bool LaserOdometryCore::Run() {
     if (keep_first_imu_estimation_ && frame_num_ < 5 &&
         (old_state.rot_.inverse() * state_point_.rot_).log().norm() > 0.3 * M_PI / 180.0) {
         kf_.ChangeX(old_state);
-        state_point_ = old_state;
+        kf_.ChangeP(old_cov);
+        return false;
     }
     frame_num_++;
 
@@ -509,7 +557,19 @@ bool LaserOdometryCore::Run() {
     double ms_run_total = std::chrono::duration<double, std::milli>(t_run_end - t_run_start).count();
 
     // ===== [TIME_LOG] 各阶段耗时汇总 =====
-    std::cout << "[ TIME ] IMU: " << std::fixed << std::setprecision(1) << ms_imu << "ms"
+    // std::cout << "[ TIME ] IMU: " << std::fixed << std::setprecision(1) << ms_imu << "ms"
+    //           << " | downsample: " << ms_downsample << "ms"
+    //           << " | ESKF: " << ms_eskf << "ms"
+    //           << " | MapUpdate: " << ms_map << "ms"
+    //           << " | Run_total: " << ms_run_total << "ms"
+    //           << " | pts: " << cur_pts
+    //           << " effect: " << effect_feat_num_
+    //           << " voxels: " << voxel_map_mgr_.GetTotalPointsNum()
+    //           << std::endl;
+
+    if (SHOULD_LOG(2.0)) {
+
+        std::cout << "[ TIME ] IMU: " << std::fixed << std::setprecision(1) << ms_imu << "ms"
               << " | downsample: " << ms_downsample << "ms"
               << " | ESKF: " << ms_eskf << "ms"
               << " | MapUpdate: " << ms_map << "ms"
@@ -518,7 +578,7 @@ bool LaserOdometryCore::Run() {
               << " effect: " << effect_feat_num_
               << " voxels: " << voxel_map_mgr_.GetTotalPointsNum()
               << std::endl;
-
+    }
 
     return true;
 }
@@ -539,8 +599,7 @@ void LaserOdometryCore::MapIncremental() {
     const Vec3d t_wl = state_point_.pos_;
 
     // 从 ESKF 获取最终状态协方差（用于协方差传播，与 ObsModel 一致）
-    const Mat3d R_cov_map = kf_.GetP().block<3, 3>(0, 0);
-    const Mat3d t_cov_map = kf_.GetP().block<3, 3>(3, 3);
+
 
     if (pv_list_.empty()) {
         // ObsModel 未被调用（skip_lidar 等情况）：从头构建 pv_list_
@@ -550,7 +609,6 @@ void LaserOdometryCore::MapIncremental() {
             Vec3d point_body(scan_down_body_->points[i].x,
                            scan_down_body_->points[i].y,
                            scan_down_body_->points[i].z);
-            if (point_body[2] == 0) point_body[2] = 0.001;
 
             slam_odometry::pointWithVar &pv = pv_list_[i];
             pv.point_b = point_body;
@@ -568,14 +626,8 @@ void LaserOdometryCore::MapIncremental() {
             scan_down_world_->points[i].z = p_global(2);
 
             // 世界坐标系协方差（完整传播，含状态协方差）
-            Mat3d term1 = R_wl * pv.body_var * R_wl.transpose();
-            Mat3d point_imu_cross;
-            point_imu_cross << 0.0, -pv.point_i[2], pv.point_i[1],
-                                pv.point_i[2], 0.0, -pv.point_i[0],
-                               -pv.point_i[1], pv.point_i[0], 0.0;
-            Mat3d term2 = R_wl * point_imu_cross * R_cov_map * point_imu_cross.transpose() * R_wl.transpose();
-            pv.var = term1 + term2 + t_cov_map;
-            pv.var_nostate = term1;
+            pv.var_nostate = SensorCovarianceWorld(state_point_, pv.body_var);
+            pv.var = PointCovarianceWorld(state_point_, kf_.GetP(), pv.point_b, pv.body_var, extrinsic_est_en_);
         }
     } else {
         // pv_list_ 在 ObsModel 中已填充，用最终修正位姿重算世界坐标和协方差
@@ -587,14 +639,8 @@ void LaserOdometryCore::MapIncremental() {
             pv.point_w = p_global;
 
             // 更新世界坐标系协方差（完整传播）
-            Mat3d term1 = R_wl * pv.body_var * R_wl.transpose();
-            Mat3d point_imu_cross;
-            point_imu_cross << 0.0, -point_i[2], point_i[1],
-                                point_i[2], 0.0, -point_i[0],
-                               -point_i[1], point_i[0], 0.0;
-            Mat3d term2 = R_wl * point_imu_cross * R_cov_map * point_imu_cross.transpose() * R_wl.transpose();
-            pv.var = term1 + term2 + t_cov_map;
-            pv.var_nostate = term1;
+            pv.var_nostate = SensorCovarianceWorld(state_point_, pv.body_var);
+            pv.var = PointCovarianceWorld(state_point_, kf_.GetP(), pv.point_b, pv.body_var, extrinsic_est_en_);
 
             // 同步 scan_down_world_（用于可视化等）
             scan_down_world_->points[i].x = p_global(0);
@@ -606,15 +652,7 @@ void LaserOdometryCore::MapIncremental() {
     // R-VoxelMap 增量更新（UpdateMap 内部已有详细耗时日志）
     voxel_map_mgr_.UpdateMap(pv_list_);
 
-    // 滑动窗口管理
-    if (vm_config_.map_sliding_en_) {
-        static Vec3d last_slide_pos = Vec3d::Zero();
-        double dist_to_last_slide = (state_point_.pos_ - last_slide_pos).norm();
-        if (dist_to_last_slide > vm_config_.sliding_thresh_) {
-            voxel_map_mgr_.MapSliding(state_point_.pos_);
-            last_slide_pos = state_point_.pos_;
-        }
-    }
+    if (vm_config_.map_sliding_en_) voxel_map_mgr_.MapSliding(state_point_.pos_);
 
     // 清空 pv_list_，下一帧重新计算
     pv_list_.clear();
@@ -642,6 +680,7 @@ CloudPtr LaserOdometryCore::GetEffectScan() const {
 }
 
 void LaserOdometryCore::ObsModel(NavState& s, ESKF::CustomObservationModel& obs) {
+    effect_feat_num_ = 0;
     // ===== [TIME_LOG] ObsModel 整体耗时 =====
     auto t_obs_start = std::chrono::high_resolution_clock::now();
 
@@ -663,14 +702,12 @@ void LaserOdometryCore::ObsModel(NavState& s, ESKF::CustomObservationModel& obs)
     const Vec3d t_wl = s.pos_;
 
     // 从 ESKF 获取当前状态协方差（用于协方差传播）
-    const Mat3d R_cov = kf_.GetP().block<3, 3>(0, 0);    // 姿态协方差 (SO3)
-    const Mat3d t_cov = kf_.GetP().block<3, 3>(3, 3);    // 位置协方差
+
 
     for (int i = 0; i < cnt_pts; i++) {
         Vec3d point_body(scan_down_body_->points[i].x,
                        scan_down_body_->points[i].y,
                        scan_down_body_->points[i].z);
-        if (point_body[2] == 0) point_body[2] = 0.001;
 
         // 1) body 协方差（仅传感器噪声）
         Mat3d body_var;
@@ -691,18 +728,8 @@ void LaserOdometryCore::ObsModel(NavState& s, ESKF::CustomObservationModel& obs)
 
         // 5) 世界坐标系总协方差（完整传播，含状态不确定性）
         //    传感器噪声传播: term1 = R * body_var * R^T
-        Mat3d term1 = R_wl * body_var * R_wl.transpose();
-
-        //    姿态不确定性传播: p_i = off_R * p_b + off_t
-        //    d(p_w)/d(δθ) = R * p_i^  (右扰动模型)
-        Mat3d point_imu_cross;
-        point_imu_cross << 0.0, -point_imu[2], point_imu[1],
-                           point_imu[2], 0.0, -point_imu[0],
-                          -point_imu[1], point_imu[0], 0.0;
-        Mat3d term2 = R_wl * point_imu_cross * R_cov * point_imu_cross.transpose() * R_wl.transpose();
-
-        //    总协方差 = 传感器噪声 + 姿态不确定性 + 位置不确定性
-        Mat3d total_var = term1 + term2 + t_cov;
+        const Mat3d term1 = SensorCovarianceWorld(s, body_var);
+        const Mat3d total_var = PointCovarianceWorld(s, kf_.GetObservationPriorP(), point_body, body_var, extrinsic_est_en_);
 
         // 6) 填充 pointWithVar
         slam_odometry::pointWithVar &pv = pv_list_[i];
@@ -733,14 +760,14 @@ void LaserOdometryCore::ObsModel(NavState& s, ESKF::CustomObservationModel& obs)
 
     // ===== 构建 ESKF 观测 =====
     int effect_num = ptpl_list_.size();
-    if (effect_num < 3) {
+    if (effect_num < min_effective_points_ || effect_num < min_effective_ratio_ * cnt_pts) {
         obs.valid_ = false;
         return;
     }
 
     obs.h_x_ = Eigen::MatrixXd::Zero(effect_num, 12);
     obs.residual_.resize(effect_num);
-    // obs.R_ = Eigen::MatrixXd::Zero(effect_num, effect_num);  // 自适应 R 矩阵
+    obs.variance_.resize(effect_num);
     obs.valid_ = true;
 
     for (int idx = 0; idx < effect_num; idx++) {
@@ -772,14 +799,12 @@ void LaserOdometryCore::ObsModel(NavState& s, ESKF::CustomObservationModel& obs)
 
         // 2) 计算点不确定性在法向量上的投影
         // 使用 body_cov_ 从 PointToPlane，并传播到世界坐标系
-        Mat3d point_var = R_wl * ptpl.body_cov_ * R_wl.transpose();
+        Mat3d point_var = SensorCovarianceWorld(s, ptpl.body_cov_);
         double sigma_p = norm_vec.transpose() * point_var * norm_vec;
 
-        // 3) 自适应 R
-        // double adaptive_R = r_base_ + sigma_l + sigma_p;
-        // adaptive_R = std::max(adaptive_R, r_base_);  // 最小值为 r_base_（防止退化场景过度信任）
-        // adaptive_R = std::min(adaptive_R, 1.0);      // 防止过大
-        // obs.R_(idx, idx) = adaptive_R;
+        const double variance = use_adaptive_r_ ? r_base_ + sigma_l + sigma_p : lidar_update_r_;
+        if (!std::isfinite(variance) || variance <= 0.0) { obs.valid_ = false; return; }
+        obs.variance_(idx) = variance;
 
         // ===== Jacobian H =====
         // h_x = [d_res/d_pos, d_res/d_rot, d_res/d_off_R, d_res/d_off_t]
@@ -793,7 +818,7 @@ void LaserOdometryCore::ObsModel(NavState& s, ESKF::CustomObservationModel& obs)
             crossmat << 0.0, -point_body[2], point_body[1],
                         point_body[2], 0.0, -point_body[0],
                        -point_body[1], point_body[0], 0.0;
-            obs.h_x_.block<1, 3>(idx, 6) = (R_wl.transpose() * norm_vec).transpose() * crossmat; // d/d(off_R)
+            obs.h_x_.block<1, 3>(idx, 6) = (point_body.cross(off_R.transpose() * R_wl.transpose() * norm_vec)).transpose(); // d/d(off_R)
             obs.h_x_.block<1, 3>(idx, 9) = (R_wl.transpose() * norm_vec).transpose();             // d/d(off_t)
         } else {
             obs.h_x_.block<1, 3>(idx, 6).setZero();
@@ -813,11 +838,11 @@ void LaserOdometryCore::ObsModel(NavState& s, ESKF::CustomObservationModel& obs)
     auto t_obs_end = std::chrono::high_resolution_clock::now();
     double ms_obs = std::chrono::duration<double, std::milli>(t_obs_end - t_obs_start).count();
 
-    std::cout << "    [ ObsModel ] pvlist: " << std::fixed << std::setprecision(1) << ms_pvlist << "ms"
-              << " | jacobian: " << ms_jacobian << "ms"
-              << " | total: " << ms_obs << "ms"
-              << " | effect: " << effect_num << "/" << cnt_pts
-              << std::endl;
+    // std::cout << "    [ ObsModel ] pvlist: " << std::fixed << std::setprecision(1) << ms_pvlist << "ms"
+    //           << " | jacobian: " << ms_jacobian << "ms"
+    //           << " | total: " << ms_obs << "ms"
+    //           << " | effect: " << effect_num << "/" << cnt_pts
+    //           << std::endl;
 }
 
 void LaserOdometryCore::ObsModelWelspeed(NavState& s, ESKF::CustomObservationModel& obs) {

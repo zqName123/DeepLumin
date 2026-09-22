@@ -35,6 +35,7 @@
 #include <small_gicp/ann/gaussian_voxelmap.hpp>
 #include <small_gicp/ann/kdtree.hpp>
 #include <small_gicp/points/point_cloud.hpp>
+#include <syslog/logger.h>
 
 namespace global_matcher_v2 {
 

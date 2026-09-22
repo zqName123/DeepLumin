@@ -25,6 +25,7 @@
   <depend>fast_gicp</depend>
   <depend>libpcl-dev</depend>
   <depend>libeigen3-dev</depend>
+  <depend>deeplumin_health_checker</depend>
 
   <export>
     <build_type>catkin</build_type>

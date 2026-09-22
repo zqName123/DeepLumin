@@ -67,6 +67,7 @@ LocalizationV2Config loadLocalizationV2Config(ros::NodeHandle& pnh) {
   cfg.publish_path = loadBool(pnh, "runtime/publish_path", cfg.publish_path);
   cfg.publish_current_scan_in_map =
       loadBool(pnh, "runtime/publish_current_scan_in_map", cfg.publish_current_scan_in_map);
+  cfg.base_yaw_offset = loadDouble(pnh, "runtime/base_yaw_offset", cfg.base_yaw_offset);
 
   // global_matcher
   cfg.gm_result_pose_frame =

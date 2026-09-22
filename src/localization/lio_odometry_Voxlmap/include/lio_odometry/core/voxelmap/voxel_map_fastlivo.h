@@ -34,7 +34,7 @@ public:
     float quater_length_;
     float planer_threshold_;
     int points_size_threshold_;
-    int update_size_threshold_;
+    int update_size_threshold_ = 5;
     int max_points_num_;
     int max_layer_;
     int new_points_num_;  // 新点计数器

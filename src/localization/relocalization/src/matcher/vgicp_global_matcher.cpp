@@ -214,9 +214,12 @@ MatchResult VgicpGlobalMatcher::alignCandidates(const CloudConstPtr& source,
       config_.candidate_gate_enable ? config_.candidate_gate_radius : 0.0;
   const std::vector<DescriptorCandidate> gated =
       matcher_preprocess::gateCandidatesByDistance(candidates, gate_radius);
-  std::cout << "[VGICP] candidates=" << candidates.size()
-            << " gated=" << (candidates.size() - gated.size())
-            << " gate_radius=" << gate_radius << std::endl;
+  // std::cout << "[VGICP] candidates=" << candidates.size()
+  //           << " gated=" << (candidates.size() - gated.size())
+  //           << " gate_radius=" << gate_radius << std::endl;
+  SYS_LOG(syslog::LogSeverity::INFO, false) 
+            << "VGICP] candidates=" << candidates.size() << " gated=" << (candidates.size() - gated.size())
+               << " gate_radius=" << gate_radius;
 
   const auto candidates_start = std::chrono::steady_clock::now();
   std::size_t cand_idx = 0;
@@ -240,12 +243,18 @@ MatchResult VgicpGlobalMatcher::alignCandidates(const CloudConstPtr& source,
     const double cand_ms =
         std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - cand_start)
             .count();
-    std::cout << "[VGICP] cand=" << cand_idx << "/" << gated.size()
-              << " id=" << candidate.keyframe_id << " score=" << candidate.score
-              << " submap_ms=" << submap_ms << " align_ms=" << result.elapsed_ms
-              << " total_ms=" << cand_ms << " success=" << result.success
-              << " converged=" << result.converged << " fitness=" << result.fitness
-              << " inlier=" << result.inlier_ratio << std::endl;
+    // std::cout << "[VGICP] cand=" << cand_idx << "/" << gated.size()
+    //           << " id=" << candidate.keyframe_id << " score=" << candidate.score
+    //           << " submap_ms=" << submap_ms << " align_ms=" << result.elapsed_ms
+    //           << " total_ms=" << cand_ms << " success=" << result.success
+    //           << " converged=" << result.converged << " fitness=" << result.fitness
+    //           << " inlier=" << result.inlier_ratio << std::endl;
+    SYS_LOG(syslog::LogSeverity::INFO, false) 
+            << "VGICP] cand=" << cand_idx << "/" << gated.size() << " id=" << candidate.keyframe_id << " score=" << candidate.score
+               << " submap_ms=" << submap_ms << " align_ms=" << result.elapsed_ms
+               << " total_ms=" << cand_ms << " success=" << result.success
+               << " converged=" << result.converged << " fitness=" << result.fitness
+               << " inlier=" << result.inlier_ratio;
     ++cand_idx;
     if (result.success) {
       if (!has_success || matcher_preprocess::betterMatchResult(result, best_success, config_)) {
@@ -264,10 +273,15 @@ MatchResult VgicpGlobalMatcher::alignCandidates(const CloudConstPtr& source,
       std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() -
                                                 candidates_start)
           .count();
-  std::cout << "[VGICP] alignCandidates n=" << gated.size()
-            << " total_ms=" << candidates_total_ms
-            << " best_success=" << (has_success ? best_success.candidate_id : -1)
-            << " best_failure=" << (has_failure ? best_failure.candidate_id : -1) << std::endl;
+  // std::cout << "[VGICP] alignCandidates n=" << gated.size()
+  //           << " total_ms=" << candidates_total_ms
+  //           << " best_success=" << (has_success ? best_success.candidate_id : -1)
+  //           << " best_failure=" << (has_failure ? best_failure.candidate_id : -1) << std::endl;
+  SYS_LOG(syslog::LogSeverity::INFO, true) 
+            << "VGICP] alignCandidates n=" << gated.size() << " total_ms=" << candidates_total_ms
+               << " best_success=" << (has_success ? best_success.candidate_id : -1)
+               << " best_failure=" << (has_failure ? best_failure.candidate_id : -1);
+
 
   if (has_success) {
     return best_success;

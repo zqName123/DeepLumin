@@ -12,6 +12,8 @@ find_package(catkin REQUIRED COMPONENTS
     pcl_conversions
     pcl_ros
     deeplumin_msgs
+    deeplumin_health_checker
+    syslog_ros_wrap
 )
 
 find_package(PCL REQUIRED)
@@ -69,3 +71,9 @@ target_link_libraries(lio_odometry_node
     ${GLOG_LIB}
     ${TBB_LIB}
 )
+if(CATKIN_ENABLE_TESTING)
+    add_executable(lio_odometry_regression EXCLUDE_FROM_ALL tests/regression.cpp)
+    target_link_libraries(lio_odometry_regression lio_odometry_core ${PCL_LIBRARIES} ${TBB_LIB})
+    add_test(NAME lio_odometry_regression
+        COMMAND lio_odometry_regression ${CMAKE_CURRENT_SOURCE_DIR}/config/lio_odometry.yaml)
+endif()

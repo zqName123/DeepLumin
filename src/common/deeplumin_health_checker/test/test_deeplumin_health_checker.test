@@ -1,0 +1,3 @@
+<launch>
+  <test test-name="test-deeplumin_health_checker" pkg="deeplumin_health_checker" type="test-deeplumin_health_checker" name="test"/>
+</launch>

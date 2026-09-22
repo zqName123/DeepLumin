@@ -20,6 +20,7 @@ find_package(catkin REQUIRED COMPONENTS
   tf2_ros
   deeplumin_msgs
   small_gicp
+  deeplumin_health_checker
 )
 
 find_package(OpenCV REQUIRED COMPONENTS core aruco calib3d imgproc)

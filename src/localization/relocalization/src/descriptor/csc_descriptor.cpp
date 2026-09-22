@@ -20,7 +20,7 @@
 #include <iostream>
 #include <limits>
 #include <sstream>
-
+#include "syslog/logger.h"
 namespace relocalization {
 
 namespace {
@@ -506,8 +506,12 @@ std::vector<DescriptorCandidate> CscDescriptor::query(const Eigen::MatrixXd& des
                     });
   out.resize(static_cast<std::size_t>(k));
 
-  std::cout << "[CSC-Query] entries=" << n_entries << " pre_n=" << pre_n
-            << " top_k=" << out.size() << " zkey_dims=" << query_ring_key.size() << std::endl;
+  // std::cout << "[CSC-Query] entries=" << n_entries << " pre_n=" << pre_n
+  //           << " top_k=" << out.size() << " zkey_dims=" << query_ring_key.size() << std::endl;
+  SYS_LOG(syslog::LogSeverity::INFO, true) 
+           << "CSC-Query] entries=" << n_entries << " pre_n=" << pre_n
+           << " top_k=" << out.size() << " zkey_dims=" << query_ring_key.size();
+
   return out;
 }
 
@@ -626,15 +630,24 @@ bool CscDescriptor::load(const std::string& path) {
     return false;
   }
 
-  std::cout << "[CscDescriptor] loaded entries=" << entries_.size()
-            << " sectors=" << config_.num_sectors
-            << " height_bins=" << config_.num_height_bins
-            << " channels=" << config_.num_channels
-            << " height=[" << config_.min_height << "," << config_.max_height << "]"
-            << " max_radius=" << config_.max_radius << " min_range=" << config_.min_range
-            << " ground=" << config_.ground_threshold
-            << " ring_key_candidates=" << config_.ring_key_candidates << " path=" << path
-            << std::endl;
+  // std::cout << "[CscDescriptor] loaded entries=" << entries_.size()
+  //           << " sectors=" << config_.num_sectors
+  //           << " height_bins=" << config_.num_height_bins
+  //           << " channels=" << config_.num_channels
+  //           << " height=[" << config_.min_height << "," << config_.max_height << "]"
+  //           << " max_radius=" << config_.max_radius << " min_range=" << config_.min_range
+  //           << " ground=" << config_.ground_threshold
+  //           << " ring_key_candidates=" << config_.ring_key_candidates << " path=" << path
+  //           << std::endl;
+  SYS_LOG(syslog::LogSeverity::INFO, true) 
+           << "CscDescriptor] loaded entries=" << entries_.size()
+           << " sectors=" << config_.num_sectors
+           << " height_bins=" << config_.num_height_bins
+           << " channels=" << config_.num_channels
+           << " height=[" << config_.min_height << "," << config_.max_height << "]"
+           << " max_radius=" << config_.max_radius << " min_range=" << config_.min_range
+           << " ground=" << config_.ground_threshold
+           << " ring_key_candidates=" << config_.ring_key_candidates << " path=" << path;
   return true;
 }
 

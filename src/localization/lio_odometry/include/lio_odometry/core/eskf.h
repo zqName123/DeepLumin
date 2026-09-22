@@ -69,7 +69,8 @@ class ESKF {
 
     void Predict(const double& dt, const ProcessNoiseType& Q, const Vec3d& gyro, const Vec3d& acce);
 
-    void Update(ObsType obs, const double& R);
+    // False means the whole measurement update was rejected; prior x/P are preserved.
+    bool Update(ObsType obs, const double& R);
 
     const NavState& GetX() const { return x_; }
     const CovType& GetP() const { return P_; }

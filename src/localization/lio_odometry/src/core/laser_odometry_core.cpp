@@ -5,8 +5,10 @@
 #include <cmath>
 #include <execution>
 #include <fstream>
+#include <Eigen/Eigenvalues>
 
 #include "lio_odometry/core/eskf.h"
+#include <chrono>
 
 namespace slam_odometry {
 
@@ -16,16 +18,40 @@ float ESTI_PLANE_THRESHOLD = 0.1f;
 float lidar_time_interval = 0.1;
 }  // namespace fasterlio
 
+/// 每行号独立的节流器（替代 ROS_INFO_THROTTLE）
+template<int Line>
+struct ThrottleByLine {
+  static bool shouldLog(double rate) {
+    static std::chrono::steady_clock::time_point last_log_time;
+    auto now = std::chrono::steady_clock::now();
+    auto elapsed = std::chrono::duration<double>(now - last_log_time).count();
+    if (elapsed >= rate) {
+      last_log_time = now;
+      return true;
+    }
+    return false;
+  }
+};
+
+#define SHOULD_LOG(rate) ThrottleByLine<__LINE__>::shouldLog(rate)
+
+
 bool esti_plane(Vec4f& pca_result, const PointVector& point, const float& threshold) {
     if (point.size() < fasterlio::MIN_NUM_MATCH_POINTS) {
         return false;
     }
 
+    // Original QR A·n = -1 plane fitting, identical to lightning-lm-ros1.
+    // Solves the overdetermined system [x,y,z]·n = -1 via column-pivoting QR.
+    // No intermediate eigenvalue checks — only the final point-to-plane distance
+    // threshold is enforced. This tolerates mild motion blur during turns and
+    // retains more valid correspondences in degenerate scenes.
     Vec3f normvec;
 
-    if (point.size() == static_cast<size_t>(fasterlio::NUM_MATCH_POINTS)) {
+    if (point.size() == fasterlio::NUM_MATCH_POINTS) {
         Eigen::Matrix<float, fasterlio::NUM_MATCH_POINTS, 3> A;
         Eigen::Matrix<float, fasterlio::NUM_MATCH_POINTS, 1> b;
+
         A.setZero();
         b.setOnes();
         b *= -1.0f;
@@ -40,6 +66,7 @@ bool esti_plane(Vec4f& pca_result, const PointVector& point, const float& thresh
     } else {
         Eigen::MatrixXf A(point.size(), 3);
         Eigen::VectorXf b(point.size());
+
         A.setZero();
         b.setOnes();
         b *= -1.0f;
@@ -56,7 +83,7 @@ bool esti_plane(Vec4f& pca_result, const PointVector& point, const float& thresh
         normvec(2) = n(2);
     }
 
-    float n = normvec.norm();
+    const float n = normvec.norm();
     pca_result(0) = normvec(0) / n;
     pca_result(1) = normvec(1) / n;
     pca_result(2) = normvec(2) / n;
@@ -195,10 +222,10 @@ bool LaserOdometryCore::LoadParamsFromYAML(const std::string& yaml_file) {
         wheel_velocity_noise_ = yaml["vel_gnss"]["wheel_velocity_noise"].as<double>(0.33);
         gnss_attitude_noise_ = yaml["vel_gnss"]["gnss_attitude_noise"].as<double>(0.03);
         window_size_ = yaml["vel_gnss"]["gnss_pitch_window_size"].as<int>(50);
-    lidar_update_r_ = yaml["fasterlio"]["lidar_update_r"].as<double>(0.001);
-    keep_first_imu_estimation_ = yaml["fasterlio"]["keep_first_imu_estimation"].as<bool>(false);
-    map_trim_radius_ = yaml["fasterlio"]["map_trim_radius"].as<float>(0.0f);
-    map_trim_interval_frames_ = yaml["fasterlio"]["map_trim_interval_frames"].as<int>(10);
+        lidar_update_r_ = yaml["fasterlio"]["lidar_update_r"].as<double>(0.001);
+        keep_first_imu_estimation_ = yaml["fasterlio"]["keep_first_imu_estimation"].as<bool>(false);
+        map_trim_radius_ = yaml["fasterlio"]["map_trim_radius"].as<float>(0.0f);
+        map_trim_interval_frames_ = yaml["fasterlio"]["map_trim_interval_frames"].as<int>(10);
 
     } catch (...) {
         return false;
@@ -229,15 +256,44 @@ bool LaserOdometryCore::LoadParamsFromYAML(const std::string& yaml_file) {
     return true;
 }
 
+void LaserOdometryCore::ResetTracking() {
+    std::cerr << "[lio] sensor time moved backwards; resetting odometry and local map" << std::endl;
+    imu_buffer_.clear();
+    lidar_buffer_.clear();
+    time_buffer_.clear();
+    lidar_pushed_ = false;
+    last_timestamp_imu_ = -1.0;
+    last_timestamp_lidar_ = -1.0;
+    last_lidar_time_ = first_lidar_time_ = lidar_end_time_ = 0.0;
+    lidar_mean_scantime_ = 0.0;
+    scan_num_ = frame_num_ = skip_lidar_cnt_ = effect_feat_num_ = 0;
+    flg_first_scan_ = true;
+    flg_EKF_inited_ = false;
+    have_new_gnss_ = have_new_wheel_speed_ = false;
+    first_gnss_ = true;
+    window_.clear();
+    sum_ = 0.0;
+    p_imu_->Reset();
+    kf_.ChangeX(NavState());
+    kf_.ChangeP(ESKF::CovType::Identity());
+    state_point_ = kf_.GetX();
+    ivox_.reset(new IVoxType(ivox_options_));
+    nearest_points_.clear();
+    scan_undistort_.reset(new PointCloudType());
+    scan_down_body_->clear();
+    scan_down_world_->clear();
+}
+
 void LaserOdometryCore::ProcessIMU(const IMUPtr& imu) {
     publish_count_++;
 
     double timestamp = imu->timestamp;
 
     std::lock_guard<std::mutex> lock(mtx_buffer_);
-    if (timestamp < last_timestamp_imu_) {
-        imu_buffer_.clear();
-    }
+    if (!std::isfinite(timestamp) || !imu->angular_velocity.allFinite() ||
+        !imu->linear_acceleration.allFinite()) return;
+    if (timestamp < last_timestamp_imu_) ResetTracking();
+    if (timestamp == last_timestamp_imu_) return;
 
     // if (p_imu_->IsIMUInited()) {
     //     kf_imu_.Predict(timestamp - last_timestamp_imu_, p_imu_->Q_, imu->angular_velocity,
@@ -252,10 +308,17 @@ void LaserOdometryCore::ProcessPointCloud(const CloudPtr& cloud, double timestam
     std::lock_guard<std::mutex> lock(mtx_buffer_);
     scan_count_++;
 
-    if (timestamp < last_timestamp_lidar_) {
-        lidar_buffer_.clear();
-    }
-
+    if (!cloud || !std::isfinite(timestamp)) return;
+    if (timestamp < last_timestamp_lidar_) ResetTracking();
+    // Validate time/coordinates before synchronization; never let invalid points set scan end.
+    cloud->points.erase(std::remove_if(cloud->points.begin(), cloud->points.end(), [](const PointType& p) {
+        return !p.getVector3fMap().allFinite() || !std::isfinite(p.time) || p.time < 0.0;
+    }), cloud->points.end());
+    if (cloud->empty()) return;
+    cloud->width = cloud->size();
+    cloud->height = 1;
+    // Match Lightning's input contract: zero point times are valid. Keep input order;
+    // SyncPackages uses the last retained point and the historical scan duration.
     lidar_buffer_.push_back(cloud);
     time_buffer_.push_back(timestamp);
     last_timestamp_lidar_ = timestamp;
@@ -274,6 +337,7 @@ void LaserOdometryCore::ProcessPointCloud(const pcl::PointCloud<VelodynePoint>::
 }
 
 bool LaserOdometryCore::SyncPackages() {
+    std::lock_guard<std::mutex> lock(mtx_buffer_);
     if (lidar_buffer_.empty() || imu_buffer_.empty()) {
         return false;
     }
@@ -282,15 +346,16 @@ bool LaserOdometryCore::SyncPackages() {
         measures_.scan_ = lidar_buffer_.front();
         measures_.lidar_begin_time_ = time_buffer_.front();
 
-        if (measures_.scan_->points.size() <= 1) {
-            lidar_end_time_ = measures_.lidar_begin_time_ + lidar_mean_scantime_;
-        } else if (measures_.scan_->points.back().time / 1000.0 < 0.5 * lidar_mean_scantime_) {
+        // Same fallback as Lightning LaserMapping::SyncPackages. When all times
+        // have always been zero, the mean is zero and the state is aligned to header.stamp.
+        if (measures_.scan_->size() <= 1 ||
+            measures_.scan_->points.back().time / 1000.0 < 0.5 * lidar_mean_scantime_) {
             lidar_end_time_ = measures_.lidar_begin_time_ + lidar_mean_scantime_;
         } else {
-            scan_num_++;
-            lidar_end_time_ = measures_.lidar_begin_time_ + measures_.scan_->points.back().time / 1000.0;
-            lidar_mean_scantime_ +=
-                (measures_.scan_->points.back().time / 1000.0 - lidar_mean_scantime_) / scan_num_;
+            const double duration = measures_.scan_->points.back().time / 1000.0;
+            ++scan_num_;
+            lidar_end_time_ = measures_.lidar_begin_time_ + duration;
+            lidar_mean_scantime_ += (duration - lidar_mean_scantime_) / scan_num_;
         }
 
         fasterlio::lidar_time_interval = lidar_mean_scantime_;
@@ -302,13 +367,8 @@ bool LaserOdometryCore::SyncPackages() {
         return false;
     }
 
-    double imu_time = imu_buffer_.front()->timestamp;
     measures_.imu_.clear();
-    while ((!imu_buffer_.empty()) && (imu_time < lidar_end_time_)) {
-        imu_time = imu_buffer_.front()->timestamp;
-        if (imu_time > lidar_end_time_) {
-            break;
-        }
+    while (!imu_buffer_.empty() && imu_buffer_.front()->timestamp <= lidar_end_time_) {
         measures_.imu_.push_back(imu_buffer_.front());
         imu_buffer_.pop_front();
     }
@@ -328,7 +388,7 @@ bool LaserOdometryCore::Run() {
 
     p_imu_->Process(measures_, kf_, scan_undistort_);
     // std::cout << "p_imu_->Process done " << std::endl;
-    if (scan_undistort_->empty() || (scan_undistort_ == nullptr)) {
+    if (!scan_undistort_ || scan_undistort_->empty()) {
         std::cout << "scan_undistort is empty " << std::endl;
         return false;
     }
@@ -355,11 +415,6 @@ bool LaserOdometryCore::Run() {
         }
     }
 
-    if (last_lidar_time_ > 0 && (measures_.lidar_begin_time_ - last_lidar_time_) > 0.5) {
-        std::cout << "skip lidar " << std::endl;
-        return false;
-    }
-
     last_lidar_time_ = measures_.lidar_begin_time_;
 
     flg_EKF_inited_ = (measures_.lidar_begin_time_ - first_lidar_time_) >= fasterlio::INIT_TIME;
@@ -379,28 +434,41 @@ bool LaserOdometryCore::Run() {
     plane_coef_.resize(cur_pts, Vec4f::Zero());
 
     auto old_state = kf_.GetX();
-    //std::cout << "update lidar " << std::endl;
-    kf_.Update(ESKF::ObsType::LIDAR, lidar_update_r_);
-    // std::cout << "update lidar done " << std::endl;
+    const bool lidar_accepted = kf_.Update(ESKF::ObsType::LIDAR, lidar_update_r_);
+    if (!lidar_accepted) {
+        // Update rejected — restore propagated state and skip map insertion.
+        // This prevents pure-prediction (often misaligned) points from polluting
+        // the local map, matching the original lightning-lm philosophy of "reject
+        // the frame, don't insert wrong correspondences".
+        kf_.ChangeX(old_state);
+        state_point_ = old_state;
+        state_point_.timestamp_ = measures_.lidar_end_time_;
+        return true;
+    }
     if (use_wheel_speed_ && have_new_wheel_speed_) {
         kf_.Update(ESKF::ObsType::WHEEL_SPEED, wheel_velocity_noise_ * wheel_velocity_noise_);
         have_new_wheel_speed_ = false;
-        std::cout << "use_wheel_speed_  done " << std::endl;
+        // std::cout << "use_wheel_speed_  done " << std::endl;
+        SYS_LOG(syslog::LogSeverity::INFO, false) 
+                << "use_wheel_speed_  done ";
     }
     if (use_gnss_ && have_new_gnss_) {
         kf_.Update(ESKF::ObsType::GPS, 1e-3);
         have_new_gnss_ = false;
-        std::cout << "use_gnss_  done " << std::endl;
+        // std::cout << "use_gnss_  done " << std::endl;
+        SYS_LOG(syslog::LogSeverity::INFO, false) 
+                << "use_gnss_  done ";
     }
 
     state_point_ = kf_.GetX();
-    state_point_.timestamp_ = measures_.lidar_end_time_;
 
-    if (keep_first_imu_estimation_ && frame_num_ < 5 &&
+    if (keep_first_imu_estimation_ && frame_num_ < 100 &&
         (old_state.rot_.inverse() * state_point_.rot_).log().norm() > 0.3 * M_PI / 180.0) {
         kf_.ChangeX(old_state);
         state_point_ = old_state;
     }
+    // 与原版一致：时间戳在 keep_first 回退判断之后无条件写入，保证回退路径也带扫描末端时刻。
+    state_point_.timestamp_ = measures_.lidar_end_time_;
     frame_num_++;
 
     euler_cur_ = state_point_.rot_;
@@ -428,8 +496,14 @@ bool LaserOdometryCore::Run() {
     // }
     // LOG(INFO) << "[ mapping ]: In num: " << scan_undistort_->points.size() << " down " << cur_pts
     //          << " Map grid num: " << ivox_->NumValidGrids() << " effect num : " << effect_feat_num_;
-    std::cout << "[ odometry ]: In num: " << scan_undistort_->points.size() << " down " << cur_pts
-              << " Map grid num: " << ivox_->NumValidGrids() << " effect num : " << effect_feat_num_ << std::endl;
+    // std::cout << "[ odometry ]: In num: " << scan_undistort_->points.size() << " down " << cur_pts
+    //           << " Map grid num: " << ivox_->NumValidGrids() << " effect num : " << effect_feat_num_ << std::endl;
+
+    if (SHOULD_LOG(2.0)) {
+        SYS_LOG(syslog::LogSeverity::INFO, true) 
+                << "[ odometry ]: In num: " << scan_undistort_->points.size() << " down " << cur_pts
+                << " Map grid num: " << ivox_->NumValidGrids() << " effect num : " << effect_feat_num_;
+    }
 
 
     return true;
@@ -450,7 +524,7 @@ void LaserOdometryCore::MapIncremental() {
 
     std::mutex mtx;
     // std::execution::par_unseq
-    std::for_each(std::execution::par_unseq, index.begin(), index.end(), [&](const size_t& i) {
+    std::for_each(std::execution::par, index.begin(), index.end(), [&](const size_t& i) {
         PointBodyToWorld(scan_down_body_->points[i], scan_down_world_->points[i]);
         PointType& point_world = scan_down_world_->points[i];
 
@@ -519,8 +593,8 @@ CloudPtr LaserOdometryCore::GetEffectScan() const {
 void LaserOdometryCore::ObsModel(NavState& s, ESKF::CustomObservationModel& obs) {
     int cnt_pts = scan_down_body_->size();
 
-    auto R_wl = (s.rot_ * s.offset_R_lidar_).cast<float>();
-    auto t_wl = (s.rot_ * s.offset_t_lidar_ + s.pos_).cast<float>();
+    const Mat3f R_wl = (s.rot_ * s.offset_R_lidar_).matrix().cast<float>();
+    const Vec3f t_wl = (s.rot_ * s.offset_t_lidar_ + s.pos_).cast<float>();
 
     std::for_each(std::execution::par_unseq, scan_down_body_->points.cbegin(), scan_down_body_->points.cend(),
                   [&](const auto& point_body) {
@@ -533,8 +607,10 @@ void LaserOdometryCore::ObsModel(NavState& s, ESKF::CustomObservationModel& obs)
 
                       auto& points_near = nearest_points_[i];
 
-                      ivox_->GetClosestPoint(point_world, points_near, fasterlio::NUM_MATCH_POINTS);
-                      point_selected_surf_[i] = points_near.size() >= static_cast<size_t>(fasterlio::MIN_NUM_MATCH_POINTS);
+                      points_near.clear();
+                      const bool found = ivox_->GetClosestPoint(point_world, points_near, fasterlio::NUM_MATCH_POINTS);
+                      point_selected_surf_[i] = found &&
+                          points_near.size() >= static_cast<size_t>(fasterlio::MIN_NUM_MATCH_POINTS);
                       if (point_selected_surf_[i]) {
                           point_selected_surf_[i] =
                               esti_plane(plane_coef_[i], points_near, fasterlio::ESTI_PLANE_THRESHOLD);

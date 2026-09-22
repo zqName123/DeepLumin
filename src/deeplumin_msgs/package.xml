@@ -11,11 +11,15 @@
   <build_depend>nav_msgs</build_depend>
   <build_depend>sensor_msgs</build_depend>
   <build_depend>message_generation</build_depend>
+  <build_depend>rosgraph_msgs</build_depend>
+
   <exec_depend>std_msgs</exec_depend>
   <exec_depend>geometry_msgs</exec_depend>
   <exec_depend>nav_msgs</exec_depend>
   <exec_depend>sensor_msgs</exec_depend>
   <exec_depend>message_runtime</exec_depend>
+  <exec_depend>rosgraph_msgs</exec_depend>
+
   <export>
     <build_type>catkin</build_type>
   </export>

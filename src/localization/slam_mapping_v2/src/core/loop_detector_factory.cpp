@@ -7,7 +7,7 @@
 #include "slam_mapping_v2/core/loop_detector_kdtree_gicp.hpp"
 #include "slam_mapping_v2/core/visual_loop_detector.hpp"
 
-#include <ros/ros.h>
+#include "syslog/logger.h"
 
 namespace slam_mapping_v2 {
 
@@ -29,14 +29,17 @@ std::unique_ptr<ILoopDetector> LoopDetectorFactory::create(
 
     case LoopDetectorType::HYBRID: {
       // TODO: 实现 HybridLoopDetector
-      ROS_WARN("[LoopDetectorFactory] Hybrid detector not implemented yet, falling back to laser");
+      // ROS_WARN("[LoopDetectorFactory] Hybrid detector not implemented yet, falling back to laser");
+      SYS_LOG(syslog::LogSeverity::WARNING, true) << "Hybrid detector not implemented yet, falling back to laser";
+
       auto detector = std::make_unique<KdtreeGicpLoopDetector>();
       detector->configure(cfg);
       return detector;
     }
 
     default:
-      ROS_ERROR("[LoopDetectorFactory] Unknown detector type: %d", static_cast<int>(type));
+      // ROS_ERROR("[LoopDetectorFactory] Unknown detector type: %d", static_cast<int>(type));
+      SYS_LOG(syslog::LogSeverity::ERROR, true) << "Unknown detector type: " << static_cast<int>(type);
       return nullptr;
   }
 }
@@ -56,7 +59,8 @@ std::unique_ptr<ILoopDetector> LoopDetectorFactory::create(
     return create(LoopDetectorType::HYBRID, cfg);
   }
 
-  ROS_ERROR("[LoopDetectorFactory] Unknown detector type string: %s", type_str.c_str());
+  // ROS_ERROR("[LoopDetectorFactory] Unknown detector type string: %s", type_str.c_str());
+  SYS_LOG(syslog::LogSeverity::ERROR, true) << "Unknown detector type string: " << type_str;
   return nullptr;
 }
 

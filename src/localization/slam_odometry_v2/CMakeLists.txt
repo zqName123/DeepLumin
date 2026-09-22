@@ -18,6 +18,8 @@ find_package(catkin REQUIRED COMPONENTS
   eigen_conversions
   message_generation
   deeplumin_msgs
+  deeplumin_health_checker
+  syslog_ros_wrap
 )
 find_package(PCL REQUIRED COMPONENTS common io filters)
 find_package(Eigen3 REQUIRED)

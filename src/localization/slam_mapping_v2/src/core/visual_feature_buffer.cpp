@@ -6,7 +6,7 @@
 #include "slam_mapping_v2/core/visual_feature_buffer.hpp"
 
 #include <algorithm>
-#include <ros/ros.h>
+
 
 namespace slam_mapping_v2 {
 

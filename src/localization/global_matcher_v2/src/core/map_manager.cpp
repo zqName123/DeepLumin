@@ -18,7 +18,6 @@
 #include <small_gicp/ann/kdtree_omp.hpp>
 #include <small_gicp/util/normal_estimation_omp.hpp>
 
-#include <ros/console.h>
 
 namespace global_matcher_v2 {
 
@@ -307,8 +306,10 @@ void MapManager::loaderThreadLoop() {
 
     LoadedChunk chunk;
     if (!loadChunk(info, &chunk)) {
-      ROS_WARN_THROTTLE(2.0, "[map_manager] failed to load chunk id=%d path=%s", id,
-                        info.path.c_str());
+      // ROS_WARN_THROTTLE(2.0, "[map_manager] failed to load chunk id=%d path=%s", id,
+      //                   info.path.c_str());
+      SYS_LOG(syslog::LogSeverity::ERROR, true)
+                    << "failed to load chunk id=" << id << " path=" << info.path;
       {
         std::lock_guard<std::mutex> lock(mutex_);
         failed_ids_.insert(id);

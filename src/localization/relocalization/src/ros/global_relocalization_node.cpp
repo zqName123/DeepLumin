@@ -13,6 +13,8 @@
 #include <cmath>
 #include <iomanip>
 #include <sstream>
+#include <syslog/logger.h>
+#include <deeplumin_health_checker/health_checker/health_checker.h>
 
 namespace {
 
@@ -103,7 +105,12 @@ std::string rejectReason(const relocalization::MatchResult& result) {
 
 class GlobalRelocalizationNode {
  public:
-  GlobalRelocalizationNode() : pnh_("~") {
+  GlobalRelocalizationNode(ros::NodeHandle& nh, ros::NodeHandle& pnh) : nh_(nh), pnh_(pnh) {
+    // 节点健康监测
+    health_checker_ = std::make_shared<deeplumin_health_checker::HealthChecker>(nh_, pnh_);
+    health_checker_->ENABLE();
+    health_checker_->NODE_ACTIVATE();
+    
     config_ = relocalization_ros::loadOnlineRelocalizationConfig(pnh_);
     if (!core_.initialize(config_.core)) {
       throw std::runtime_error("failed to initialize relocalization core");
@@ -118,17 +125,31 @@ class GlobalRelocalizationNode {
     aligned_pub_ = nh_.advertise<sensor_msgs::PointCloud2>("reloc_aligned_scan", 1, true);
     target_pub_ = nh_.advertise<sensor_msgs::PointCloud2>("reloc_target_submap", 1, true);
 
-    ROS_INFO_STREAM("Loaded " << core_.descriptor().size() << " descriptors");
-    ROS_INFO_STREAM("result_topic=" << config_.result_topic
-                    << " frame_id=" << config_.frame_id
-                    << " child_frame_id=" << config_.child_frame_id
-                    << " lidar_frame_id=" << config_.lidar_frame_id
-                    << " query_cloud_frame=" << config_.query_cloud_frame
-                    << " map_id=" << config_.map_id
-                    << " method=" << config_.method
-                    << " command_topic=" << config_.command_topic);
-    ROS_INFO_STREAM("query_frame.rotate_xy_y_negx=" << (config_.query_rotate_xy_y_negx ? "true" : "false")
-                    << " yaw_deg=" << config_.query_frame_yaw_deg);
+    // ROS_INFO_STREAM("Loaded " << core_.descriptor().size() << " descriptors");
+    SYS_LOG(syslog::LogSeverity::INFO, false) 
+            << "Loaded " << core_.descriptor().size() << " descriptors";
+    // ROS_INFO_STREAM("result_topic=" << config_.result_topic
+    //                 << " frame_id=" << config_.frame_id
+    //                 << " child_frame_id=" << config_.child_frame_id
+    //                 << " lidar_frame_id=" << config_.lidar_frame_id
+    //                 << " query_cloud_frame=" << config_.query_cloud_frame
+    //                 << " map_id=" << config_.map_id
+    //                 << " method=" << config_.method
+    //                 << " command_topic=" << config_.command_topic);
+    SYS_LOG(syslog::LogSeverity::INFO, false) 
+            << "result_topic=" << config_.result_topic
+            << " frame_id=" << config_.frame_id
+            << " child_frame_id=" << config_.child_frame_id
+            << " lidar_frame_id=" << config_.lidar_frame_id
+            << " query_cloud_frame=" << config_.query_cloud_frame
+            << " map_id=" << config_.map_id
+            << " method=" << config_.method
+            << " command_topic=" << config_.command_topic;
+    // ROS_INFO_STREAM("query_frame.rotate_xy_y_negx=" << (config_.query_rotate_xy_y_negx ? "true" : "false")
+    //                 << " yaw_deg=" << config_.query_frame_yaw_deg);
+    SYS_LOG(syslog::LogSeverity::INFO, false) 
+            << "query_frame.rotate_xy_y_negx=" << (config_.query_rotate_xy_y_negx ? "true" : "false")
+            << " yaw_deg=" << config_.query_frame_yaw_deg;
   }
 
  private:
@@ -140,13 +161,19 @@ class GlobalRelocalizationNode {
   void onCommand(const std_msgs::String::ConstPtr& msg) {
     if (msg->data == "start") {
       matching_enabled_.store(true);
-      ROS_INFO("[global_relocalization] matching enabled (start)");
+      // ROS_INFO("[global_relocalization] matching enabled (start)");
+      SYS_LOG(syslog::LogSeverity::INFO, true) 
+              << "matching enabled (start)";
     } else if (msg->data == "stop") {
       matching_enabled_.store(false);
-      ROS_INFO("[global_relocalization] matching disabled (stop), skip matching flow");
+      // ROS_INFO("[global_relocalization] matching disabled (stop), skip matching flow");
+      SYS_LOG(syslog::LogSeverity::INFO, true) 
+              << "matching disabled (stop), skip matching flow";
     } else {
-      ROS_WARN_THROTTLE(2.0, "[global_relocalization] unknown command %s (expect start/stop)",
-                        msg->data.c_str());
+      // ROS_WARN_THROTTLE(2.0, "[global_relocalization] unknown command %s (expect start/stop)",
+      //                   msg->data.c_str());
+      SYS_LOG(syslog::LogSeverity::WARNING, true) 
+              << "unknown command " << msg->data << " (expect start/stop)";
     }
   }
 
@@ -156,7 +183,8 @@ class GlobalRelocalizationNode {
     if (!matching_enabled_.load()) {
       return;
     }
-    relocalization::CloudPtr raw = relocalization::cloudFromRosMsg(*msg);
+    relocalization::CloudPtr raw(new relocalization::CloudT);
+    pcl::fromROSMsg(*msg, *raw);
     double query_frame_yaw_rad = config_.query_frame_yaw_deg * M_PI / 180.0;
     if (config_.query_rotate_xy_y_negx) {
       query_frame_yaw_rad += -M_PI / 2.0;
@@ -194,7 +222,9 @@ class GlobalRelocalizationNode {
     result_pub_.publish(toResultMsg(result, config_, stamp, reject_reason));
 
     if (!result.success) {
-      ROS_WARN_STREAM(status.data);
+      // ROS_WARN_STREAM(status.data);
+      SYS_LOG(syslog::LogSeverity::WARNING, true) 
+              << status.data;
       return;
     }
 
@@ -213,7 +243,9 @@ class GlobalRelocalizationNode {
       out.header.frame_id = config_.frame_id;
       target_pub_.publish(out);
     }
-    ROS_INFO_STREAM(status.data);
+    // ROS_INFO_STREAM(status.data);
+    SYS_LOG(syslog::LogSeverity::INFO, true) 
+              << status.data;
   }
 
   ros::NodeHandle nh_;
@@ -228,15 +260,30 @@ class GlobalRelocalizationNode {
   relocalization_ros::OnlineRelocalizationConfig config_;
   relocalization::RelocalizationCore core_;
   std::atomic<bool> matching_enabled_{true};  ///< start 后执行匹配，stop 后跳过（后台常驻）
+
+  std::shared_ptr<deeplumin_health_checker::HealthChecker> health_checker_;
+
 };
 
 int main(int argc, char** argv) {
   ros::init(argc, argv, "global_relocalization_node");
+  ros::NodeHandle nh;
+  ros::NodeHandle pnh("~");
+  
+  std::string log_dir;
+  pnh.param<std::string>("log_dir", log_dir, "");
+  SYS_LOG_INIT_FULL(log_dir,
+                  syslog::LogSeverity::INFO,
+                  50,
+                  "relocalization");
+
   try {
-    GlobalRelocalizationNode node;
+    GlobalRelocalizationNode node(nh, pnh);
     ros::spin();
   } catch (const std::exception& e) {
-    ROS_ERROR_STREAM(e.what());
+    // ROS_ERROR_STREAM(e.what());
+    SYS_LOG(syslog::LogSeverity::ERROR, true) 
+              << "exception: " << e.what();
     return 1;
   }
   return 0;

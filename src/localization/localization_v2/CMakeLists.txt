@@ -17,6 +17,8 @@ find_package(catkin REQUIRED COMPONENTS
   pcl_ros
   pcl_conversions
   deeplumin_msgs
+  deeplumin_health_checker
+  syslog_ros_wrap
 )
 
 find_package(PCL ${DEEPLUMIN_PCL_VERSION} EXACT REQUIRED COMPONENTS common io filters)

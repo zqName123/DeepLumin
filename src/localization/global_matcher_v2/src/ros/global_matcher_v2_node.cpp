@@ -41,6 +41,7 @@
 
 #include <deeplumin_msgs/GlobalMatchResult.h>
 #include <deeplumin_msgs/LocalizationStatus.h>
+#include "deeplumin_health_checker/health_checker/health_checker.h"
 
 #include <small_gicp/ann/kdtree_omp.hpp>
 #include <small_gicp/util/normal_estimation_omp.hpp>
@@ -48,6 +49,8 @@
 #include "global_matcher_v2/core/map_manager.hpp"
 #include "global_matcher_v2/core/matcher.hpp"
 #include "global_matcher_v2/ros/global_matcher_v2_config.hpp"
+
+#include <syslog/logger.h>
 
 namespace global_matcher_v2 {
 
@@ -218,6 +221,13 @@ CloudPtr removeInvalid(const CloudConstPtr& input) {
 class GlobalMatcherV2Node {
  public:
   GlobalMatcherV2Node(ros::NodeHandle& nh, ros::NodeHandle& pnh) : nh_(nh), pnh_(pnh) {
+    
+    health_checker_ = std::make_shared<deeplumin_health_checker::HealthChecker>(nh_, pnh_);
+    health_checker_->ENABLE();
+    health_checker_->NODE_ACTIVATE();
+
+    std::cout << "GlobalMatcherV2Node: HealthChecker enabled and activated." << std::endl;
+
     config_ = loadGlobalMatcherV2Config(pnh_);
     default_initial_map_base_.block<3, 3>(0, 0) =
         rpyDegToMatrix(config_.default_initial_rpy_deg);
@@ -230,9 +240,11 @@ class GlobalMatcherV2Node {
         config_.matcher.type == "vgicp" || config_.matcher.type == "fast_gicp_vgicp";
     mm_cfg.prebuild_voxel_maps = use_vgicp;
     if (!map_manager_.configure(mm_cfg) || !map_manager_.loadInitial()) {
-      ROS_ERROR("[global_matcher_v2] failed to init map manager mode=%s dir=%s pcd=%s",
-                config_.map_mode.c_str(), config_.map_dir.c_str(),
-                config_.map_pcd_path.c_str());
+      // ROS_ERROR("[global_matcher_v2] failed to init map manager mode=%s dir=%s pcd=%s",
+      //           config_.map_mode.c_str(), config_.map_dir.c_str(),
+      //           config_.map_pcd_path.c_str());
+      SYS_LOG(syslog::LogSeverity::ERROR, true)
+                    << "failed to load map";
       publishStatus(deeplumin_msgs::LocalizationStatus::LEVEL_FAILURE, 0.0,
                     "failed to load map");
     } else {
@@ -313,9 +325,11 @@ class GlobalMatcherV2Node {
                                    &GlobalMatcherV2Node::onMapTimer, this);
     }
 
-    ROS_INFO("[global_matcher_v2] map_mode=%s matcher=%s robust=%s result_pose_frame=%s",
-             config_.map_mode.c_str(), config_.matcher.type.c_str(),
-             config_.matcher.robust_kernel.c_str(), config_.result_pose_frame.c_str());
+    // ROS_INFO("[global_matcher_v2] map_mode=%s matcher=%s robust=%s result_pose_frame=%s",
+    //          config_.map_mode.c_str(), config_.matcher.type.c_str(),
+    //          config_.matcher.robust_kernel.c_str(), config_.result_pose_frame.c_str());
+    SYS_LOG(syslog::LogSeverity::INFO, true)
+                    << "map_mode=" << config_.map_mode << " matcher=" << config_.matcher.type << " robust=" << config_.matcher.robust_kernel << " result_pose_frame=" << config_.result_pose_frame;
   }
 
  private:
@@ -365,8 +379,10 @@ class GlobalMatcherV2Node {
     latest_bootstrap_map_base_ = poseToMatrix(msg->pose.pose);
     latest_bootstrap_stamp_ = msg->header.stamp.isZero() ? ros::Time::now() : msg->header.stamp;
     have_bootstrap_map_base_ = true;
-    ROS_INFO("[global_matcher_v2] received bootstrap initial pose from %s",
-             config_.bootstrap_initial_pose_topic.c_str());
+    // ROS_INFO("[global_matcher_v2] received bootstrap initial pose from %s",
+    //          config_.bootstrap_initial_pose_topic.c_str());
+    SYS_LOG(syslog::LogSeverity::INFO, true)
+                    << "received bootstrap initial pose from " << config_.bootstrap_initial_pose_topic;
   }
 
   void onManualInitialPose(const geometry_msgs::PoseWithCovarianceStamped::ConstPtr& msg) {
@@ -379,12 +395,16 @@ class GlobalMatcherV2Node {
     if (map_manager_.estimateGroundZ(manual_pose(0, 3), manual_pose(1, 3),
                                      config_.manual_initial_pose_z_search_radius, &init_z)) {
       manual_pose(2, 3) = init_z;
-      ROS_INFO("[global_matcher_v2] manual initial pose z completed to %.2f", init_z);
+      // ROS_INFO("[global_matcher_v2] manual initial pose z completed to %.2f", init_z);
+      SYS_LOG(syslog::LogSeverity::INFO, true)
+                    << "manual initial pose z completed to " << init_z;
     } else {
-      ROS_WARN_THROTTLE(2.0,
-                        "[global_matcher_v2] cannot estimate z from map at manual pose "
-                        "(x=%.2f y=%.2f), keep given z=%.2f",
-                        manual_pose(0, 3), manual_pose(1, 3), manual_pose(2, 3));
+      // ROS_WARN_THROTTLE(2.0,
+      //                   "[global_matcher_v2] cannot estimate z from map at manual pose "
+      //                   "(x=%.2f y=%.2f), keep given z=%.2f",
+      //                   manual_pose(0, 3), manual_pose(1, 3), manual_pose(2, 3));
+      SYS_LOG(syslog::LogSeverity::WARNING , true)
+                    << "cannot estimate z from map at manual pose (x=" << manual_pose(0, 3) << " y=" << manual_pose(1, 3) << "), keep given z=" << manual_pose(2, 3);
     }
     std::lock_guard<std::mutex> lock(mutex_);
     latest_bootstrap_map_base_ = manual_pose;
@@ -395,8 +415,10 @@ class GlobalMatcherV2Node {
       have_last_map_source_ = true;
     }
     ++manual_reset_seq_;
-    ROS_INFO("[global_matcher_v2] received manual initial pose from %s",
-             config_.manual_initial_pose_topic.c_str());
+    // ROS_INFO("[global_matcher_v2] received manual initial pose from %s",
+    //          config_.manual_initial_pose_topic.c_str());
+    SYS_LOG(syslog::LogSeverity::INFO, true)
+                    << "received manual initial pose from " << config_.manual_initial_pose_topic;
   }
 
   void onGmAnchor(const geometry_msgs::PoseWithCovarianceStamped::ConstPtr& msg) {
@@ -408,13 +430,17 @@ class GlobalMatcherV2Node {
     last_map_source_ = poseToMatrix(msg->pose.pose) * latest_source_base_.inverse();
     have_last_map_source_ = true;
     ++manual_reset_seq_;
-    ROS_INFO("[global_matcher_v2] re-anchored last_map_source_ from gm anchor (init arbitration)");
+    // ROS_INFO("[global_matcher_v2] re-anchored last_map_source_ from gm anchor (init arbitration)");
+    SYS_LOG(syslog::LogSeverity::INFO, true)
+                    << "re-anchored last_map_source_ from gm anchor (init arbitration)";
   }
 
 
   void onLoadMapCommand(const std_msgs::String::ConstPtr& msg) {
     if (config_.map_mode == "chunked") {
-      ROS_WARN("[global_matcher_v2] chunked mode: chunks are auto-managed, ignore load_map_command");
+      // ROS_WARN("[global_matcher_v2] chunked mode: chunks are auto-managed, ignore load_map_command");
+      SYS_LOG(syslog::LogSeverity::WARNING, true)
+                    << "chunked mode: chunks are auto-managed, ignore load_map_command";
       return;
     }
     std::vector<std::string> fields;
@@ -439,8 +465,10 @@ class GlobalMatcherV2Node {
   }
 
   void onSetMapSegmentCommand(const std_msgs::String::ConstPtr& msg) {
-    ROS_WARN("[global_matcher_v2] map segments are auto-managed (mode=%s), ignore command '%s'",
-             config_.map_mode.c_str(), msg->data.c_str());
+    // ROS_WARN("[global_matcher_v2] map segments are auto-managed (mode=%s), ignore command '%s'",
+    //          config_.map_mode.c_str(), msg->data.c_str());
+    SYS_LOG(syslog::LogSeverity::WARNING, true)
+                    << "map segments are auto-managed (mode=" << config_.map_mode << "), ignore command '" << msg->data << "'";
   }
 
   // ===================================================================
@@ -652,10 +680,12 @@ class GlobalMatcherV2Node {
     }
 
     if (success && !match_result.fine_converged) {
-      ROS_WARN_THROTTLE(2.0,
-                        "[global_matcher_v2] matcher converged=false but quality gates passed "
-                        "(fitness=%.4f inlier=%.3f rmse=%.3f)",
-                        match_result.fine_fitness, metrics.inlier_ratio, metrics.inlier_rmse);
+      // ROS_WARN_THROTTLE(2.0,
+      //                   "[global_matcher_v2] matcher converged=false but quality gates passed "
+      //                   "(fitness=%.4f inlier=%.3f rmse=%.3f)",
+      //                   match_result.fine_fitness, metrics.inlier_ratio, metrics.inlier_rmse);
+      SYS_LOG(syslog::LogSeverity::WARNING, true)
+                    << "matcher converged=false but quality gates passed (fitness=" << match_result.fine_fitness << ", inlier=" << metrics.inlier_ratio << ", rmse=" << metrics.inlier_rmse << ")";
     }
 
     {
@@ -684,9 +714,11 @@ class GlobalMatcherV2Node {
       constexpr double kMaxDiffTranslation = 1.0;   // 1 m
       constexpr double kMaxDiffYawDeg = 5.0;        // 5°
       if (diff_t > kMaxDiffTranslation || diff_yaw > kMaxDiffYawDeg * kPi / 180.0) {
-        ROS_WARN("[global_matcher_v2] match failed and result deviates from last_map_source_ "
-                 "(diff_t=%.3fm diff_yaw=%.2fdeg). Discarding last_map_source_.",
-                 diff_t, diff_yaw * 180.0 / kPi);
+        // ROS_WARN("[global_matcher_v2] match failed and result deviates from last_map_source_ "
+        //          "(diff_t=%.3fm diff_yaw=%.2fdeg). Discarding last_map_source_.",
+        //          diff_t, diff_yaw * 180.0 / kPi);
+        SYS_LOG(syslog::LogSeverity::WARNING, true)
+                    << "match failed and result deviates from last_map_source_ (diff_t=" << diff_t << ", diff_yaw=" << diff_yaw * 180.0 / kPi << "). Discarding last_map_source_.";
         have_last_map_source_ = false;
         last_map_source_ = Eigen::Matrix4f::Identity();
       }
@@ -711,12 +743,14 @@ class GlobalMatcherV2Node {
                           : deeplumin_msgs::LocalizationStatus::LEVEL_WARNING,
                   success ? 1.0 : 0.2, success ? "" : reject_reason);
 
-    ROS_INFO("[global_matcher_v2] mode=%s success=%d converged=%d source=%zu target=%zu "
-             "fitness=%.4f inlier=%.3f rmse=%.3f delta=%.3fm yaw=%.2fdeg cost=%.1fms reason=%s",
-             current_mode_.c_str(), success, match_result.fine_converged, source->size(),
-             target_pcl_ptr->size(), match_result.fine_fitness, metrics.inlier_ratio,
-             metrics.inlier_rmse, delta_translation, delta_yaw * 180.0 / kPi, elapsed_ms,
-             reject_reason.c_str());
+    // ROS_INFO("[global_matcher_v2] mode=%s success=%d converged=%d source=%zu target=%zu "
+    //          "fitness=%.4f inlier=%.3f rmse=%.3f delta=%.3fm yaw=%.2fdeg cost=%.1fms reason=%s",
+    //          current_mode_.c_str(), success, match_result.fine_converged, source->size(),
+    //          target_pcl_ptr->size(), match_result.fine_fitness, metrics.inlier_ratio,
+    //          metrics.inlier_rmse, delta_translation, delta_yaw * 180.0 / kPi, elapsed_ms,
+    //          reject_reason.c_str());
+    SYS_LOG(syslog::LogSeverity::INFO, false)
+                << "match result: " << current_mode_ << " " << success << " " << match_result.fine_converged << " " << source->size() << " " << target_pcl_ptr->size() << " " << match_result.fine_fitness << " " << metrics.inlier_ratio << " " << metrics.inlier_rmse << " " << delta_translation << " " << delta_yaw * 180.0 / kPi << " " << elapsed_ms << " " << reject_reason;
   }
 
   InitialGuess selectInitialGuess(const std::string& source_frame, bool have_tracking,
@@ -787,7 +821,9 @@ class GlobalMatcherV2Node {
       guess.source_base = have_source_odom ? source_odom_base : Eigen::Matrix4f::Identity();
       guess.map_source = have_source_odom ? map_base * source_odom_base.inverse() : map_base;
       if (!have_source_odom) {
-        ROS_WARN_THROTTLE(2.0, "[global_matcher_v2] source_odom missing, use map_base as map_source");
+        // ROS_WARN_THROTTLE(2.0, "[global_matcher_v2] source_odom missing, use map_base as map_source");
+        SYS_LOG(syslog::LogSeverity::WARNING, false)
+                    << "source_odom missing, use map_base as map_source";
       }
     } else if (source_is_lidar) {
       guess.source_base = config_.base_to_lidar.inverse();
@@ -1085,15 +1121,19 @@ class GlobalMatcherV2Node {
     const size_t total_pts = diff_source->size();
     if (diff_cloud->points.size() > static_cast<size_t>(config_.difference_rate_threshold * total_pts)) {
       loc_available.data = 0;  // 差异点过多，定位失效
-      ROS_INFO("[global_matcher_v2] Difference: %zu / %zu not in map, ratio=%.3f "
-               "!!!!!!!!!!!!!!!!!!",
-               diff_cloud->points.size(), n,
-               static_cast<double>(diff_cloud->points.size()) / static_cast<double>(n));
+      // ROS_INFO("[global_matcher_v2] Difference: %zu / %zu not in map, ratio=%.3f "
+      //          "!!!!!!!!!!!!!!!!!!",
+      //          diff_cloud->points.size(), n,
+      //          static_cast<double>(diff_cloud->points.size()) / static_cast<double>(n));
+      SYS_LOG(syslog::LogSeverity::WARNING, false)
+                  << "Difference: " << diff_cloud->points.size() << " / " << n << " not in map, ratio=" << static_cast<double>(diff_cloud->points.size()) / static_cast<double>(n) << "!!!!!!!!!!!!!!!!!!";
     } else {
       loc_available.data = 1;  // 定位有效
-      ROS_INFO("[global_matcher_v2] Difference: %zu / %zu not in map, ratio=%.3f",
-               diff_cloud->points.size(), n,
-               static_cast<double>(diff_cloud->points.size()) / static_cast<double>(n));
+      // ROS_INFO("[global_matcher_v2] Difference: %zu / %zu not in map, ratio=%.3f",
+      //          diff_cloud->points.size(), n,
+      //          static_cast<double>(diff_cloud->points.size()) / static_cast<double>(n));
+      SYS_LOG(syslog::LogSeverity::INFO, false)
+                  << "Difference: " << diff_cloud->points.size() << " / " << n << " not in map, ratio=" << static_cast<double>(diff_cloud->points.size()) / static_cast<double>(n) << "!!!!!!!!!!!!!!!!!!";
     }
     loc_available_pub_.publish(loc_available);
 
@@ -1112,7 +1152,9 @@ class GlobalMatcherV2Node {
       std::vector<int> cluster_labels;
       CloudPtr clustered = dbscanCluster(diff_cloud, eps, config_.cluster_min_pts,
                                          cluster_labels);
-      ROS_INFO("[global_matcher_v2] start cluster !");
+      // ROS_INFO("[global_matcher_v2] start cluster !");
+      SYS_LOG(syslog::LogSeverity::INFO, false)
+                  << "start cluster !";
       if (clustered && !clustered->empty()) {
         sensor_msgs::PointCloud2 cluster_msg;
         pcl::toROSMsg(*clustered, cluster_msg);
@@ -1124,9 +1166,11 @@ class GlobalMatcherV2Node {
         for (int lbl : cluster_labels) {
           if (lbl > max_label) max_label = lbl;
         }
-        ROS_INFO("[global_matcher_v2] Cluster: %d obstacles, eps=%.3f, "
-                 "clustered_pts=%zu / raw_diff=%zu",
-                 max_label + 1, eps, clustered->size(), diff_cloud->size());
+        // ROS_INFO("[global_matcher_v2] Cluster: %d obstacles, eps=%.3f, "
+        //          "clustered_pts=%zu / raw_diff=%zu",
+        //          max_label + 1, eps, clustered->size(), diff_cloud->size());
+        SYS_LOG(syslog::LogSeverity::INFO, false)
+                    << "Cluster: " << max_label + 1 << " obstacles, eps=" << eps << ", clustered_pts=" << clustered->size() << " / raw_diff=" << diff_cloud->size();
       }
     }
   }
@@ -1255,6 +1299,8 @@ class GlobalMatcherV2Node {
   ros::Timer match_timer_;
   ros::Timer map_timer_;
 
+  std::shared_ptr<deeplumin_health_checker::HealthChecker> health_checker_; // 健康检查器
+
 
     // ---- 差异检测：全量点云缓存 ----
   CloudPtr latest_raw_diff_;             ///< 全量点云（含完整轮廓），用于差异检测
@@ -1295,6 +1341,13 @@ int main(int argc, char** argv) {
   ros::init(argc, argv, "global_matcher_v2");
   ros::NodeHandle nh;
   ros::NodeHandle pnh("~");
+
+  std::string log_dir;
+  pnh.param<std::string>("log_dir", log_dir, "/home/hhy/2004ros/DeepLumin_zq/src/localization/loclog");
+  SYS_LOG_INIT_FULL(log_dir, syslog::LogSeverity::INFO, 
+                    50,
+                    "GM_V2");
+
   global_matcher_v2::GlobalMatcherV2Node node(nh, pnh);
   ros::spin();
   return 0;

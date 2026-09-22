@@ -4,7 +4,7 @@
 # =============================================================================
 
 runtime:
-  auto_start: true
+  auto_start: false
   task_name: "manual_mapping"
   output_root: "/home/hhy/2004ros/deeplumin_mapping_2"
   publish_tf: true           # 发布 map→odom（有关键帧后即发布）

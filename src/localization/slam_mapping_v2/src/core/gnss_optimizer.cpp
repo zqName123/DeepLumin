@@ -4,7 +4,7 @@
 #include <gtsam/linear/LossFunctions.h>
 #include <gtsam/navigation/GPSFactor.h>
 
-#include <ros/ros.h>
+#include "syslog/logger.h"
 
 #include <algorithm>
 #include <cmath>
@@ -206,9 +206,11 @@ bool GnssOptimizer::estimateAlignment() {
   std::nth_element(dz.begin(), dz.begin() + static_cast<std::ptrdiff_t>(mid), dz.end());
   trans_map_enu_.z() = dz[mid];
   alignment_complete_ = true;
-  ROS_INFO("[slam_mapping_v2][gnss] alignment done yaw_deg=%.4f t=(%.3f, %.3f, %.3f)",
-           std::atan2(rot_map_enu_(1, 0), rot_map_enu_(0, 0)) * 180.0 / M_PI,
-           trans_map_enu_.x(), trans_map_enu_.y(), trans_map_enu_.z());
+  // ROS_INFO("[slam_mapping_v2][gnss] alignment done yaw_deg=%.4f t=(%.3f, %.3f, %.3f)",
+  //          std::atan2(rot_map_enu_(1, 0), rot_map_enu_(0, 0)) * 180.0 / M_PI,
+  //          trans_map_enu_.x(), trans_map_enu_.y(), trans_map_enu_.z());
+  SYS_LOG(syslog::LogSeverity::INFO, true) << "alignment done yaw_deg=" << std::atan2(rot_map_enu_(1, 0), rot_map_enu_(0, 0)) * 180.0 / M_PI
+      << " t=(" << trans_map_enu_.x() << ", " << trans_map_enu_.y() << ", " << trans_map_enu_.z() << ")";
   return true;
 }
 

@@ -9,7 +9,7 @@
 
 #include <opencv2/calib3d.hpp>
 #include <opencv2/features2d.hpp>
-#include <ros/ros.h>
+#include "syslog/logger.h"
 
 #include <algorithm>
 
@@ -26,7 +26,8 @@ void VisualLoopDetector::configure(const LoopClosureConfig& cfg) {
 
   // 加载词库
   if (vcfg_.vocabulary_path.empty()) {
-    ROS_ERROR("[VisualLoopDetector] vocabulary_path is empty!");
+    // ROS_ERROR("[VisualLoopDetector] vocabulary_path is empty!");
+    SYS_LOG(syslog::LogSeverity::ERROR, true) << "vocabulary_path is empty!";
     throw std::runtime_error("VisualLoopDetector: vocabulary_path not configured");
   }
 
@@ -34,18 +35,21 @@ void VisualLoopDetector::configure(const LoopClosureConfig& cfg) {
 
   try {
     voc_->loadFromTextFile(vcfg_.vocabulary_path);
-    ROS_INFO("[VisualLoopDetector] Loaded vocabulary from %s (%d words, %d levels)",
-             vcfg_.vocabulary_path.c_str(), voc_->size(), voc_->getDepthLevels());
+    // ROS_INFO("[VisualLoopDetector] Loaded vocabulary from %s (%d words, %d levels)",
+    //          vcfg_.vocabulary_path.c_str(), voc_->size(), voc_->getDepthLevels());
+    SYS_LOG(syslog::LogSeverity::INFO, true) << "Loaded vocabulary from " << vcfg_.vocabulary_path << " (" << voc_->size() << " words, " << voc_->getDepthLevels() << " levels)";
   } catch (const std::exception& e) {
-    ROS_ERROR("[VisualLoopDetector] Failed to load vocabulary: %s", e.what());
+    // ROS_ERROR("[VisualLoopDetector] Failed to load vocabulary: %s", e.what());
+    SYS_LOG(syslog::LogSeverity::ERROR, true) << "Failed to load vocabulary: " << e.what();
     throw;
   }
 
   // 初始化倒排索引
   inverted_file_.resize(voc_->size());
 
-  ROS_INFO("[VisualLoopDetector] Configured: min_bow_score=%.3f, min_continuity=%d",
-           vcfg_.min_bow_score, vcfg_.min_continuity);
+  // ROS_INFO("[VisualLoopDetector] Configured: min_bow_score=%.3f, min_continuity=%d",
+  //          vcfg_.min_bow_score, vcfg_.min_continuity);
+  SYS_LOG(syslog::LogSeverity::INFO, true) << "Configured: min_bow_score=" << vcfg_.min_bow_score << ", min_continuity=" << vcfg_.min_continuity;
 }
 
 void VisualLoopDetector::reset() {
@@ -105,8 +109,9 @@ LoopCandidate VisualLoopDetector::detect(const std::vector<Keyframe>& kfs) {
   int current_idx = target_idx;
   const auto& current_kf = kfs[current_idx];
 
-  ROS_INFO_THROTTLE(2.0, "[VisualLoopDetector] Checking kf %d (id=%d), keypoints=%zu, buffer_size=%zu",
-                    current_idx, current_kf.id, current_frame.keypoints.size(), feature_buffer_->size());
+  // ROS_INFO_THROTTLE(2.0, "[VisualLoopDetector] Checking kf %d (id=%d), keypoints=%zu, buffer_size=%zu",
+  //                   current_idx, current_kf.id, current_frame.keypoints.size(), feature_buffer_->size());
+  SYS_LOG(syslog::LogSeverity::INFO, false) << "Checking kf " << current_idx << " (" << current_kf.id << "), keypoints=" << current_frame.keypoints.size() << ", buffer_size=" << feature_buffer_->size();
 
   // 计算 BoW 向量
   DBoW2::BowVector bow_vec;
@@ -125,8 +130,8 @@ LoopCandidate VisualLoopDetector::detect(const std::vector<Keyframe>& kfs) {
   // 检索候选帧
   auto candidates = retrieveCandidates(bow_vec, kfs, current_idx, vcfg_.min_bow_score);
 
-  ROS_INFO_THROTTLE(2.0, "[VisualLoopDetector] kf=%d/%d keypoints=%zu bow_words=%zu candidates=%zu",
-                    current_idx, current_kf.id, current_frame.keypoints.size(), bow_vec.size(), candidates.size());
+  // ROS_INFO_THROTTLE(2.0, "[VisualLoopDetector] kf=%d/%d keypoints=%zu bow_words=%zu candidates=%zu",
+  //                   current_idx, current_kf.id, current_frame.keypoints.size(), bow_vec.size(), candidates.size());
 
   if (candidates.empty()) {
     return result;
@@ -156,8 +161,8 @@ LoopCandidate VisualLoopDetector::detect(const std::vector<Keyframe>& kfs) {
     // BoW 特征匹配
     auto match_result = matchFeatures(current_frame, cand_frame, feat_vec, cand_fvec);
 
-    ROS_INFO_THROTTLE(2.0, "[VisualLoopDetector] cand=%d bow_score=%.3f matches=%d (min=%d)",
-                      cand.keyframe_id, cand.bow_score, match_result.num_matches, vcfg_.min_bow_matches);
+    // ROS_INFO_THROTTLE(2.0, "[VisualLoopDetector] cand=%d bow_score=%.3f matches=%d (min=%d)",
+    //                   cand.keyframe_id, cand.bow_score, match_result.num_matches, vcfg_.min_bow_matches);
 
     if (match_result.num_matches < vcfg_.min_bow_matches) {
       continue;
@@ -170,17 +175,19 @@ LoopCandidate VisualLoopDetector::detect(const std::vector<Keyframe>& kfs) {
 
     if (!geometricVerification(current_frame, cand_frame, match_result,
                                &diff_rot, &diff_pos, &inliers)) {
-      ROS_INFO_THROTTLE(2.0, "[VisualLoopDetector] GeoVerify FAIL: %d->%d inliers=%d (min=%d)",
-                        current_idx, cand.keyframe_id, inliers, vcfg_.ransac_min_inliers);
+      // ROS_INFO_THROTTLE(2.0, "[VisualLoopDetector] GeoVerify FAIL: %d->%d inliers=%d (min=%d)",
+      //                   current_idx, cand.keyframe_id, inliers, vcfg_.ransac_min_inliers);
       continue;
     }
 
-    ROS_INFO("[VisualLoopDetector] GeoVerify OK: %d->%d inliers=%d", current_idx, cand.keyframe_id, inliers);
+    // ROS_INFO("[VisualLoopDetector] GeoVerify OK: %d->%d inliers=%d", current_idx, cand.keyframe_id, inliers);
+    SYS_LOG(syslog::LogSeverity::INFO, true) << "GeoVerify OK: " << current_idx << " -> " << cand.keyframe_id << " inliers=" << inliers;
 
     // 连续性验证
     if (!continuityCheck(current_idx, cand.keyframe_id)) {
-      ROS_INFO("[VisualLoopDetector] Continuity pending: %d->%d count=%d/%d",
-               current_idx, cand.keyframe_id, continuity_count_, vcfg_.min_continuity);
+      // ROS_INFO("[VisualLoopDetector] Continuity pending: %d->%d count=%d/%d",
+      //          current_idx, cand.keyframe_id, continuity_count_, vcfg_.min_continuity);
+      SYS_LOG(syslog::LogSeverity::INFO, true) << "Continuity pending: " << current_idx << " -> " << cand.keyframe_id << " count=" << continuity_count_ << "/" << vcfg_.min_continuity;
       continue;
     }
 
@@ -195,8 +202,9 @@ LoopCandidate VisualLoopDetector::detect(const std::vector<Keyframe>& kfs) {
     const auto& cur_kf = kfs[current_idx];
     double scale = (cur_kf.pose_odom.position - pre_kf.pose_odom.position).norm();
     if (scale < 0.1) {
-      ROS_WARN("[VisualLoopDetector] Odom distance too small (%.3fm), skipping loop %d->%d",
-               scale, current_idx, cand.keyframe_id);
+      // ROS_WARN("[VisualLoopDetector] Odom distance too small (%.3fm), skipping loop %d->%d",
+      //          scale, current_idx, cand.keyframe_id);
+      SYS_LOG(syslog::LogSeverity::WARNING, true) << "Odom distance too small (" << scale << "), skipping loop " << current_idx << " -> " << cand.keyframe_id;
       result.valid = false;
       continue;
     }
@@ -211,8 +219,9 @@ LoopCandidate VisualLoopDetector::detect(const std::vector<Keyframe>& kfs) {
     loop_history_.push_back({current_idx, cand.keyframe_id});
     last_check_index_ = current_idx;
 
-    ROS_INFO("[VisualLoopDetector] Loop detected: %d -> %d (bow_score=%.3f, fitness=%.3f, inliers=%d, scale=%.3fm)",
-             current_idx, cand.keyframe_id, cand.bow_score, result.score, inliers, scale);
+    // ROS_INFO("[VisualLoopDetector] Loop detected: %d -> %d (bow_score=%.3f, fitness=%.3f, inliers=%d, scale=%.3fm)",
+    //          current_idx, cand.keyframe_id, cand.bow_score, result.score, inliers, scale);
+    SYS_LOG(syslog::LogSeverity::INFO, true) << "visual Loop detected: " << current_idx << " -> " << cand.keyframe_id << " (bow_score=" << cand.bow_score << ", fitness=" << result.score << ", inliers=" << inliers << ", scale=" << scale << ")";
     return result;
   }
 

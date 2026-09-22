@@ -1,11 +1,7 @@
 Header header
 
-bool perception_online
-bool localization_online
-bool planning_online
-bool control_online
-bool communication_online
-float32 cpu_usage
-float32 memory_usage
-string[] active_nodes
-string[] error_nodes
+string[] available_nodes
+bool detect_too_match_warning
+deeplumin_msgs/NodeStatus[] node_status
+deeplumin_msgs/HardwareStatus[] hardware_status
+rosgraph_msgs/TopicStatistics[] topic_statistics

@@ -19,6 +19,7 @@
   <depend>std_srvs</depend>
   <depend>visualization_msgs</depend>
   <depend>deeplumin_msgs</depend>
+  <depend>deeplumin_health_checker</depend>
 
   <export>
     <build_type>catkin</build_type>

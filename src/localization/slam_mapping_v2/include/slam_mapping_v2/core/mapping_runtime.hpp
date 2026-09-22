@@ -31,6 +31,7 @@
 #include <thread>
 #include <utility>
 #include <vector>
+#include <chrono>
 
 namespace slam_mapping_v2 {
 

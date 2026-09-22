@@ -2,6 +2,7 @@
 #include <relocalization/ros/eval_visualizer.hpp>
 #include <relocalization/ros/param_loader.hpp>
 
+#include <pcl_conversions/pcl_conversions.h>
 #include <ros/ros.h>
 #include <rosbag/bag.h>
 #include <rosbag/view.h>
@@ -143,7 +144,8 @@ int main(int argc, char** argv) {
 
     const double bag_time = msg->header.stamp.toSec();
     try {
-      relocalization::CloudPtr raw = relocalization::cloudFromRosMsg(*msg);
+      relocalization::CloudPtr raw(new relocalization::CloudT);
+      pcl::fromROSMsg(*msg, *raw);
       double query_frame_yaw_rad = cfg.query_frame_yaw_deg * M_PI / 180.0;
       if (cfg.query_rotate_xy_y_negx) {
         query_frame_yaw_rad += -M_PI / 2.0;

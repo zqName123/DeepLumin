@@ -18,6 +18,8 @@ find_package(catkin REQUIRED COMPONENTS
   std_srvs
   cv_bridge
   deeplumin_msgs
+  deeplumin_health_checker
+  syslog_ros_wrap
 )
 find_package(PCL REQUIRED COMPONENTS common io features filters search)
 find_package(OpenCV REQUIRED)

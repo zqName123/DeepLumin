@@ -5,6 +5,7 @@
 #include <vector>
 
 #include "lio_odometry/core/types.h"
+#include "syslog/logger.h"
 
 namespace slam_odometry {
 
@@ -27,7 +28,6 @@ class ImuProcess {
     void SetAccBiasCov(const Vec3d& b_a);
 
     void Process(const MeasureGroup& meas, ESKF& kf_state, CloudPtr& scan);
-
     bool IsIMUInited() const { return imu_need_init_ == false; }
     double GetMeanAccNorm() const { return mean_acc_.norm(); }
 
@@ -58,6 +58,7 @@ class ImuProcess {
     Vec3d acc_s_last_ = Vec3d::Zero();
 
     double last_lidar_end_time_ = 0;
+    double init_start_time_ = -1.0;
     int init_iter_num_ = 1;
     bool b_first_frame_ = true;
     bool imu_need_init_ = true;

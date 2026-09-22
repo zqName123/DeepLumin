@@ -12,6 +12,7 @@
  */
 
 #include <relocalization/interface/i_global_matcher.hpp>
+#include "syslog/logger.h"
 
 namespace relocalization {
 

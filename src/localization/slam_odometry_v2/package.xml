@@ -30,6 +30,7 @@
   <depend>libyaml-cpp-dev</depend>
   <depend>libpcl-dev</depend>
   <depend>libeigen3-dev</depend>
+  <depend>deeplumin_health_checker</depend>
 
   <export>
   </export>

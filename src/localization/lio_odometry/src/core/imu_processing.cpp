@@ -17,6 +17,8 @@ ImuProcess::ImuProcess() : b_first_frame_(true), imu_need_init_(true) {
     cov_bias_acc_ = Vec3d(0.0001, 0.0001, 0.0001);
     mean_acc_ = Vec3d(0, 0, -1.0);
     mean_gyr_ = Vec3d(0, 0, 0);
+    cov_acc_scale_ = cov_acc_;
+    cov_gyr_scale_ = cov_gyr_;
     last_imu_.reset(new IMU());
 }
 
@@ -26,6 +28,12 @@ void ImuProcess::Reset() {
     mean_acc_ = Vec3d(0, 0, -1.0);
     mean_gyr_ = Vec3d(0, 0, 0);
     angvel_last_.setZero();
+    acc_s_last_.setZero();
+    cov_acc_.setZero();
+    cov_gyr_.setZero();
+    init_start_time_ = -1.0;
+    last_lidar_end_time_ = 0.0;
+    b_first_frame_ = true;
 
     imu_need_init_ = true;
     init_iter_num_ = 1;
@@ -56,19 +64,20 @@ void ImuProcess::IMUInit(const MeasureGroup& meas, ESKF& kf_state, int& N) {
         const auto& gyr_acc = meas.imu_.front()->angular_velocity;
         mean_acc_ = imu_acc;
         mean_gyr_ = gyr_acc;
+        init_start_time_ = meas.imu_.front()->timestamp;
     }
 
     for (const auto& imu : meas.imu_) {
         cur_acc = imu->linear_acceleration;
         cur_gyr = imu->angular_velocity;
 
-        mean_acc_ += (cur_acc - mean_acc_) / N;
-        mean_gyr_ += (cur_gyr - mean_gyr_) / N;
-
-        cov_acc_ = cov_acc_ * (N - 1.0) / N +
-                   (cur_acc - mean_acc_).cwiseProduct(cur_acc - mean_acc_) * (N - 1.0) / (N * N);
-        cov_gyr_ = cov_gyr_ * (N - 1.0) / N +
-                   (cur_gyr - mean_gyr_).cwiseProduct(cur_gyr - mean_gyr_) * (N - 1.0) / (N * N);
+        const Vec3d acc_delta = cur_acc - mean_acc_;
+        const Vec3d gyr_delta = cur_gyr - mean_gyr_;
+        mean_acc_ += acc_delta / N;
+        mean_gyr_ += gyr_delta / N;
+        // Running population variance (Welford); do not underestimate motion at startup.
+        cov_acc_ = (cov_acc_ * (N - 1.0) + acc_delta.cwiseProduct(cur_acc - mean_acc_)) / N;
+        cov_gyr_ = (cov_gyr_ * (N - 1.0) + gyr_delta.cwiseProduct(cur_gyr - mean_gyr_)) / N;
 
         N++;
     }
@@ -96,21 +105,38 @@ void ImuProcess::IMUInit(const MeasureGroup& meas, ESKF& kf_state, int& N) {
 void ImuProcess::UndistortPcl(const MeasureGroup& meas, ESKF& kf_state, CloudPtr& pcl_out) {
     auto v_imu = meas.imu_;
     v_imu.push_front(last_imu_);
-    const double& imu_end_time = v_imu.back()->timestamp;
 
     const double& pcl_beg_time = meas.lidar_begin_time_;
     const double& pcl_end_time = meas.lidar_end_time_;
 
     auto imu_state = kf_state.GetX();
     imu_pose_.clear();
-    imu_pose_.emplace_back(0.0, acc_s_last_, angvel_last_, imu_state.vel_, imu_state.pos_, imu_state.rot_.matrix());
+    // First pose always at offset 0.0, matching original lightning-lm.
+    // Using imu_state.timestamp_ - pcl_beg_time would leave the earliest 1-2 ms
+    // of scan points uncompensated (positive offset) or wrongly compensated
+    // (negative offset on the first frame boundary).
+    imu_pose_.emplace_back(0.0, acc_s_last_, angvel_last_,
+                           imu_state.vel_, imu_state.pos_, imu_state.rot_.matrix());
 
     Vec3d angvel_avr, acc_avr, vel_imu, pos_imu;
     Mat3d R_imu;
 
     double dt = 0;
-    Vec3d acc = Vec3d::Zero();
-    Vec3d gyro = Vec3d::Zero();
+    Vec3d acc = last_imu_->linear_acceleration * G_m_s2 / mean_acc_.norm();
+    Vec3d gyro = last_imu_->angular_velocity;
+    bool imu_gap = false;
+    Q_.block<3, 3>(0, 0).diagonal() = cov_gyr_;
+    Q_.block<3, 3>(3, 3).diagonal() = cov_acc_;
+    Q_.block<3, 3>(6, 6).diagonal() = cov_bias_gyr_;
+    Q_.block<3, 3>(9, 9).diagonal() = cov_bias_acc_;
+    const auto predict_to = [&](double end) {
+        // Bound integration steps, but retain the actual elapsed time after a data gap.
+        while (end - kf_state.GetX().timestamp_ > 1e-9) {
+            const double step = std::min(0.01, end - kf_state.GetX().timestamp_);
+            kf_state.Predict(step, Q_, gyro, acc);
+        }
+        kf_state.SetTime(end);
+    };
 
     for (auto it_imu = v_imu.begin(); it_imu < (v_imu.end() - 1); it_imu++) {
         auto&& head = *(it_imu);
@@ -125,24 +151,12 @@ void ImuProcess::UndistortPcl(const MeasureGroup& meas, ESKF& kf_state, CloudPtr
 
         acc_avr = acc_avr * G_m_s2 / mean_acc_.norm();
 
-        if (head->timestamp < last_lidar_end_time_) {
-            dt = tail->timestamp - last_lidar_end_time_;
-        } else {
-            dt = tail->timestamp - head->timestamp;
-        }
-
+        dt = tail->timestamp - kf_state.GetX().timestamp_;
+        if (dt <= 0.0) continue;
+        imu_gap = imu_gap || tail->timestamp - head->timestamp > 1.0; // imu gap > 1s
         acc = acc_avr;
         gyro = angvel_avr;
-
-        if (dt > 0.1) {
-            break;
-        }
-
-        Q_.block<3, 3>(0, 0).diagonal() = cov_gyr_;
-        Q_.block<3, 3>(3, 3).diagonal() = cov_acc_;
-        Q_.block<3, 3>(6, 6).diagonal() = cov_bias_gyr_;
-        Q_.block<3, 3>(9, 9).diagonal() = cov_bias_acc_;
-        kf_state.Predict(dt, Q_, gyro, acc);
+        predict_to(tail->timestamp);
 
         imu_state = kf_state.GetX();
         angvel_last_ = angvel_avr - imu_state.bg_;
@@ -156,11 +170,18 @@ void ImuProcess::UndistortPcl(const MeasureGroup& meas, ESKF& kf_state, CloudPtr
             Pose6D(offs_t, acc_s_last_, angvel_last_, imu_state.vel_, imu_state.pos_, imu_state.rot_.matrix()));
     }
 
-    double note = pcl_end_time > imu_end_time ? 1.0 : -1.0;
-    dt = note * (pcl_end_time - imu_end_time);
-    kf_state.Predict(dt, Q_, gyro, acc);
-
+    // Extrapolate using the last IMU interval average (head/tail), matching
+    // original lightning-lm.  The raw instantaneous value from v_imu.back()
+    // would introduce a slight distortion at the scan-end points during rapid turns.
+    acc = acc_avr;
+    gyro = angvel_avr;
+    imu_gap = imu_gap || pcl_end_time - v_imu.back()->timestamp > 1.0; // imu gap > 1s
+    predict_to(pcl_end_time);
     imu_state = kf_state.GetX();
+    angvel_last_ = gyro - imu_state.bg_;
+    acc_s_last_ = imu_state.rot_ * (acc - imu_state.ba_) + imu_state.grav_.vec_;
+    imu_pose_.emplace_back(pcl_end_time - pcl_beg_time, acc_s_last_, angvel_last_,
+                           imu_state.vel_, imu_state.pos_, imu_state.rot_.matrix());
     last_imu_ = meas.imu_.back();
     last_lidar_end_time_ = pcl_end_time;
 
@@ -168,7 +189,13 @@ void ImuProcess::UndistortPcl(const MeasureGroup& meas, ESKF& kf_state, CloudPtr
     std::sort(pcl_out->points.begin(), pcl_out->points.end(),
               [](const PointType& p1, const PointType& p2) { return p1.time < p2.time; });
 
-    if (pcl_out->empty()) {
+    if (imu_gap) {
+        std::cerr << "[ImuProcess] IMU gap > 0.1s; scan may be incompletely undistorted" << std::endl;
+    }
+
+    if (pcl_out->empty() || pcl_out->points.back().time <= 0.0) {
+        // No per-point timing: retain the scan geometry, as Lightning does for zero
+        // offsets. Do not invent a scan duration or compensate every point as an early return.
         return;
     }
 
@@ -185,7 +212,7 @@ void ImuProcess::UndistortPcl(const MeasureGroup& meas, ESKF& kf_state, CloudPtr
         for (; it_pcl->time / 1000.0 > head->offset_time; it_pcl--) {
             dt = it_pcl->time / 1000.0 - head->offset_time;
 
-            Mat3d R_i(R_imu * math::exp(angvel_avr, dt));
+            Mat3d R_i = R_imu * SO3::exp(angvel_avr * dt).matrix();
 
             Vec3d P_i(it_pcl->x, it_pcl->y, it_pcl->z);
             Vec3d T_ei(pos_imu + vel_imu * dt + 0.5 * acc_imu * dt * dt - imu_state.pos_);
@@ -199,7 +226,7 @@ void ImuProcess::UndistortPcl(const MeasureGroup& meas, ESKF& kf_state, CloudPtr
             it_pcl->z = p_compensate(2);
 
             if (it_pcl == pcl_out->points.begin()) {
-                break;
+                return; // Do not compensate the first point again in older IMU intervals.
             }
         }
     }
@@ -211,28 +238,25 @@ void ImuProcess::Process(const MeasureGroup& meas, ESKF& kf_state, CloudPtr& sca
         return;
     }
 
+    for (const auto& imu : meas.imu_) {
+        if (!imu->linear_acceleration.allFinite() || !imu->angular_velocity.allFinite() ||
+            !std::isfinite(imu->timestamp)) return;
+    }
     if (imu_need_init_) {
-        std::cout << "[ImuProcess] imu_need_init, meas.imu_.size()=" << meas.imu_.size()
-                  << " iter=" << init_iter_num_ << std::endl;
-
         IMUInit(meas, kf_state, init_iter_num_);
-
-        std::cout << "[ImuProcess] IMUInit done, init_iter_num_=" << init_iter_num_ << std::endl;
-
-        imu_need_init_ = true;
-
-        last_imu_ = meas.imu_.back();
-        auto state = kf_state.GetX();
-
         if (init_iter_num_ > kMaxInitCount) {
-            // last_lidar_end_time_ = meas.lidar_end_time_; // [debug]
-            cov_acc_ *= pow(G_m_s2 / mean_acc_.norm(), 2);
             imu_need_init_ = false;
             cov_acc_ = cov_acc_scale_;
             cov_gyr_ = cov_gyr_scale_;
-            std::cout << "[ImuProcess] IMU initialization complete!" << std::endl;
+            last_lidar_end_time_ = meas.lidar_end_time_;
+            angvel_last_ = last_imu_->angular_velocity - mean_gyr_;
+            acc_s_last_ = last_imu_->linear_acceleration * G_m_s2 / mean_acc_.norm() +
+                          kf_state.GetX().grav_.vec_;
+            SYS_LOG(syslog::LogSeverity::INFO, true) 
+                        << "[ImuProcess] initialized: mean_acc=" << mean_acc_.transpose()
+                        << " gravity=" << kf_state.GetX().grav_.vec_.transpose()
+                        << " gyro_bias=" << mean_gyr_.transpose();
         }
-
         return;
     }
 
