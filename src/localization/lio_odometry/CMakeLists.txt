@@ -38,7 +38,6 @@ include_directories(
     ${PCL_INCLUDE_DIRS}
     ${EIGEN3_INCLUDE_DIRS}
     ${yaml-cpp_INCLUDE_DIRS}
-    ${CMAKE_CURRENT_SOURCE_DIR}/../slam_odometry_v2/include
 )
 
 add_library(lio_odometry_core

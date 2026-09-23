@@ -182,7 +182,7 @@ struct S2 {
     Eigen::Matrix<double, 3, 2> S2_Mx(const Eigen::Matrix<double, 2, 1>& delta) const {
         Eigen::Matrix<double, 3, 2> res;
         Eigen::Matrix<double, 3, 2> Bx = S2_Bx();
-        if (delta.norm() < 1e-10) {
+        if (delta.norm() < 1e-5) {
             res = -SO3::hat(vec_) * Bx;
         } else {
             Vec3d Bu = Bx * delta;

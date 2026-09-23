@@ -150,12 +150,11 @@ bool ESKF::Update(ESKF::ObsType obs, const double& R) {
             // (J·P_propagated·Jᵀ，位于 last_x 切空间)，不能重置回 start_x 切空间
             // 下的 P_propagated。
             x_ = last_x;
-            // 在被接受的状态上重算一次观测，使 nearest_points_ 与最终位姿一致，
-            // 供 MapIncremental 使用；原版直接 break，最近邻停留在回退前的状态。
+            // 在被接受的状态上重算一次观测，使 nearest_points_ 与最终位姿一致，供 MapIncremental 使用。
             lidar_obs_func_(x_, custom_obs_model_);
-            if (!custom_obs_model_.valid_) {
-                return reject();
-            }
+            // 与原版无条件 break 接受一致：即使重算恰好无效（退化场景当帧有效点临时为 0），
+            // 也接受 last_x——它是残差回升前最后一个已验证状态，比整帧拒绝（退回纯 IMU
+            // 预测）安全得多；最近邻停留在旧状态仅影响本帧加点取舍。
             return true;
         }
         iterated_num += 1;

@@ -299,7 +299,9 @@ bool IVox<dim, node_type, PointType>::GetClosestPoint(const PointVector& cloud, 
 
 template <int dim, IVoxNodeType node_type, typename PointType>
 void IVox<dim, node_type, PointType>::AddPoints(const PointVector& points_to_add) {
-    std::for_each(std::execution::unseq, points_to_add.begin(), points_to_add.end(), [this](const auto& pt) {
+    // 与原版 lightning-lm 一致：串行插入。unseq 会打乱插入顺序，使节点 10 点
+    // FIFO 淘汰的不再是时间最老的点，破坏地图"近期点云"语义。
+    std::for_each(points_to_add.begin(), points_to_add.end(), [this](const auto& pt) {
         auto key = Pos2Grid(ToEigen<float, dim>(pt));
 
         auto iter = grids_map_.find(key);

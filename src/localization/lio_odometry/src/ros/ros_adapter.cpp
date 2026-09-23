@@ -148,6 +148,10 @@ void RosAdapter::OnImu(const sensor_msgs::Imu::ConstPtr& msg) {
     if (!core_) {
         return;
     }
+    if (msg->header.stamp.toSec() - last_timestamp_imu_ > 0.05) {
+        std::cout << "imu stamp > 0.05 " << std::endl;
+    }
+    last_timestamp_imu_ = msg->header.stamp.toSec();
     auto imu = std::make_shared<slam_odometry::IMU>();
     imu->timestamp = msg->header.stamp.toSec();
     imu->angular_velocity << msg->angular_velocity.x, msg->angular_velocity.y,

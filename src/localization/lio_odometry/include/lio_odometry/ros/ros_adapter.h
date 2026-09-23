@@ -45,6 +45,8 @@ class RosAdapter {
     slam_odometry::LidarType lidar_type_ = slam_odometry::LidarType::OUST64;
     int frame_count_ = 0;
 
+    double last_timestamp_imu_ = 0.0;  // [debug] 上一帧 IMU 时间戳，分析两帧imu时间间隔
+
     std::shared_ptr<deeplumin_health_checker::HealthChecker> health_checker_; // 健康检查器
 };
 

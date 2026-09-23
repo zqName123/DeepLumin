@@ -44,23 +44,24 @@ fasterlio:
   time_scale: 1e-3             # 兼容不同数据集的时间单位，仅对Velodyne LiDAR(lidar_type=2)生效
   skip_lidar_num: 0            # 点云的跳帧情况
   point_filter_num: 1          # 点云采样参数
-  max_iteration: 4             # 最大迭代次数（与 FAST-LIVO2 对齐）
-  filter_size_scan: 0.35      # 对scan进行的降采样
-  filter_size_map: 0.35       # 对map进行的降采样
+  max_iteration: 6             # 最大迭代次数，对齐原版 default_vbr / ivox 版
+  filter_size_scan: 0.2        # 对scan进行的降采样，对齐原版 default_vbr / ivox 版
+  filter_size_map: 0.5         # 对map进行的降采样，对齐原版 default_vbr / ivox 版
   esti_plane_threshold: 0.1    # default=0.1
-  use_aa: false               # 关闭 AA（99% 匹配率下 AA 收敛检测过于敏感）
+  use_aa: true                 # Anderson Acceleration，对齐原版 default_vbr / ivox 版
   use_adaptive_r: true         # 平面+测量点方差；false 使用 lidar_update_r
-  use_pose_convergence: true   # true=仅位姿收敛（更稳定）
-  converged_times_required: 1  # 连续收敛次数
+  use_pose_convergence: false  # false=原版全量 23 维门限收敛判据（转弯场景与 ivox 版一致）
+  converged_times_required: 1  # 连续收敛次数（仅 use_pose_convergence=true 时使用）
   rotation_convergence_deg: 0.05
   position_convergence_m: 0.0015
+  # 以下两项已不再参与门控（ObsModel 恢复原版 effect_num < 1 判据），保留仅供参数加载兼容
   min_effective_points: 20
   min_effective_ratio: 0.05
-  acc_cov: 0.2                 # 加速度计噪声（与 lm_slam_ros 对齐，更信任 IMU）
-  gyr_cov: 0.1                # 陀螺仪噪声（与 lm_slam_ros 对齐，更信任 IMU）
-  b_acc_cov: 0.0001            # 加速度计偏置噪声（与 FAST-LIVO2 对齐）
-  b_gyr_cov: 0.0001            # 陀螺仪偏置噪声（与 FAST-LIVO2 对齐）
-  extrinsic_est_en: false       # true: enable the online estimation of IMU-LiDAR extrinsic
+  acc_cov: 0.2                 # 与 ivox 版当前值对齐
+  gyr_cov: 0.3                 # 与 ivox 版当前值对齐
+  b_acc_cov: 0.001             # 与 ivox 版当前值对齐
+  b_gyr_cov: 0.001             # 与 ivox 版当前值对齐
+  extrinsic_est_en: true       # 在线估计 IMU-LiDAR 外参，对齐原版 default_vbr / ivox 版
   extrinsic_T: [0, 0.0, 0.0]
   extrinsic_R: [0, 1, 0,
                 -1, 0, 0,
@@ -120,8 +121,8 @@ voxel_map:
   half_map_size: 50           # 半个地图窗口大小 (体素单位)
 
 vel_gnss:
-  use_wheel_speed: true
+  use_wheel_speed: false      # 与 ivox 版一致：默认不融合轮速，排除转弯侧滑引入的错误横向约束
   use_gnss: false
   wheel_velocity_noise: 0.33   # 0.33
-  gnss_attitude_noise: 0.03   # 0.03
+  gnss_attitude_noise: 0.01   # 与 ivox 版一致（use_gnss=false，当前不生效）
   gnss_pitch_window_size: 50

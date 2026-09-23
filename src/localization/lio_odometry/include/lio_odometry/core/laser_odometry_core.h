@@ -8,7 +8,7 @@
 #include <thread>
 #include <vector>
 
-#include "faster_lio/ivox3d/ivox3d.h"
+#include "ivox3d/ivox3d.h"
 #include "lio_odometry/core/eskf.h"
 #include "lio_odometry/core/imu_processing.h"
 #include "lio_odometry/core/pointcloud_preprocess.h"
@@ -74,6 +74,10 @@ class LaserOdometryCore {
 
    private:
     bool SyncPackages();
+    // 传感器时间回退时的轻量对齐：只清输入缓冲与跨帧积分衔接，保留滤波器状态、
+    // IMU 初始化结果和地图，避免行驶中被强制冷启动（静止初始化假设不成立会导致飘飞）。
+    void ResyncStreams();
+    // 完整重启（当前仅保留接口，无调用方）：清地图、重置滤波器并重新做 IMU 初始化。
     void ResetTracking();
     void ObsModel(NavState& s, ESKF::CustomObservationModel& obs);
     void ObsModelWelspeed(NavState& s, ESKF::CustomObservationModel& obs);

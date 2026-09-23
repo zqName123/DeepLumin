@@ -118,6 +118,7 @@ bool ESKF::Update(ESKF::ObsType obs, const double& R) {
     StateVecType dx_current = StateVecType::Zero();
 
     NavState start_x = x_;
+    NavState last_x = x_;
     const auto reject = [&](int code=0) {
         static std::mutex reject_mtx;
         std::lock_guard<std::mutex> lk(reject_mtx);
@@ -152,13 +153,25 @@ bool ESKF::Update(ESKF::ObsType obs, const double& R) {
         }
 
         if (use_aa_ && i > -1 && (obs == ObsType::LIDAR || obs == ObsType::WHEEL_SPEED_AND_LIDAR) &&
-            custom_obs_model_.lidar_residual_mean_ > last_lidar_res * 1.01 + 1e-12) {
-            return reject(2);
+            custom_obs_model_.lidar_residual_mean_ >= last_lidar_res * 1.01) {
+            // 与原版 lightning-lm 一致：AA 使残差回升时回退到上一个被接受的状态并结束迭代，
+            // 不整帧拒绝。P_ 保持此刻上一轮重线性化后的传播协方差（位于 last_x 切空间），
+            // 不能重置为 start_x 切空间下的 P_propagated。
+            x_ = last_x;
+            // 在被接受的状态上重算一次观测，使 ptpl_list_/对应关系与最终位姿一致，供建图使用。
+            lidar_obs_func_(x_, custom_obs_model_);
+            if (!custom_obs_model_.valid_) {
+                return reject(2);
+            }
+            return true;
         }
         iterated_num += 1;
 
-        if (!custom_obs_model_.valid_ || !custom_obs_model_.h_x_.allFinite() ||
-            !custom_obs_model_.residual_.allFinite()) return reject(3);
+        // 与原版一致：本次迭代观测无效时跳过本次更新并在下一迭代重新搜索对应关系，
+        // 让迭代有机会自愈，而不是直接整帧拒绝。H/残差非有限会在 dx 检查处拦截。
+        if (!custom_obs_model_.valid_) {
+            continue;
+        }
 
         if (obs == ObsType::WHEEL_SPEED) {
             Eigen::MatrixXd h_x_cur = Eigen::MatrixXd::Zero(3, state_dim_);
@@ -169,6 +182,7 @@ bool ESKF::Update(ESKF::ObsType obs, const double& R) {
             P_ = P_ - K * h_x_cur * P_;
             if (!dx_current.allFinite() || !P_.allFinite()) return reject(4);
             x_ = x_.boxplus(dx_current);
+            P_ = (0.5 * (P_ + P_.transpose())).eval();
             return true;
         } else if (obs == ObsType::GPS) {
             Eigen::MatrixXd h_x_cur = Eigen::MatrixXd::Zero(3, state_dim_);
@@ -179,6 +193,7 @@ bool ESKF::Update(ESKF::ObsType obs, const double& R) {
             P_ = P_ - K * h_x_cur * P_;
             if (!dx_current.allFinite() || !P_.allFinite()) return reject(4);
             x_ = x_.boxplus(dx_current);
+            P_ = (0.5 * (P_ + P_.transpose())).eval();
             return true;
         }
 
@@ -252,7 +267,6 @@ bool ESKF::Update(ESKF::ObsType obs, const double& R) {
         dx_current = K_r + (K_H - Eigen::Matrix<double, 23, 23>::Identity()) * dx_current;
 
         if (!dx_current.allFinite()) return reject(7);
-        const NavState before_update = x_;
 
         if (!use_aa_) {
             x_ = x_.boxplus(dx_current);
@@ -268,9 +282,11 @@ bool ESKF::Update(ESKF::ObsType obs, const double& R) {
             }
         }
 
-        dx_current = x_.boxminus(before_update);
+        // dx_current 保持为 KF 增量（AA 之前），与原版 lightning-lm 一致：
+        // 收敛判据和协方差重置都必须使用 KF 步长，而不是 AA 后通常更大的实际流形增量。
         if (!dx_current.allFinite()) return reject(7);
 
+        last_x = x_;
         last_lidar_res = custom_obs_model_.lidar_residual_mean_;
         custom_obs_model_.converge_ = true;
 
@@ -279,23 +295,37 @@ bool ESKF::Update(ESKF::ObsType obs, const double& R) {
             converged = dx_current.segment<3>(3).norm() * 180.0 / M_PI < lidar_rot_converge_deg_ &&
                         dx_current.segment<3>(0).norm() < lidar_pos_converge_m_;
         } else {
-            converged = (dx_current.cwiseAbs().array() <= limit_.array()).all();
+            // 原版逐维门限判据
+            converged = true;
+            for (int j = 0; j < 23; j++) {
+                if (std::fabs(dx_current[j]) > limit_[j]) {
+                    converged = false;
+                    break;
+                }
+            }
         }
-        converged_times = converged ? converged_times + 1 : 0;
+        // 原版语义：收敛计数只增不清零
+        if (converged) {
+            converged_times++;
+        }
         custom_obs_model_.converge_ = converged;
-        if (converged_times >= lidar_converged_times_required_ || i == maximum_iter_ - 1) {
+
+        if (!converged_times && i == maximum_iter_ - 2) {
+            custom_obs_model_.converge_ = true;
+        }
+
+        if (converged_times > 0 || i == maximum_iter_ - 1) {
             CovType J = CovType::Identity();
             for (const auto& st : x_.SO3_states_) {
                 const Vec3d delta = dx_current.segment<3>(st.idx_);
                 J.block<3,3>(st.idx_,st.idx_) = math::A_matrix(delta).transpose();
             }
             const Vec2d dg = dx_current.segment<2>(21);
-            J.block<2,2>(21,21) = x_.grav_.S2_Nx_yy() * before_update.grav_.S2_Mx(dg);
+            // dx_current 的 S2 分量表达在 start_x 切空间，Mx 基点必须是 start_x。
+            J.block<2,2>(21,21) = x_.grav_.S2_Nx_yy() * start_x.grav_.S2_Mx(dg);
             P_ = J * posterior * J.transpose();
             P_ = (0.5 * (P_ + P_.transpose())).eval();
-            if (!P_.allFinite() || (P_.diagonal().array() < 0).any()) return reject(8);
-            lidar_obs_func_(x_, custom_obs_model_);
-            if (!custom_obs_model_.valid_ || !custom_obs_model_.residual_.allFinite()) return reject(9);
+            if (!P_.allFinite()) return reject(8);
             return true;
         }
     }

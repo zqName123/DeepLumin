@@ -256,6 +256,19 @@ bool LaserOdometryCore::LoadParamsFromYAML(const std::string& yaml_file) {
     return true;
 }
 
+void LaserOdometryCore::ResyncStreams() {
+    // 时钟回退/跳变（PTP 重同步、驱动重启等）只影响数据时序，车的真实位姿是连续的。
+    // 清输入缓冲与 IMU 跨帧衔接即可；滤波器状态、P、地图、IMU 初始化全部保留。
+    std::cerr << "[lio] sensor time moved backwards; resync streams (filter state and map kept)" << std::endl;
+    imu_buffer_.clear();
+    lidar_buffer_.clear();
+    time_buffer_.clear();
+    lidar_pushed_ = false;
+    last_timestamp_imu_ = -1.0;
+    last_timestamp_lidar_ = -1.0;
+    p_imu_->RestartStreaming();
+}
+
 void LaserOdometryCore::ResetTracking() {
     std::cerr << "[lio] sensor time moved backwards; resetting odometry and local map" << std::endl;
     imu_buffer_.clear();
@@ -292,16 +305,18 @@ void LaserOdometryCore::ProcessIMU(const IMUPtr& imu) {
     std::lock_guard<std::mutex> lock(mtx_buffer_);
     if (!std::isfinite(timestamp) || !imu->angular_velocity.allFinite() ||
         !imu->linear_acceleration.allFinite()) return;
-    if (timestamp < last_timestamp_imu_) ResetTracking();
+    if (timestamp < last_timestamp_imu_) ResyncStreams();
     if (timestamp == last_timestamp_imu_) return;
-
-    // if (p_imu_->IsIMUInited()) {
-    //     kf_imu_.Predict(timestamp - last_timestamp_imu_, p_imu_->Q_, imu->angular_velocity,
-    //                     imu->linear_acceleration);
-    // }
 
     last_timestamp_imu_ = timestamp;
     imu_buffer_.emplace_back(imu);
+
+    // 无界缓冲保护：处理卡顿/长时间缺口时丢弃最老样本（约 50s @100Hz），
+    // 避免内存持续上涨；正常工况永远触不到。
+    if (imu_buffer_.size() > 5000) {
+        std::cout << "imu buffer size > 5000 " << std::endl;
+        imu_buffer_.pop_front();
+    }
 }
 
 void LaserOdometryCore::ProcessPointCloud(const CloudPtr& cloud, double timestamp) {
@@ -309,7 +324,9 @@ void LaserOdometryCore::ProcessPointCloud(const CloudPtr& cloud, double timestam
     scan_count_++;
 
     if (!cloud || !std::isfinite(timestamp)) return;
-    if (timestamp < last_timestamp_lidar_) ResetTracking();
+    if (timestamp < last_timestamp_lidar_) ResyncStreams();
+    // 重复 header stamp 的帧直接丢弃，避免同一帧点云被重复更新/入图。
+    if (timestamp == last_timestamp_lidar_) return;
     // Validate time/coordinates before synchronization; never let invalid points set scan end.
     cloud->points.erase(std::remove_if(cloud->points.begin(), cloud->points.end(), [](const PointType& p) {
         return !p.getVector3fMap().allFinite() || !std::isfinite(p.time) || p.time < 0.0;
@@ -367,10 +384,21 @@ bool LaserOdometryCore::SyncPackages() {
         return false;
     }
 
+    // 与原版 lightning-lm / FAST-LIO 的 SyncPackages 严格一致：
+    // 逐枚弹出 IMU，并且【包含】第一枚时间戳 > lidar_end_time_ 的 IMU 后停止。
+    // 不能用 "while(front <= end)"——IMU 突发到样时，缓冲中可能恰好只剩晚于
+    // lidar_end 的样本，严格 <= 会一枚都弹不到（meas.imu_ 为空），帧却被消费，
+    // 下一帧把跨窗间隔算成 ~100ms 的假 gap。多弹的这枚"未来 IMU"由
+    // UndistortPcl 的帧尾负 dt 外推（note=-1）正确处理，且循环内 tail 早于
+    // last_lidar_end_time_ 的区间会被 continue 跳过，不会重复积分。
     measures_.imu_.clear();
-    while (!imu_buffer_.empty() && imu_buffer_.front()->timestamp <= lidar_end_time_) {
+    while (!imu_buffer_.empty()) {
+        const double imu_time = imu_buffer_.front()->timestamp;
         measures_.imu_.push_back(imu_buffer_.front());
         imu_buffer_.pop_front();
+        if (imu_time > lidar_end_time_) {
+            break;
+        }
     }
 
     lidar_buffer_.pop_front();
@@ -386,10 +414,12 @@ bool LaserOdometryCore::Run() {
         return false;
     }
 
+    // 每帧处理前重置输出点云：IMU 空包/去畸变跳过时 Process 不会写 scan_undistort_，
+    // 必须保证下方空检查看到的是"本帧的空"而不是上一帧残留的点云，否则会用旧点云
+    // 重复更新并把同一批点再次插入地图。
+    scan_undistort_.reset(new PointCloudType());
     p_imu_->Process(measures_, kf_, scan_undistort_);
-    // std::cout << "p_imu_->Process done " << std::endl;
     if (!scan_undistort_ || scan_undistort_->empty()) {
-        std::cout << "scan_undistort is empty " << std::endl;
         return false;
     }
 
@@ -499,11 +529,14 @@ bool LaserOdometryCore::Run() {
     // std::cout << "[ odometry ]: In num: " << scan_undistort_->points.size() << " down " << cur_pts
     //           << " Map grid num: " << ivox_->NumValidGrids() << " effect num : " << effect_feat_num_ << std::endl;
 
-    if (SHOULD_LOG(2.0)) {
-        SYS_LOG(syslog::LogSeverity::INFO, true) 
+    // if (SHOULD_LOG(2.0)) {
+    //     SYS_LOG(syslog::LogSeverity::INFO, true) 
+    //             << "[ odometry ]: In num: " << scan_undistort_->points.size() << " down " << cur_pts
+    //             << " Map grid num: " << ivox_->NumValidGrids() << " effect num : " << effect_feat_num_;
+    // }
+    SYS_LOG(syslog::LogSeverity::INFO, true) 
                 << "[ odometry ]: In num: " << scan_undistort_->points.size() << " down " << cur_pts
                 << " Map grid num: " << ivox_->NumValidGrids() << " effect num : " << effect_feat_num_;
-    }
 
 
     return true;
@@ -522,9 +555,10 @@ void LaserOdometryCore::MapIncremental() {
         index[i] = i;
     }
 
-    std::mutex mtx;
-    // std::execution::par_unseq
-    std::for_each(std::execution::par, index.begin(), index.end(), [&](const size_t& i) {
+    // 与原版一致：严格串行。iVox 节点是 10 点 FIFO 上限，只有按点索引（扫描）顺序
+    // 串行插入，erase(begin) 淘汰的才是"最老帧的点"；par + 锁会使入列顺序随机化，
+    // 节点里长期残留跨期老点，转弯时 KNN 取到涂抹点，平面法向质量下降。
+    std::for_each(index.begin(), index.end(), [&](const size_t& i) {
         PointBodyToWorld(scan_down_body_->points[i], scan_down_world_->points[i]);
         PointType& point_world = scan_down_world_->points[i];
 
@@ -540,7 +574,6 @@ void LaserOdometryCore::MapIncremental() {
             if (fabs(dis_2_center.x()) > 0.5f * filter_size_map_min_ &&
                 fabs(dis_2_center.y()) > 0.5f * filter_size_map_min_ &&
                 fabs(dis_2_center.z()) > 0.5f * filter_size_map_min_) {
-                std::lock_guard<std::mutex> lock(mtx);
                 point_no_need_downsample.push_back(point_world);
                 return;
             }
@@ -557,11 +590,9 @@ void LaserOdometryCore::MapIncremental() {
             }
 
             if (need_add) {
-                std::lock_guard<std::mutex> lock(mtx);
                 points_to_add.push_back(point_world);
             }
         } else {
-            std::lock_guard<std::mutex> lock(mtx);
             points_to_add.push_back(point_world);
         }
     });
@@ -625,9 +656,12 @@ void LaserOdometryCore::ObsModel(NavState& s, ESKF::CustomObservationModel& obs)
                           if (valid_corr) {
                               point_selected_surf_[i] = true;
                               residuals_[i] = pd2;
-                          } else {
-                              point_selected_surf_[i] = false;
                           }
+                          // 与原版 lightning-lm 严格一致：valid_corr=false 时什么都不做——
+                          // point_selected_surf_ 保持 true，residuals_[i] 不重写（Run 中
+                          // resize 不清已有元素，即沿用上一帧同索引的小残差/初始 0）。
+                          // 这相当于把当前帧的大残差错配"软化"为历史小残差，转弯时阻止错配点
+                          // 强力拉动姿态；不能显式置 false 丢弃，否则 effect 数骤降、剩余点权重失衡。
                       }
                   });
 

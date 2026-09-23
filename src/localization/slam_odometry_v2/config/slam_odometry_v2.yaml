@@ -70,7 +70,7 @@ common:
 
 # 轮速/GNSS 辅助：唯一来源（核心 yaml 读取 + 节点订阅开关共用）
 vel_gnss:
-  use_vel: true    # 轮速观测（3D 世界系速度伪观测，LiDAR→轮速→GNSS 顺序更新第二级）
+  use_vel: false    # 轮速观测（3D 世界系速度伪观测，LiDAR→轮速→GNSS 顺序更新第二级）
   use_gnss_attitude: false
   can_vel_diff_thresh_kmh: 2.0
   can_timeout_sec: 0.5

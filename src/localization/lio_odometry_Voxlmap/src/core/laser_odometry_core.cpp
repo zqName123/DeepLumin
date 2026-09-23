@@ -685,10 +685,7 @@ void LaserOdometryCore::ObsModel(NavState& s, ESKF::CustomObservationModel& obs)
     auto t_obs_start = std::chrono::high_resolution_clock::now();
 
     int cnt_pts = scan_down_body_->size();
-    if (cnt_pts < 10) {
-        obs.valid_ = false;
-        return;
-    }
+    // 与原版/ivox 版一致：点数下限在 Run() 层检查（cur_pts < 5），此处不再额外拒绝。
 
     // ===== [TIME_LOG] pv_list_ 重建 + 协方差传播耗时 =====
     auto t_pvlist_start = std::chrono::high_resolution_clock::now();
@@ -760,7 +757,10 @@ void LaserOdometryCore::ObsModel(NavState& s, ESKF::CustomObservationModel& obs)
 
     // ===== 构建 ESKF 观测 =====
     int effect_num = ptpl_list_.size();
-    if (effect_num < min_effective_points_ || effect_num < min_effective_ratio_ * cnt_pts) {
+    // 与原版 lightning-lm / ivox 版一致：唯一门控是至少 1 个有效约束。
+    // voxel 地图侧已有平面判定 + 3σ Mahalanobis 门控，不再叠加 20 点/5% 硬门，
+    // 避免转弯预测偏差大时整帧 invalid 触发滤波器丢更新。
+    if (effect_num < 1) {
         obs.valid_ = false;
         return;
     }
@@ -826,8 +826,16 @@ void LaserOdometryCore::ObsModel(NavState& s, ESKF::CustomObservationModel& obs)
         }
     }
 
-    obs.lidar_residual_mean_ = obs.residual_.cwiseAbs().mean();
-    obs.lidar_residual_max_ = obs.residual_.cwiseAbs().maxCoeff();
+    // 残差统计与原版/ivox 版一致：平方残差排序后的中位数作为 mean_，
+    // 末位（最大平方残差）作为 max_。中位数对转弯时少量错配大残差不敏感，
+    // 也保证 AA 残差回升判定的口径与原版相同。
+    std::vector<double> res_sq2(effect_num);
+    for (int i = 0; i < effect_num; i++) {
+        res_sq2[i] = obs.residual_(i) * obs.residual_(i);
+    }
+    std::sort(res_sq2.begin(), res_sq2.end());
+    obs.lidar_residual_mean_ = res_sq2[res_sq2.size() / 2];
+    obs.lidar_residual_max_ = res_sq2.back();
     effect_feat_num_ = effect_num;
 
     // ===== [TIME_LOG] Jacobian 构建耗时 =====

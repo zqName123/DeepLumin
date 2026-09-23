@@ -21,6 +21,9 @@ class ImuProcess {
     ~ImuProcess();
 
     void Reset();
+    // 传感器时间回退/流中断后的轻量对齐：只清空积分衔接状态，不重新做静止初始化，
+    // 滤波器状态与地图由外部保留。下一帧去畸变以新流的首个 IMU 为起点重新衔接。
+    void RestartStreaming();
     void SetExtrinsic(const Vec3d& transl, const Mat3d& rot);
     void SetGyrCov(const Vec3d& scaler);
     void SetAccCov(const Vec3d& scaler);
@@ -59,6 +62,7 @@ class ImuProcess {
 
     double last_lidar_end_time_ = 0;
     double init_start_time_ = -1.0;
+    bool stream_realigned_ = false;
     int init_iter_num_ = 1;
     bool b_first_frame_ = true;
     bool imu_need_init_ = true;

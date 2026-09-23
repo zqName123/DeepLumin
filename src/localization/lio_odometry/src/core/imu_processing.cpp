@@ -2,7 +2,7 @@
 
 #include <cmath>
 #include <algorithm>
-
+#include "syslog/logger.h"
 #include "lio_odometry/core/eskf.h"
 
 namespace slam_odometry {
@@ -33,6 +33,7 @@ void ImuProcess::Reset() {
     cov_gyr_.setZero();
     init_start_time_ = -1.0;
     last_lidar_end_time_ = 0.0;
+    stream_realigned_ = false;
     b_first_frame_ = true;
 
     imu_need_init_ = true;
@@ -46,6 +47,13 @@ void ImuProcess::Reset() {
 void ImuProcess::SetExtrinsic(const Vec3d& transl, const Mat3d& rot) {
     t_lidar_imu_ = transl;
     R_lidar_imu_ = rot;
+}
+
+void ImuProcess::RestartStreaming() {
+    // 仅重置跨帧积分衔接，不触碰均值/偏置/初始化标志与滤波器状态。
+    last_lidar_end_time_ = 0.0;
+    imu_pose_.clear();
+    stream_realigned_ = true;
 }
 
 void ImuProcess::SetGyrCov(const Vec3d& scaler) { cov_gyr_scale_ = scaler; }
@@ -104,7 +112,17 @@ void ImuProcess::IMUInit(const MeasureGroup& meas, ESKF& kf_state, int& N) {
 
 void ImuProcess::UndistortPcl(const MeasureGroup& meas, ESKF& kf_state, CloudPtr& pcl_out) {
     auto v_imu = meas.imu_;
+
+    // 时间回退/流重启后的首帧：以新流首个 IMU 作为衔接点并把状态时间戳对齐过去，
+    // 避免用上一时期的 last_imu_ 与新流拼出巨大 dt 区间；滤波器状态本身不重置。
+    if (stream_realigned_) {
+        last_imu_ = meas.imu_.front();
+        kf_state.SetTime(last_imu_->timestamp);
+        stream_realigned_ = false;
+    }
+
     v_imu.push_front(last_imu_);
+    const double& imu_end_time = v_imu.back()->timestamp;
 
     const double& pcl_beg_time = meas.lidar_begin_time_;
     const double& pcl_end_time = meas.lidar_end_time_;
@@ -112,9 +130,6 @@ void ImuProcess::UndistortPcl(const MeasureGroup& meas, ESKF& kf_state, CloudPtr
     auto imu_state = kf_state.GetX();
     imu_pose_.clear();
     // First pose always at offset 0.0, matching original lightning-lm.
-    // Using imu_state.timestamp_ - pcl_beg_time would leave the earliest 1-2 ms
-    // of scan points uncompensated (positive offset) or wrongly compensated
-    // (negative offset on the first frame boundary).
     imu_pose_.emplace_back(0.0, acc_s_last_, angvel_last_,
                            imu_state.vel_, imu_state.pos_, imu_state.rot_.matrix());
 
@@ -122,21 +137,8 @@ void ImuProcess::UndistortPcl(const MeasureGroup& meas, ESKF& kf_state, CloudPtr
     Mat3d R_imu;
 
     double dt = 0;
-    Vec3d acc = last_imu_->linear_acceleration * G_m_s2 / mean_acc_.norm();
-    Vec3d gyro = last_imu_->angular_velocity;
-    bool imu_gap = false;
-    Q_.block<3, 3>(0, 0).diagonal() = cov_gyr_;
-    Q_.block<3, 3>(3, 3).diagonal() = cov_acc_;
-    Q_.block<3, 3>(6, 6).diagonal() = cov_bias_gyr_;
-    Q_.block<3, 3>(9, 9).diagonal() = cov_bias_acc_;
-    const auto predict_to = [&](double end) {
-        // Bound integration steps, but retain the actual elapsed time after a data gap.
-        while (end - kf_state.GetX().timestamp_ > 1e-9) {
-            const double step = std::min(0.01, end - kf_state.GetX().timestamp_);
-            kf_state.Predict(step, Q_, gyro, acc);
-        }
-        kf_state.SetTime(end);
-    };
+    Vec3d acc = Vec3d::Zero();
+    Vec3d gyro = Vec3d::Zero();
 
     for (auto it_imu = v_imu.begin(); it_imu < (v_imu.end() - 1); it_imu++) {
         auto&& head = *(it_imu);
@@ -151,12 +153,33 @@ void ImuProcess::UndistortPcl(const MeasureGroup& meas, ESKF& kf_state, CloudPtr
 
         acc_avr = acc_avr * G_m_s2 / mean_acc_.norm();
 
-        dt = tail->timestamp - kf_state.GetX().timestamp_;
-        if (dt <= 0.0) continue;
-        imu_gap = imu_gap || tail->timestamp - head->timestamp > 1.0; // imu gap > 1s
+        // 与原版一致：首段裁到上一帧扫描末端，其余用整段 head->tail
+        if (head->timestamp < last_lidar_end_time_) {
+            dt = tail->timestamp - last_lidar_end_time_;
+        } else {
+            dt = tail->timestamp - head->timestamp;
+        }
+
         acc = acc_avr;
         gyro = angvel_avr;
-        predict_to(tail->timestamp);
+
+        // gap 判据只看【真实相邻 IMU 样本间隔】tail-head，绝不能用有效积分间隔
+        // dt(=tail-last_lidar_end_time_)：空包跳窗时后者会把正常的跨窗相位差
+        // （~100ms）误判成 IMU 断流。实测该数据集样本间隔最大 33ms，取 50ms 为
+        // 断流阈值；真断流时与原版一致——状态空间凝固、时间戳对齐区间起点。
+        constexpr double kImuSampleGapLimit = 0.05;
+        if (tail->timestamp - head->timestamp > kImuSampleGapLimit) {
+            std::cerr << "[ImuProcess] real IMU sample gap: " << (tail->timestamp - head->timestamp)
+                      << "s; freeze state and skip gap" << std::endl;
+            kf_state.SetTime(head->timestamp);
+            break;
+        }
+
+        Q_.block<3, 3>(0, 0).diagonal() = cov_gyr_;
+        Q_.block<3, 3>(3, 3).diagonal() = cov_acc_;
+        Q_.block<3, 3>(6, 6).diagonal() = cov_bias_gyr_;
+        Q_.block<3, 3>(9, 9).diagonal() = cov_bias_acc_;
+        kf_state.Predict(dt, Q_, gyro, acc);
 
         imu_state = kf_state.GetX();
         angvel_last_ = angvel_avr - imu_state.bg_;
@@ -170,18 +193,13 @@ void ImuProcess::UndistortPcl(const MeasureGroup& meas, ESKF& kf_state, CloudPtr
             Pose6D(offs_t, acc_s_last_, angvel_last_, imu_state.vel_, imu_state.pos_, imu_state.rot_.matrix()));
     }
 
-    // Extrapolate using the last IMU interval average (head/tail), matching
-    // original lightning-lm.  The raw instantaneous value from v_imu.back()
-    // would introduce a slight distortion at the scan-end points during rapid turns.
-    acc = acc_avr;
-    gyro = angvel_avr;
-    imu_gap = imu_gap || pcl_end_time - v_imu.back()->timestamp > 1.0; // imu gap > 1s
-    predict_to(pcl_end_time);
+    // 帧尾外推，与原版一致：dt 带符号。IMU 晚于扫描末端时用负 dt 反向积分退回 pcl_end，
+    // 保证去畸变基准严格对齐扫描末端（转弯时末端点不再有几 ms 的系统性旋转偏差）。
+    double note = pcl_end_time > imu_end_time ? 1.0 : -1.0;
+    dt = note * (pcl_end_time - imu_end_time);
+    kf_state.Predict(dt, Q_, gyro, acc);
+
     imu_state = kf_state.GetX();
-    angvel_last_ = gyro - imu_state.bg_;
-    acc_s_last_ = imu_state.rot_ * (acc - imu_state.ba_) + imu_state.grav_.vec_;
-    imu_pose_.emplace_back(pcl_end_time - pcl_beg_time, acc_s_last_, angvel_last_,
-                           imu_state.vel_, imu_state.pos_, imu_state.rot_.matrix());
     last_imu_ = meas.imu_.back();
     last_lidar_end_time_ = pcl_end_time;
 
@@ -189,13 +207,8 @@ void ImuProcess::UndistortPcl(const MeasureGroup& meas, ESKF& kf_state, CloudPtr
     std::sort(pcl_out->points.begin(), pcl_out->points.end(),
               [](const PointType& p1, const PointType& p2) { return p1.time < p2.time; });
 
-    if (imu_gap) {
-        std::cerr << "[ImuProcess] IMU gap > 0.1s; scan may be incompletely undistorted" << std::endl;
-    }
-
     if (pcl_out->empty() || pcl_out->points.back().time <= 0.0) {
-        // No per-point timing: retain the scan geometry, as Lightning does for zero
-        // offsets. Do not invent a scan duration or compensate every point as an early return.
+        // 无逐点时间时保留扫描几何，不虚构扫描时长进行补偿。
         return;
     }
 
@@ -226,7 +239,7 @@ void ImuProcess::UndistortPcl(const MeasureGroup& meas, ESKF& kf_state, CloudPtr
             it_pcl->z = p_compensate(2);
 
             if (it_pcl == pcl_out->points.begin()) {
-                return; // Do not compensate the first point again in older IMU intervals.
+                break;
             }
         }
     }
@@ -234,7 +247,8 @@ void ImuProcess::UndistortPcl(const MeasureGroup& meas, ESKF& kf_state, CloudPtr
 
 void ImuProcess::Process(const MeasureGroup& meas, ESKF& kf_state, CloudPtr& scan) {
     if (meas.imu_.empty()) {
-        std::cout << "[ImuProcess] meas.imu_ is empty" << std::endl;
+        // std::cout << "[ImuProcess] meas.imu_ is empty" << std::endl;
+        SYS_LOG(syslog::LogSeverity::INFO, true) << "[ImuProcess] meas.imu_ is empty";
         return;
     }
 
