@@ -1,5 +1,6 @@
 <launch>
   <node pkg="lio_odometry" type="lio_odometry_node" name="lio_odometry" output="screen">
+    <param name="log_dir" value="$(find lio_odometry)/../loclog" />
     <param name="config_path" value="$(find lio_odometry)/config/lio_odometry.yaml" />
   </node>
 </launch>

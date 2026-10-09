@@ -9,6 +9,7 @@
 
 #include "lio_odometry/core/eskf.h"
 #include <chrono>
+#include "syslog/logger.h"
 
 namespace slam_odometry {
 
@@ -152,7 +153,7 @@ bool LaserOdometryCore::Init(const std::string& config_yaml) {
     eskf_options.epsi_ = 1e-3 * Eigen::Matrix<double, 23, 1>::Ones();
     eskf_options.lidar_obs_func_ = [this](NavState& s, ESKF::CustomObservationModel& obs) { ObsModel(s, obs); };
     eskf_options.wheelspeed_obs_func_ = [this](NavState& s, ESKF::CustomObservationModel& obs) {
-        ObsModelWelspeed(s, obs);
+        ObsModelWheelspeed(s, obs);
     };
     eskf_options.gps_obs_func_ = [this](NavState& s, ESKF::CustomObservationModel& obs) { ObsModelGPS(s, obs); };
     const auto solver = YAML::LoadFile(config_yaml)["fasterlio"];
@@ -209,6 +210,12 @@ bool LaserOdometryCore::LoadParamsFromYAML(const std::string& yaml_file) {
         use_gnss_ = yaml["vel_gnss"]["use_gnss"].as<bool>(false);
         wheel_velocity_noise_ = yaml["vel_gnss"]["wheel_velocity_noise"].as<double>(0.33);
         gnss_attitude_noise_ = yaml["vel_gnss"]["gnss_attitude_noise"].as<double>(0.03);
+        wheel_sigma_ = yaml["vel_gnss"]["wheel_velocity_noise"].as<double>(0.25);
+        wheel_huber_delta_ = yaml["vel_gnss"]["wheel_huber_delta"].as<double>(0.8);
+        wheel_min_speed_ = yaml["vel_gnss"]["wheel_min_speed"].as<double>(0.5);
+        wheel_max_age_ = yaml["vel_gnss"]["wheel_max_age"].as<double>(0.15);
+        use_wheel_1d_ = yaml["vel_gnss"]["use_wheel_1d"].as<bool>(true);
+
         window_size_ = yaml["vel_gnss"]["gnss_pitch_window_size"].as<int>(50);
         lidar_update_r_ = yaml["fasterlio"]["lidar_update_r"].as<double>(0.001);
         r_base_ = yaml["fasterlio"]["r_base"].as<double>(0.001);
@@ -294,8 +301,52 @@ bool LaserOdometryCore::LoadParamsFromYAML(const std::string& yaml_file) {
     p_imu_->SetAccCov(Vec3d(acc_cov, acc_cov, acc_cov));
     p_imu_->SetGyrBiasCov(Vec3d(b_gyr_cov, b_gyr_cov, b_gyr_cov));
     p_imu_->SetAccBiasCov(Vec3d(b_acc_cov, b_acc_cov, b_acc_cov));
+    p_imu_->SetGapLimit(yaml["fasterlio"]["imu_gap_limit"].as<double>(0.15));
 
     return true;
+}
+
+void LaserOdometryCore::ResyncStreams() {
+    // 时钟回退/跳变（PTP 重同步、驱动重启等）只影响数据时序，车的真实位姿是连续的。
+    // 清输入缓冲与 IMU 跨帧衔接即可；滤波器状态、P、地图、IMU 初始化全部保留。
+    std::cerr << "[lio] sensor time moved backwards; resync streams (filter state and map kept)" << std::endl;
+    imu_buffer_.clear();
+    lidar_buffer_.clear();
+    time_buffer_.clear();
+    lidar_pushed_ = false;
+    last_timestamp_imu_ = -1.0;
+    last_timestamp_lidar_ = -1.0;
+    p_imu_->RestartStreaming();
+}
+
+void LaserOdometryCore::ResetTracking() {
+    std::cerr << "[lio] sensor time moved backwards; resetting odometry and local map" << std::endl;
+    imu_buffer_.clear();
+    lidar_buffer_.clear();
+    time_buffer_.clear();
+    lidar_pushed_ = false;
+    last_timestamp_imu_ = -1.0;
+    last_timestamp_lidar_ = -1.0;
+    last_lidar_time_ = first_lidar_time_ = lidar_end_time_ = 0.0;
+    lidar_mean_scantime_ = 0.0;
+    scan_num_ = frame_num_ = skip_lidar_cnt_ = effect_feat_num_ = 0;
+    flg_first_scan_ = true;
+    flg_EKF_inited_ = false;
+    // have_new_gnss_ = have_new_wheel_speed_ = false;
+    have_new_gnss_ = false;
+    first_gnss_ = true;
+    window_.clear();
+    sum_ = 0.0;
+    p_imu_->Reset();
+    kf_.ChangeX(NavState());
+    kf_.ChangeP(ESKF::CovType::Identity());
+    state_point_ = kf_.GetX();
+    voxel_map_mgr_.Init(vm_config_);
+    pv_list_.clear();
+    ptpl_list_.clear();
+    scan_undistort_.reset(new PointCloudType());
+    scan_down_body_->clear();
+    scan_down_world_->clear();
 }
 
 void LaserOdometryCore::ProcessIMU(const IMUPtr& imu) {
@@ -304,22 +355,39 @@ void LaserOdometryCore::ProcessIMU(const IMUPtr& imu) {
     double timestamp = imu->timestamp;
 
     std::lock_guard<std::mutex> lock(mtx_buffer_);
-    if (timestamp < last_timestamp_imu_) {
-        imu_buffer_.clear();
-    }
+    if (!std::isfinite(timestamp) || !imu->angular_velocity.allFinite() ||
+        !imu->linear_acceleration.allFinite()) return;
+    if (timestamp < last_timestamp_imu_) ResyncStreams();
+    if (timestamp == last_timestamp_imu_) return;
 
     last_timestamp_imu_ = timestamp;
     imu_buffer_.emplace_back(imu);
+
+    // 无界缓冲保护：处理卡顿/长时间缺口时丢弃最老样本（约 50s @100Hz），
+    // 避免内存持续上涨；正常工况永远触不到。
+    if (imu_buffer_.size() > 5000) {
+        std::cout << "imu buffer size > 5000 " << std::endl;
+        imu_buffer_.pop_front();
+    }
 }
 
 void LaserOdometryCore::ProcessPointCloud(const CloudPtr& cloud, double timestamp) {
     std::lock_guard<std::mutex> lock(mtx_buffer_);
     scan_count_++;
 
-    if (timestamp < last_timestamp_lidar_) {
-        lidar_buffer_.clear();
-    }
-
+    if (!cloud || !std::isfinite(timestamp)) return;
+    if (timestamp < last_timestamp_lidar_) ResyncStreams();
+    // 重复 header stamp 的帧直接丢弃，避免同一帧点云被重复更新/入图。
+    if (timestamp == last_timestamp_lidar_) return;
+    // Validate time/coordinates before synchronization; never let invalid points set scan end.
+    cloud->points.erase(std::remove_if(cloud->points.begin(), cloud->points.end(), [](const PointType& p) {
+        return !p.getVector3fMap().allFinite() || !std::isfinite(p.time) || p.time < 0.0;
+    }), cloud->points.end());
+    if (cloud->empty()) return;
+    cloud->width = cloud->size();
+    cloud->height = 1;
+    // Match Lightning's input contract: zero point times are valid. Keep input order;
+    // SyncPackages uses the last retained point and the historical scan duration.
     lidar_buffer_.push_back(cloud);
     time_buffer_.push_back(timestamp);
     last_timestamp_lidar_ = timestamp;
@@ -338,6 +406,7 @@ void LaserOdometryCore::ProcessPointCloud(const pcl::PointCloud<VelodynePoint>::
 }
 
 bool LaserOdometryCore::SyncPackages() {
+    std::lock_guard<std::mutex> lock(mtx_buffer_);
     if (lidar_buffer_.empty() || imu_buffer_.empty()) {
         return false;
     }
@@ -346,15 +415,16 @@ bool LaserOdometryCore::SyncPackages() {
         measures_.scan_ = lidar_buffer_.front();
         measures_.lidar_begin_time_ = time_buffer_.front();
 
-        if (measures_.scan_->points.size() <= 1) {
-            lidar_end_time_ = measures_.lidar_begin_time_ + lidar_mean_scantime_;
-        } else if (measures_.scan_->points.back().time / 1000.0 < 0.5 * lidar_mean_scantime_) {
+        // Same fallback as Lightning LaserMapping::SyncPackages. When all times
+        // have always been zero, the mean is zero and the state is aligned to header.stamp.
+        if (measures_.scan_->size() <= 1 ||
+            measures_.scan_->points.back().time / 1000.0 < 0.5 * lidar_mean_scantime_) {
             lidar_end_time_ = measures_.lidar_begin_time_ + lidar_mean_scantime_;
         } else {
-            scan_num_++;
-            lidar_end_time_ = measures_.lidar_begin_time_ + measures_.scan_->points.back().time / 1000.0;
-            lidar_mean_scantime_ +=
-                (measures_.scan_->points.back().time / 1000.0 - lidar_mean_scantime_) / scan_num_;
+            const double duration = measures_.scan_->points.back().time / 1000.0;
+            ++scan_num_;
+            lidar_end_time_ = measures_.lidar_begin_time_ + duration;
+            lidar_mean_scantime_ += (duration - lidar_mean_scantime_) / scan_num_;
         }
 
         fasterlio::lidar_time_interval = lidar_mean_scantime_;
@@ -366,15 +436,21 @@ bool LaserOdometryCore::SyncPackages() {
         return false;
     }
 
-    double imu_time = imu_buffer_.front()->timestamp;
+    // 与原版 lightning-lm / FAST-LIO 的 SyncPackages 严格一致：
+    // 逐枚弹出 IMU，并且【包含】第一枚时间戳 > lidar_end_time_ 的 IMU 后停止。
+    // 不能用 "while(front <= end)"——IMU 突发到样时，缓冲中可能恰好只剩晚于
+    // lidar_end 的样本，严格 <= 会一枚都弹不到（meas.imu_ 为空），帧却被消费，
+    // 下一帧把跨窗间隔算成 ~100ms 的假 gap。多弹的这枚"未来 IMU"由
+    // UndistortPcl 的帧尾负 dt 外推（note=-1）正确处理，且循环内 tail 早于
+    // last_lidar_end_time_ 的区间会被 continue 跳过，不会重复积分。
     measures_.imu_.clear();
-    while ((!imu_buffer_.empty()) && (imu_time < lidar_end_time_)) {
-        imu_time = imu_buffer_.front()->timestamp;
+    while (!imu_buffer_.empty()) {
+        const double imu_time = imu_buffer_.front()->timestamp;
+        measures_.imu_.push_back(imu_buffer_.front());
+        imu_buffer_.pop_front();
         if (imu_time > lidar_end_time_) {
             break;
         }
-        measures_.imu_.push_back(imu_buffer_.front());
-        imu_buffer_.pop_front();
     }
 
     lidar_buffer_.pop_front();
@@ -395,14 +471,22 @@ bool LaserOdometryCore::Run() {
     // ===== [TIME_LOG] IMU 处理耗时 =====
     auto t_imu_start = std::chrono::high_resolution_clock::now();
 
+    // 每帧处理前重置输出点云：IMU 空包/去畸变跳过时 Process 不会写 scan_undistort_，
+    // 必须保证下方空检查看到的是"本帧的空"而不是上一帧残留的点云，否则会用旧点云
+    // 重复更新并把同一批点再次插入地图。
+    scan_undistort_.reset(new PointCloudType());
     p_imu_->Process(measures_, kf_, scan_undistort_);
 
     auto t_imu_end = std::chrono::high_resolution_clock::now();
     double ms_imu = std::chrono::duration<double, std::milli>(t_imu_end - t_imu_start).count();
 
-    if (scan_undistort_->empty() || (scan_undistort_ == nullptr)) {
+    if (!scan_undistort_ || scan_undistort_->empty()) {
         return false;
     }
+    // 如果使用轮速，先消费轮速
+    // if (use_wheel_speed_) {
+    //     ConsumeWheelSpeedForFrame(measures_.lidar_begin_time_, measures_.lidar_end_time_);
+    // }
 
     if (flg_first_scan_) {
         state_point_ = kf_.GetX();
@@ -505,27 +589,81 @@ bool LaserOdometryCore::Run() {
 
     auto old_state = kf_.GetX();
     const auto old_cov = kf_.GetP();
+    const ESKF::CovType P_propagated = kf_.GetP(); // 获取更新前的协方差矩阵
 
     // ===== [TIME_LOG] ESKF Update 耗时（包含 ObsModel + BuildResidualListOMP） =====
     auto t_eskf_start = std::chrono::high_resolution_clock::now();
 
-    if (!kf_.Update(ESKF::ObsType::LIDAR, lidar_update_r_)) {
-        std::cerr << "[voxelmap] LiDAR update rejected; map unchanged" << std::endl;
-        return false;
-    }
+    // if (!kf_.Update(ESKF::ObsType::LIDAR, lidar_update_r_)) {
+    //     std::cerr << "[voxelmap] LiDAR update rejected; map unchanged" << std::endl;
+    //     return false;
+    // }
+    const bool lidar_accepted = kf_.Update(ESKF::ObsType::LIDAR, lidar_update_r_);
+    // [LIDAR] 匹配质量：iters=IEKF迭代数, res=残差收敛比(1=无改善)
+    SYS_LOG(syslog::LogSeverity::INFO, true)
+            << "[LIDAR] ok=" << lidar_accepted
+            << " iters=" << kf_.GetIterations()
+            << " res=" << kf_.GetFinalRes()
+            << " dpos=" << (kf_.GetX().pos_ - old_state.pos_).norm()
+            << " dyaw=" << (old_state.rot_.inverse() * kf_.GetX().rot_).log().norm() * 180.0 / M_PI;
 
     auto t_eskf_end = std::chrono::high_resolution_clock::now();
     double ms_eskf = std::chrono::duration<double, std::milli>(t_eskf_end - t_eskf_start).count();
 
     if (use_wheel_speed_ && have_new_wheel_speed_) {
-        kf_.Update(ESKF::ObsType::WHEEL_SPEED, wheel_velocity_noise_ * wheel_velocity_noise_);
+        const NavState st_w0 = kf_.GetX();
+        kf_.Update(ESKF::ObsType::WHEEL_SPEED, wheel_sigma_ * wheel_sigma_);
         have_new_wheel_speed_ = false;
-        std::cout << "wheel speed done" << std::endl;
+        const NavState st_w1 = kf_.GetX();
+        SYS_LOG(syslog::LogSeverity::INFO, true)
+                << "[WHEEL] obs=" << wheel_speed_obs_ << " m/s"
+                << " vel_before=" << st_w0.vel_.norm()
+                << " vel_after=" << st_w1.vel_.norm()
+                << " dvel=" << (st_w1.vel_ - st_w0.vel_).norm();
     }
     if (use_gnss_ && have_new_gnss_) {
-        kf_.Update(ESKF::ObsType::GPS, 1e-3);
-        have_new_gnss_ = false;
-        std::cout << "gnss speed done" << std::endl;
+        // 先用残差简单判断是否更新
+        const SO3 gps_R = EulerZYXToSO3(Vec3d(hc_heading_, hc_pitch_, hc_roll_));
+        const Vec3d r = (kf_.GetX().rot_.inverse() * gps_R).log(); // 切空间转化为向量
+        const double residual_deg = r.norm() * 180.0 / M_PI;
+        // ===== [GNSS UPD] 更新前试算诊断（单位：度）=====
+        const double RAD2DEG = 180.0 / M_PI;
+        const Vec3d lio_rpy = SO3ToEulerZYX_Robust(kf_.GetX().rot_); // (yaw,pitch,roll)
+        const ESKF::CovType P_now = kf_.GetP();
+        SYS_LOG(syslog::LogSeverity::INFO, true)
+                << "[GNSS UPD] lio_yaw=" << lio_rpy[0] * RAD2DEG
+                << " lio_pitch=" << lio_rpy[1] * RAD2DEG
+                << " lio_roll=" << lio_rpy[2] * RAD2DEG
+                << " | rel_hdg=" << hc_heading_ * RAD2DEG
+                << " rel_pitch=" << hc_pitch_ * RAD2DEG
+                << " rel_roll=" << hc_roll_ * RAD2DEG
+                << " | residual=" << residual_deg
+                << " rx=" << r[0] * RAD2DEG << " ry=" << r[1] * RAD2DEG << " rz=" << r[2] * RAD2DEG
+                << " | P_rot=" << P_now(3, 3) << "," << P_now(4, 4) << "," << P_now(5, 5)
+                << " P_prior=" << P_propagated(3, 3) << "," << P_propagated(4, 4) << "," << P_propagated(5, 5);
+        if (std::abs(residual_deg) > 180.0) {
+            SYS_LOG(syslog::LogSeverity::WARNING, true)
+                    << "[GNSS UPD] residual=" << residual_deg << " deg > 180, skip update";
+        } else {
+            ESKF::CovType P_cur = kf_.GetP(); // 获取更新后的协方差矩阵
+            P_cur.block<3,3>(3,3) = P_propagated.block<3,3>(3,3);
+            kf_.ChangeP(P_cur); // 更新为lidar更新前旋转协方差矩阵
+            const NavState state_before_gps = kf_.GetX();
+            const bool gps_accepted = kf_.Update(ESKF::ObsType::GPS, gnss_attitude_noise_ * gnss_attitude_noise_);
+            const NavState state_after_gps = kf_.GetX();
+            have_new_gnss_ = false;
+            SYS_LOG(syslog::LogSeverity::INFO, true)
+                    << "[GNSS UPD] accepted=" << gps_accepted
+                    << " gnss_noise=" << gnss_attitude_noise_;
+            if (gps_accepted) {
+                const Vec3d d = (state_before_gps.rot_.inverse() * state_after_gps.rot_).log();
+                SYS_LOG(syslog::LogSeverity::INFO, true)
+                        << "[GNSS UPD] applied=" << d.norm() * RAD2DEG
+                        << " deg (rx=" << d[0] * RAD2DEG
+                        << " ry=" << d[1] * RAD2DEG
+                        << " rz=" << d[2] * RAD2DEG << ")";
+            }
+        }
     }
 
     state_point_ = kf_.GetX();
@@ -578,6 +716,25 @@ bool LaserOdometryCore::Run() {
               << " effect: " << effect_feat_num_
               << " voxels: " << voxel_map_mgr_.GetTotalPointsNum()
               << std::endl;
+    }
+
+    // ===== [STATE] 每帧轨迹/运动状态（发散定位用；单位：度/米/米每秒）=====
+    // 判读：dpos≈0 而 wheel/vel>0 = 位姿冻结；dpos 突增/乱走 = 发散；
+    //       effect 骤降 = 匹配失效。
+    {
+        const Vec3d rpy = SO3ToEulerZYX_Robust(state_point_.rot_);
+        const Vec3d dpos = state_point_.pos_ - old_state.pos_;
+        SYS_LOG(syslog::LogSeverity::INFO, true)
+                << "[STATE] t=" << state_point_.timestamp_
+                << " pos=" << state_point_.pos_.x() << "," << state_point_.pos_.y() << "," << state_point_.pos_.z()
+                << " yaw=" << rpy[0] * 180.0 / M_PI
+                << " pitch=" << rpy[1] * 180.0 / M_PI
+                << " roll=" << rpy[2] * 180.0 / M_PI
+                << " | dpos=" << dpos.norm()
+                << " vel=" << state_point_.vel_.norm()
+                << " wheel=" << wheel_speed_obs_
+                << " effect=" << effect_feat_num_
+                << " lidar_ok=" << lidar_accepted;
     }
 
     return true;
@@ -853,17 +1010,50 @@ void LaserOdometryCore::ObsModel(NavState& s, ESKF::CustomObservationModel& obs)
     //           << std::endl;
 }
 
-void LaserOdometryCore::ObsModelWelspeed(NavState& s, ESKF::CustomObservationModel& obs) {
-    obs.h_x_ = Eigen::MatrixXd::Zero(3, 3);
-    obs.residual_.resize(3);
-    obs.R_ = wheel_velocity_noise_ * Eigen::MatrixXd::Identity(3, 3);
-    obs.h_x_.block<3, 3>(0, 0) = Eigen::Matrix3d::Identity();
+// [testwheel]
+// void LaserOdometryCore::ObsModelWelspeed(NavState& s, ESKF::CustomObservationModel& obs) {
+//     obs.h_x_ = Eigen::MatrixXd::Zero(3, 3);
+//     obs.residual_.resize(3);
+//     obs.R_ = wheel_velocity_noise_ * Eigen::MatrixXd::Identity(3, 3);
+//     obs.h_x_.block<3, 3>(0, 0) = Eigen::Matrix3d::Identity();
 
-    Vec3d vel_odom(wheel_speed_obs_, 0.0, 0.0);
-    Vec3d vel_world = s.rot_ * vel_odom;
-    auto tem_v = s.vel_ - vel_world;
-    obs.residual_ = -tem_v;
-    obs.valid_ = true;
+//     Vec3d vel_odom(wheel_speed_obs_, 0.0, 0.0);
+//     Vec3d vel_world = s.rot_ * vel_odom;
+//     auto tem_v = s.vel_ - vel_world;
+//     obs.residual_ = -tem_v;
+//     obs.valid_ = true;
+// }
+void LaserOdometryCore::ObsModelWheelspeed(NavState& s, ESKF::CustomObservationModel& obs) {
+    if (use_wheel_1d_) {
+        // 仅约束车体系x方向速度
+        const Vec3d x_axis_w = s.rot_.matrix() * Vec3d::UnitX();
+        const double v_body_x = x_axis_w.dot(s.vel_);
+
+        double r = wheel_v_mean_ - v_body_x;
+        double w = 1.0;
+        const double ar = std::fabs(r);
+        if (ar > wheel_huber_delta_) {
+            w = wheel_huber_delta_ / ar;
+        }
+        obs.h_x_ = Eigen::MatrixXd::Zero(1, 3);
+        obs.residual_.resize(1);
+        obs.R_ = Eigen::MatrixXd::Identity(1, 1);
+        obs.residual_(0) = r;
+        obs.h_x_.block<1, 3>(0, 0)  = -x_axis_w.transpose();
+        obs.R_(0, 0) = wheel_sigma_ * wheel_sigma_ / w;
+        obs.valid_ = true;
+    } else {
+        // ---------- 旧三维路径，保留用于 A/B 与一键回退 ----------
+        obs.h_x_ = Eigen::MatrixXd::Zero(3, 3);
+        obs.residual_.resize(3);
+        obs.R_ = wheel_sigma_ * Eigen::Matrix3d::Identity();
+        obs.h_x_.block<3, 3>(0, 0) = Eigen::Matrix3d::Identity();
+
+        Vec3d vel_odom(wheel_speed_obs_, 0.0, 0.0);
+        Vec3d vel_world = s.rot_ * vel_odom;  // 转到了世界坐标系
+        obs.residual_ = vel_world - s.vel_;
+        obs.valid_ = true;
+    }
 }
 
 void LaserOdometryCore::ObsModelGPS(NavState& s, ESKF::CustomObservationModel& obs) {
@@ -875,9 +1065,15 @@ void LaserOdometryCore::ObsModelGPS(NavState& s, ESKF::CustomObservationModel& o
     auto RPR = Vec3d(hc_heading_, hc_pitch_, hc_roll_);
     SO3 gps_R = EulerZYXToSO3(RPR);
     obs.residual_ = (s.rot_.inverse() * gps_R).log();
+
+    SYS_LOG(syslog::LogSeverity::INFO, true)
+            << "[GNSS OBS] residual(rx,ry,rz)=" << obs.residual_(0) * 180.0 / M_PI << ","
+            << obs.residual_(1) * 180.0 / M_PI << "," << obs.residual_(2) * 180.0 / M_PI
+            << " deg | norm=" << obs.residual_.norm() * 180.0 / M_PI << " deg";
     obs.valid_ = true;
 }
 
+// [testwheel]
 void LaserOdometryCore::FeedWheelSpeed(double timestamp, double speed_kmh, int gear) {
     if (gear == 2) {
         can_speed_double_ = -speed_kmh;
@@ -888,17 +1084,91 @@ void LaserOdometryCore::FeedWheelSpeed(double timestamp, double speed_kmh, int g
     have_new_wheel_speed_ = true;
 }
 
-void LaserOdometryCore::FeedGnssAttitude(double heading_deg, double pitch_deg, double roll_deg) {
+// void LaserOdometryCore::FeedWheelSpeed(double timestamp, double speed_kmh, int gear) {
+//     const double signed_speed_kmh = (gear == 2) ? -speed_kmh : speed_kmh;
+//
+//     WheelSpeedSample sample;
+//     sample.timestamp = timestamp;
+//     sample.wheel_speed = signed_speed_kmh / 3.6;
+//     // 防止出现时间戳回退
+//     if (!wheel_speed_buf_.empty() && timestamp < wheel_speed_buf_.back().timestamp) {
+//         wheel_speed_buf_.clear();
+//     }
+//     wheel_speed_buf_.push_back(sample);
+//     while (wheel_speed_buf_.size() > 2000) {
+//         wheel_speed_buf_.pop_front();
+//     }
+// }
+
+void LaserOdometryCore::ConsumeWheelSpeedForFrame(double t_beg, double t_end) {
+    wheel_valid_this_frame_ = false;
+    if (wheel_speed_buf_.empty()) {
+        return;
+    }
+
+    // ① 消费所有时间戳 <= t_end 的样本，记录最后一条 (v0, t0)
+    double v0 = 0.0, t0 = -1.0;
+    int    n = 0;
+    while (!wheel_speed_buf_.empty() &&
+           wheel_speed_buf_.front().timestamp <= t_end) {
+        const auto s = wheel_speed_buf_.front();
+        wheel_speed_buf_.pop_front();
+        if (s.timestamp >= t_beg - 1e-6) {
+            v0 = s.wheel_speed;
+            t0 = s.timestamp;
+            ++n;
+        }
+    }
+    if (n == 0 || t0 < 0.0) {
+        return;  // 帧区间内没有任何轮速样本，本帧不约束
+    }
+
+    // ② 最近值年龄门：t0 离扫描末端太远说明 CAN 已停发，不约束
+    if (t_end - t0 > wheel_max_age_) {
+        return;
+    }
+
+    // ③ 线性插值到 t_end：peek 第一条 > t_end 的样本作为 (v1, t1)，不弹出
+    double v_interp = v0;  // 默认退化为最近值
+    if (!wheel_speed_buf_.empty()) {
+        const double t1 = wheel_speed_buf_.front().timestamp;
+        const double v1 = wheel_speed_buf_.front().wheel_speed;
+        const double dt = t1 - t0;
+        std::cout << "dt: " << dt << std::endl;
+        // 前提：t1 紧跟在 t0 之后且跨过 t_end；t1 太远则不插值（用最近值）
+        if (t1 > t_end && t1 - t_end <= wheel_max_age_ && dt > 1e-6) {
+            const double alpha = (t_end - t0) / dt;         // 0..1
+            v_interp = v0 + (v1 - v0) * alpha;              // 线性插值到 t_end
+        }
+    }
+
+    wheel_v_mean_ = v_interp;   // 现在代表扫描末端的瞬时前向速度
+    wheel_valid_this_frame_ = true;
+}
+
+void LaserOdometryCore::FeedGnssAttitude(double heading_deg, double pitch_deg, double roll_deg, int status, int nsv) {
     if (first_gnss_) {
         hc_heading_b_ = -heading_deg * M_PI / 180.0;
         hc_pitch_b_ = -filter(pitch_deg * M_PI / 180.0);
         hc_roll_b_ = roll_deg * M_PI / 180.0;
         first_gnss_ = false;
+        SYS_LOG(syslog::LogSeverity::INFO, true)
+                << "[GNSS FIRST] bias hdg=" << hc_heading_b_ * 180.0 / M_PI
+                << " pitch=" << hc_pitch_b_ * 180.0 / M_PI
+                << " roll=" << hc_roll_b_ * 180.0 / M_PI << " deg"
+                << " | raw hdg=" << heading_deg << " pitch=" << pitch_deg << " roll=" << roll_deg
+                << " status=" << status << " nsv=" << nsv;
     } else {
-        hc_heading_ = -heading_deg * M_PI / 180.0 - hc_heading_b_;
+        hc_heading_ = -heading_deg * M_PI / 180.0 - hc_heading_b_;  // rad
         hc_pitch_ = -filter(pitch_deg * M_PI / 180.0) - hc_pitch_b_;
         hc_roll_ = roll_deg * M_PI / 180.0 - hc_roll_b_;
         have_new_gnss_ = true;
+        SYS_LOG(syslog::LogSeverity::INFO, true)
+                << "[GNSS RAW] hdg=" << heading_deg << " pitch=" << pitch_deg << " roll=" << roll_deg
+                << " deg | status=" << status << " nsv=" << nsv
+                << " | rel_hdg=" << hc_heading_ * 180.0 / M_PI
+                << " rel_pitch=" << hc_pitch_ * 180.0 / M_PI
+                << " rel_roll=" << hc_roll_ * 180.0 / M_PI << " deg";
     }
 }
 

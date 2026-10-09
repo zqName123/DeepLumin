@@ -15,20 +15,23 @@ find_package(catkin REQUIRED COMPONENTS
   tf2_ros
   pcl_ros
   pcl_conversions
+  small_gicp
   std_srvs
   cv_bridge
   deeplumin_msgs
   deeplumin_health_checker
   syslog_ros_wrap
 )
+find_package(OpenMP REQUIRED)
 find_package(PCL REQUIRED COMPONENTS common io features filters search)
 find_package(OpenCV REQUIRED)
-set(GTSAM_DIR "/home/hhy/2004ros/DeepLumin_zq/gtsam_install/lib/cmake/GTSAM" CACHE PATH "Path to GTSAMConfig.cmake" FORCE)
+# 从本包目录向上 3 级到 workspace 根，再进入 gtsam_install（相对路径，跨机器可移植）
+set(GTSAM_DIR "${PROJECT_SOURCE_DIR}/../../../gtsam_install/lib/cmake/GTSAM" CACHE PATH "Path to GTSAMConfig.cmake")
 find_package(GTSAM REQUIRED CONFIG PATHS "${GTSAM_DIR}" NO_DEFAULT_PATH)
 
 catkin_package(
   INCLUDE_DIRS include
-  CATKIN_DEPENDS roscpp std_msgs geometry_msgs sensor_msgs nav_msgs visualization_msgs tf2_ros pcl_ros pcl_conversions std_srvs cv_bridge deeplumin_msgs
+  CATKIN_DEPENDS roscpp std_msgs geometry_msgs sensor_msgs nav_msgs visualization_msgs tf2_ros pcl_ros pcl_conversions std_srvs cv_bridge small_gicp deeplumin_msgs
 )
 
 include_directories(
@@ -81,6 +84,7 @@ target_link_libraries(slam_mapping_v2_core
   ${catkin_LIBRARIES}
   ${OpenCV_LIBRARIES}
   ${PCL_LIBRARIES}
+  OpenMP::OpenMP_CXX
 )
 
 add_executable(slam_mapping_v2_node src/slam_mapping_v2_node.cc)

@@ -147,6 +147,47 @@ MappingConfig loadConfig(ros::NodeHandle& pnh) {
   pnh.param<double>("loop_closure/odom_pos_noise", cfg.loop_closure.odom_pos_noise,
                     cfg.loop_closure.odom_pos_noise);
 
+  // 配准器参数加载
+  auto& lr = cfg.loop_closure.registration;
+  pnh.param<std::string>("loop_closure/registration/type", lr.type, lr.type);
+  pnh.param<double>("loop_closure/registration/max_correspondence_distance",
+                    lr.max_correspondence_distance, lr.max_correspondence_distance);
+  pnh.param<int>("loop_closure/registration/max_iterations", lr.max_iterations, lr.max_iterations);
+  pnh.param<double>("loop_closure/registration/transformation_epsilon",
+                    lr.transformation_epsilon, lr.transformation_epsilon);
+  pnh.param<int>("loop_closure/registration/num_threads", lr.num_threads, lr.num_threads);
+  pnh.param<int>("loop_closure/registration/cov_num_neighbors", lr.cov_num_neighbors,
+                 lr.cov_num_neighbors);
+  pnh.param<double>("loop_closure/registration/voxel_resolution", lr.voxel_resolution,
+                    lr.voxel_resolution);
+  pnh.param<double>("loop_closure/registration/coarse_scale", lr.coarse_scale, lr.coarse_scale);
+  pnh.param<double>("loop_closure/registration/fine_scale", lr.fine_scale, lr.fine_scale);
+  pnh.param<std::string>("loop_closure/registration/robust_kernel", lr.robust_kernel,
+                         lr.robust_kernel);
+  pnh.param<double>("loop_closure/registration/robust_kernel_scale", lr.robust_kernel_scale,
+                    lr.robust_kernel_scale);
+
+  // loop_closure/inlier_gate（内点门控）
+  auto& lg = cfg.loop_closure.inlier_gate;
+  pnh.param<double>("loop_closure/inlier_gate/inlier_distance", lg.inlier_distance,
+                    lg.inlier_distance);
+  pnh.param<double>("loop_closure/inlier_gate/min_inlier_ratio", lg.min_inlier_ratio,
+                    lg.min_inlier_ratio);
+  pnh.param<double>("loop_closure/inlier_gate/max_inlier_rmse", lg.max_inlier_rmse,
+                    lg.max_inlier_rmse);
+
+  // loop_closure/crop（打分前区域裁剪）
+  auto& lc = cfg.loop_closure.crop;
+  pnh.param<bool>("loop_closure/crop/enable", lc.enable, lc.enable);
+  pnh.param<double>("loop_closure/crop/forward", lc.forward, lc.forward);
+  pnh.param<double>("loop_closure/crop/backward", lc.backward, lc.backward);
+  pnh.param<double>("loop_closure/crop/left", lc.left, lc.left);
+  pnh.param<double>("loop_closure/crop/right", lc.right, lc.right);
+  pnh.param<double>("loop_closure/crop/up", lc.up, lc.up);
+  pnh.param<double>("loop_closure/crop/down", lc.down, lc.down);
+
+
+
   // visual loop config
   auto& v = cfg.loop_closure.visual;
   pnh.param<std::string>("loop_closure/visual/vocabulary_path", v.vocabulary_path, v.vocabulary_path);

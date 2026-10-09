@@ -14,6 +14,7 @@
 #include "lio_odometry/core/pointcloud_preprocess.h"
 #include "lio_odometry/core/types.h"
 #include "syslog/logger.h"
+#include "lio_odometry/core/eskf.h"
 
 inline Eigen::Matrix3f SKEW_SYM_MATRIX(const Eigen::Vector3f& v) {
     Eigen::Matrix3f m;
@@ -60,7 +61,7 @@ class LaserOdometryCore {
     void ProcessIMU(const IMUPtr& msg_in);
 
     void FeedWheelSpeed(double timestamp, double speed_kmh, int gear);
-    void FeedGnssAttitude(double heading_deg, double pitch_deg, double roll_deg);
+    void FeedGnssAttitude(double timestamp, double heading_deg, double pitch_deg, double roll_deg, int status, int nsv);
 
     const NavState& GetState() const { return state_point_; }
     const NavState& GetIMUState() const;
@@ -80,8 +81,13 @@ class LaserOdometryCore {
     // 完整重启（当前仅保留接口，无调用方）：清地图、重置滤波器并重新做 IMU 初始化。
     void ResetTracking();
     void ObsModel(NavState& s, ESKF::CustomObservationModel& obs);
-    void ObsModelWelspeed(NavState& s, ESKF::CustomObservationModel& obs);
+    void ObsModelWheelspeed(NavState& s, ESKF::CustomObservationModel& obs);
     void ObsModelGPS(NavState& s, ESKF::CustomObservationModel& obs);
+    // 按激光帧区间消费轮速队列，产出 wheel_v_mean_, wheel_valid_this_frame_ [testwheel]
+    void ConsumeWheelSpeedForFrame(double t_beg, double t_end);
+    // 按激光帧区间消费 GNSS 角度队列，产出 heading_deg, pitch_deg, roll_deg
+    bool ConsumeGnssForFrame(double t_end);
+    void ApplyGnssRaw(double heading_deg, double pitch_deg, double roll_deg);
 
     inline void PointBodyToWorld(const PointType& pi, PointType& po) {
         Vec3d p_global(state_point_.rot_ *
@@ -152,6 +158,15 @@ class LaserOdometryCore {
 
     double last_lidar_time_ = 0;
 
+    double map_insert_min_speed_ = 0.2; // 地图插入最小速度（m/s）；低于此值不插入地图
+    int map_skip_frames_ = 10; // 地图插入跳帧帧数；每 N 帧插入一次地图
+    int restart_cnt_ = 0; // 重启计数器；超过此值则重启地图
+    int stationary_cnt_ = 0; //gnss静止计数器；超过此值则认为静止
+    int gnss_freeze_frames_ = 30;
+    // >>>>> [GNSS-REZERO] BEGIN —— 停车期 GNSS 基准重零开关（回退：置 false 或删除）<<<<<
+    bool gnss_rezero_enable_ = true;
+    // >>>>> [GNSS-REZERO] END <<<<<
+
     MeasureGroup measures_;
 
     ESKF kf_;
@@ -177,10 +192,35 @@ class LaserOdometryCore {
     int map_trim_interval_frames_ = 10;        // 每 N 帧执行一次剔除（控制开销）
 
     bool keep_first_imu_estimation_ = false;
-
+    // [testwheel]
     double wheel_speed_obs_ = 0.0;
     double can_speed_double_ = 0.0;
     bool have_new_wheel_speed_ = false;
+
+    struct WheelSpeedSample {
+        double timestamp = 0.0; // CAN 时间戳
+        double wheel_speed = 0.0; // 轮速观测 m/s
+    };
+    std::deque<WheelSpeedSample> wheel_speed_buf_;
+    double wheel_v_mean_ = 0.0;  // 当前帧内的平均轮速
+    bool wheel_valid_this_frame_ = false; // 当前帧是否有有效轮速观测
+    bool use_wheel_1d_ = true; // 是否使用 1D 轮速模型
+    double wheel_sigma_ = 0.25; // 轮速模型噪声标准差 m/s
+    double wheel_huber_delta_ = 0.8; // huber 阈值 m/s 残差超限自动降权
+    double wheel_min_speed_ = 0.5; // 区间均速低于此值不更新
+    double wheel_max_age_ = 0.15; // 轮速观测最大年龄（秒）；超过此值则认为过期
+
+    struct GnssAttitudeSample {
+        double timestamp = 0.0; // GNSS 时间戳
+        double heading_deg = 0.0; //  heading 角度（度）
+        double pitch_deg = 0.0; // pitch 角度（度）
+        double roll_deg = 0.0; // roll 角度（度）
+        int status = 0; // 状态码
+        int nsv = 0; // 有效卫星数
+    };
+    std::deque<GnssAttitudeSample> gnss_buf_;
+
+
 
     double hc_heading_ = 0.0;
     double hc_pitch_ = 0.0;

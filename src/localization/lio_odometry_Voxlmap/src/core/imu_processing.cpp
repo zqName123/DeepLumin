@@ -2,7 +2,7 @@
 
 #include <cmath>
 #include <algorithm>
-
+#include "syslog/logger.h"
 #include "lio_odometry/core/eskf.h"
 
 namespace slam_odometry {
@@ -17,6 +17,8 @@ ImuProcess::ImuProcess() : b_first_frame_(true), imu_need_init_(true) {
     cov_bias_acc_ = Vec3d(0.0001, 0.0001, 0.0001);
     mean_acc_ = Vec3d(0, 0, -1.0);
     mean_gyr_ = Vec3d(0, 0, 0);
+    cov_acc_scale_ = cov_acc_;
+    cov_gyr_scale_ = cov_gyr_;
     last_imu_.reset(new IMU());
 }
 
@@ -26,6 +28,13 @@ void ImuProcess::Reset() {
     mean_acc_ = Vec3d(0, 0, -1.0);
     mean_gyr_ = Vec3d(0, 0, 0);
     angvel_last_.setZero();
+    acc_s_last_.setZero();
+    cov_acc_.setZero();
+    cov_gyr_.setZero();
+    init_start_time_ = -1.0;
+    last_lidar_end_time_ = 0.0;
+    stream_realigned_ = false;
+    b_first_frame_ = true;
 
     imu_need_init_ = true;
     init_iter_num_ = 1;
@@ -38,6 +47,13 @@ void ImuProcess::Reset() {
 void ImuProcess::SetExtrinsic(const Vec3d& transl, const Mat3d& rot) {
     t_lidar_imu_ = transl;
     R_lidar_imu_ = rot;
+}
+
+void ImuProcess::RestartStreaming() {
+    // 仅重置跨帧积分衔接，不触碰均值/偏置/初始化标志与滤波器状态。
+    last_lidar_end_time_ = 0.0;
+    imu_pose_.clear();
+    stream_realigned_ = true;
 }
 
 void ImuProcess::SetGyrCov(const Vec3d& scaler) { cov_gyr_scale_ = scaler; }
@@ -56,19 +72,20 @@ void ImuProcess::IMUInit(const MeasureGroup& meas, ESKF& kf_state, int& N) {
         const auto& gyr_acc = meas.imu_.front()->angular_velocity;
         mean_acc_ = imu_acc;
         mean_gyr_ = gyr_acc;
+        init_start_time_ = meas.imu_.front()->timestamp;
     }
 
     for (const auto& imu : meas.imu_) {
         cur_acc = imu->linear_acceleration;
         cur_gyr = imu->angular_velocity;
 
-        mean_acc_ += (cur_acc - mean_acc_) / N;
-        mean_gyr_ += (cur_gyr - mean_gyr_) / N;
-
-        cov_acc_ = cov_acc_ * (N - 1.0) / N +
-                   (cur_acc - mean_acc_).cwiseProduct(cur_acc - mean_acc_) * (N - 1.0) / (N * N);
-        cov_gyr_ = cov_gyr_ * (N - 1.0) / N +
-                   (cur_gyr - mean_gyr_).cwiseProduct(cur_gyr - mean_gyr_) * (N - 1.0) / (N * N);
+        const Vec3d acc_delta = cur_acc - mean_acc_;
+        const Vec3d gyr_delta = cur_gyr - mean_gyr_;
+        mean_acc_ += acc_delta / N;
+        mean_gyr_ += gyr_delta / N;
+        // Running population variance (Welford); do not underestimate motion at startup.
+        cov_acc_ = (cov_acc_ * (N - 1.0) + acc_delta.cwiseProduct(cur_acc - mean_acc_)) / N;
+        cov_gyr_ = (cov_gyr_ * (N - 1.0) + gyr_delta.cwiseProduct(cur_gyr - mean_gyr_)) / N;
 
         N++;
     }
@@ -95,6 +112,15 @@ void ImuProcess::IMUInit(const MeasureGroup& meas, ESKF& kf_state, int& N) {
 
 void ImuProcess::UndistortPcl(const MeasureGroup& meas, ESKF& kf_state, CloudPtr& pcl_out) {
     auto v_imu = meas.imu_;
+
+    // 时间回退/流重启后的首帧：以新流首个 IMU 作为衔接点并把状态时间戳对齐过去，
+    // 避免用上一时期的 last_imu_ 与新流拼出巨大 dt 区间；滤波器状态本身不重置。
+    if (stream_realigned_) {
+        last_imu_ = meas.imu_.front();
+        kf_state.SetTime(last_imu_->timestamp);
+        stream_realigned_ = false;
+    }
+
     v_imu.push_front(last_imu_);
     const double& imu_end_time = v_imu.back()->timestamp;
 
@@ -103,7 +129,9 @@ void ImuProcess::UndistortPcl(const MeasureGroup& meas, ESKF& kf_state, CloudPtr
 
     auto imu_state = kf_state.GetX();
     imu_pose_.clear();
-    imu_pose_.emplace_back(0.0, acc_s_last_, angvel_last_, imu_state.vel_, imu_state.pos_, imu_state.rot_.matrix());
+    // First pose always at offset 0.0, matching original lightning-lm.
+    imu_pose_.emplace_back(0.0, acc_s_last_, angvel_last_,
+                           imu_state.vel_, imu_state.pos_, imu_state.rot_.matrix());
 
     Vec3d angvel_avr, acc_avr, vel_imu, pos_imu;
     Mat3d R_imu;
@@ -125,6 +153,7 @@ void ImuProcess::UndistortPcl(const MeasureGroup& meas, ESKF& kf_state, CloudPtr
 
         acc_avr = acc_avr * G_m_s2 / mean_acc_.norm();
 
+        // 与原版一致：首段裁到上一帧扫描末端，其余用整段 head->tail
         if (head->timestamp < last_lidar_end_time_) {
             dt = tail->timestamp - last_lidar_end_time_;
         } else {
@@ -134,7 +163,16 @@ void ImuProcess::UndistortPcl(const MeasureGroup& meas, ESKF& kf_state, CloudPtr
         acc = acc_avr;
         gyro = angvel_avr;
 
-        if (dt > 0.1) {
+        // 断流判据只看【整段有效积分 dt】，用与 slam_odometry_v2/原版一致的计算。
+        // 短丢帧（几十 ms，如数据集里的 60ms 规律缺口）dt 很小，直接积分填补、
+        // 不中断——避免把正常短丢误判成断流导致每帧 SetTime+break 冻结、状态时间
+        // 基准与激光错位而飘飞。仅当整段 dt 超过 imu_gap_limit_（默认 0.15s，真正
+        // 长断流）时才冻结：状态空间凝固、时间戳对齐区间起点。
+        if (dt > imu_gap_limit_) {
+            std::cerr << "[ImuProcess] real IMU gap: " << dt
+                      << "s > " << imu_gap_limit_
+                      << "s; freeze state and skip gap" << std::endl;
+            kf_state.SetTime(head->timestamp);
             break;
         }
 
@@ -156,6 +194,8 @@ void ImuProcess::UndistortPcl(const MeasureGroup& meas, ESKF& kf_state, CloudPtr
             Pose6D(offs_t, acc_s_last_, angvel_last_, imu_state.vel_, imu_state.pos_, imu_state.rot_.matrix()));
     }
 
+    // 帧尾外推，与原版一致：dt 带符号。IMU 晚于扫描末端时用负 dt 反向积分退回 pcl_end，
+    // 保证去畸变基准严格对齐扫描末端（转弯时末端点不再有几 ms 的系统性旋转偏差）。
     double note = pcl_end_time > imu_end_time ? 1.0 : -1.0;
     dt = note * (pcl_end_time - imu_end_time);
     kf_state.Predict(dt, Q_, gyro, acc);
@@ -168,7 +208,8 @@ void ImuProcess::UndistortPcl(const MeasureGroup& meas, ESKF& kf_state, CloudPtr
     std::sort(pcl_out->points.begin(), pcl_out->points.end(),
               [](const PointType& p1, const PointType& p2) { return p1.time < p2.time; });
 
-    if (pcl_out->empty()) {
+    if (pcl_out->empty() || pcl_out->points.back().time <= 0.0) {
+        // 无逐点时间时保留扫描几何，不虚构扫描时长进行补偿。
         return;
     }
 
@@ -207,31 +248,30 @@ void ImuProcess::UndistortPcl(const MeasureGroup& meas, ESKF& kf_state, CloudPtr
 
 void ImuProcess::Process(const MeasureGroup& meas, ESKF& kf_state, CloudPtr& scan) {
     if (meas.imu_.empty()) {
-        std::cout << "[ImuProcess] meas.imu_ is empty" << std::endl;
+        // std::cout << "[ImuProcess] meas.imu_ is empty" << std::endl;
+        SYS_LOG(syslog::LogSeverity::INFO, true) << "[ImuProcess] meas.imu_ is empty";
         return;
     }
 
+    for (const auto& imu : meas.imu_) {
+        if (!imu->linear_acceleration.allFinite() || !imu->angular_velocity.allFinite() ||
+            !std::isfinite(imu->timestamp)) return;
+    }
     if (imu_need_init_) {
-        std::cout << "[ImuProcess] imu_need_init, meas.imu_.size()=" << meas.imu_.size()
-                  << " iter=" << init_iter_num_ << std::endl;
-
         IMUInit(meas, kf_state, init_iter_num_);
-
-        std::cout << "[ImuProcess] IMUInit done, init_iter_num_=" << init_iter_num_ << std::endl;
-
-        imu_need_init_ = true;
-
-        last_imu_ = meas.imu_.back();
-        auto state = kf_state.GetX();
-
         if (init_iter_num_ > kMaxInitCount) {
-            cov_acc_ *= pow(G_m_s2 / mean_acc_.norm(), 2);
             imu_need_init_ = false;
             cov_acc_ = cov_acc_scale_;
             cov_gyr_ = cov_gyr_scale_;
-            std::cout << "[ImuProcess] IMU initialization complete!" << std::endl;
+            last_lidar_end_time_ = meas.lidar_end_time_;
+            angvel_last_ = last_imu_->angular_velocity - mean_gyr_;
+            acc_s_last_ = last_imu_->linear_acceleration * G_m_s2 / mean_acc_.norm() +
+                          kf_state.GetX().grav_.vec_;
+            SYS_LOG(syslog::LogSeverity::INFO, true) 
+                        << "[ImuProcess] initialized: mean_acc=" << mean_acc_.transpose()
+                        << " gravity=" << kf_state.GetX().grav_.vec_.transpose()
+                        << " gyro_bias=" << mean_gyr_.transpose();
         }
-
         return;
     }
 

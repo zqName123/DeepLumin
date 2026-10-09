@@ -52,7 +52,7 @@ outputs:
 
 # -------------------- 节点层：运行参数 --------------------
 node:
-  publish_tf: true
+  publish_tf: false
   local_map_publish_interval: 10    # local_map 发布间隔（帧），仅在有订阅者时每 N 帧发一次（0=每帧）
 
   startup:
@@ -70,8 +70,8 @@ common:
 
 # 轮速/GNSS 辅助：唯一来源（核心 yaml 读取 + 节点订阅开关共用）
 vel_gnss:
-  use_vel: false    # 轮速观测（3D 世界系速度伪观测，LiDAR→轮速→GNSS 顺序更新第二级）
-  use_gnss_attitude: false
+  use_vel: true    # 轮速观测（3D 世界系速度伪观测，LiDAR→轮速→GNSS 顺序更新第二级）
+  use_gnss_attitude: true
   can_vel_diff_thresh_kmh: 2.0
   can_timeout_sec: 0.5
   gnss_attitude_timeout_sec: 0.2
@@ -157,9 +157,9 @@ mapping:
   #               0.0, 1.0, 0.0,
   #               0.0, 0.0, 1.0]
 
-point_filter_num: 2
+point_filter_num: 1
 max_iteration: 6
-filter_size_surf: 0.5            # 对齐 lm_slam（原 0.2）：稀疏点 → LiDAR 单帧信息量天然小一个量级，
+filter_size_surf: 0.1            # 对齐 lm_slam（原 0.2）：稀疏点 → LiDAR 单帧信息量天然小一个量级，
 filter_size_map: 0.5             # 对齐 lm_slam（原 0.35）：P_pitch 不被钉死，轮速/GNSS 无需干预即有增益
 
 ivox_grid_resolution: 0.5

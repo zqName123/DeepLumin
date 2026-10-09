@@ -24,6 +24,10 @@
 #include <string>
 #include <vector>
 
+#include <fstream>
+#include <iomanip>
+#include <cmath>
+
 #include <deeplumin_msgs/FusionStatus.h>
 #include <deeplumin_msgs/GlobalMatchResult.h>
 #include <deeplumin_msgs/LocPoint.h>
@@ -128,6 +132,13 @@ Eigen::Matrix4f toMatrix4f(const Pose3d& pose) {
 
 class LocalizationV2Node {
  public:
+  ~LocalizationV2Node() {
+    if (traj_file_.is_open()) {
+      traj_file_.close();
+    }
+  }
+
+
   LocalizationV2Node(ros::NodeHandle& nh, ros::NodeHandle& pnh)
       : nh_(nh), pnh_(pnh), config_(loadLocalizationV2Config(pnh_)) {
       
@@ -136,6 +147,20 @@ class LocalizationV2Node {
     health_checker_->ENABLE(); // 启动后台发布线程
     health_checker_->NODE_ACTIVATE(); // 节点激活
     std::cout << "LocalizationV2Node: HealthChecker enabled and activated." << std::endl;
+
+    std::string traj_path;
+    pnh_.param<std::string>("traj_path", traj_path,"");
+    if (!traj_path.empty()) {
+      traj_file_.open(traj_path);
+      if (traj_file_.is_open()) {
+        traj_file_ << "timestamp, x, y, z, roll, pitch, yaw\n";
+        SYS_LOG(syslog::LogSeverity::INFO, true) 
+          << "trajectory saving enabled -> " << traj_path;
+      } else {
+        SYS_LOG(syslog::LogSeverity::WARNING, true) 
+          << "failed to open trajectory file: " << traj_path;
+      }
+    }
 
     // ---- 核心与状态机配置 ----
     JumpGuardConfig jump_guard;
@@ -817,6 +842,25 @@ class LocalizationV2Node {
       fillPose(map_base, &odom.pose.pose);
       odom.twist = latest_twist_;
       fused_odom_pub_.publish(odom);
+      // 保存轨迹
+
+      if (traj_file_.is_open()) {
+        if (state_machine_.state() == LocalizationStateMachine::State::kTracking) {
+          Eigen::Matrix3d R_traj = map_base.orientation.normalized().toRotationMatrix();
+          double roll  = std::atan2(R_traj(2,1), R_traj(2,2)) * 180.0 / M_PI;
+          double pitch = std::asin(-R_traj(2,0)) * 180.0 / M_PI;
+          double yaw   = std::atan2(R_traj(1,0), R_traj(0,0)) * 180.0 / M_PI;
+
+          traj_file_ << std::fixed << std::setprecision(6)
+                    << stamp.toSec() << ","
+                    << stamp.sec << "," << stamp.nsec << ","
+                    << map_base.position.x() << ","
+                    << map_base.position.y() << ","
+                    << map_base.position.z() << ","
+                    << roll << "," << pitch << "," << yaw << "\n";
+        }
+      }
+
 
       // 构建loc_point 下游订阅
       deeplumin_msgs::LocPoint loc_point;
@@ -855,6 +899,11 @@ class LocalizationV2Node {
         path_.header.stamp = stamp;
         path_pub_.publish(path_);
       }
+
+
+
+
+
     }
 
     publishMapToOdom();
@@ -1187,6 +1236,8 @@ class LocalizationV2Node {
 
   // 健康监测
   std::shared_ptr<deeplumin_health_checker::HealthChecker> health_checker_;
+
+  std::ofstream traj_file_;
 
   // 跟踪失效检测
   ros::Time tracking_lost_since_;

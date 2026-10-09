@@ -7,7 +7,12 @@
       "Read(//home/hhy/2004ros/ORB_SLAM3/include/**)",
       "Read(//home/hhy/2004ros/ORB_SLAM3/src/**)",
       "Bash(catkin_make --pkg localization_v2)",
-      "Bash(catkin_make -DCMAKE_BUILD_TYPE=Release)"
+      "Bash(catkin_make -DCMAKE_BUILD_TYPE=Release)",
+      "WebFetch(domain:arxiv.org)",
+      "Read(//home/hhy/2004ros/funny_lidar_slam_ws/**)",
+      "Read(//home/hhy/2004ros/funny_lidar_slam_ws/src/**)",
+      "Read(//home/hhy/2004ros/lm_slam_rosori/src/lightning-lm-ros1/src/core/lio/**)",
+      "Read(//home/hhy/2004ros/lm_slam_rosori/src/lightning-lm-ros1/**)"
     ]
   }
 }

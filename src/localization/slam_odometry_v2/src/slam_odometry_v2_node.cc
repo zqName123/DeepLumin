@@ -119,8 +119,8 @@ class SlamOdometryV2Node {
             config_.slam.wheel_velocity_noise, config_.slam.gnss_attitude_noise);
 
         // 3. 订阅传感器
-        imu_sub_ = nh_.subscribe(config_.sensors.imu, 200000, &SlamOdometryV2Node::onImu, this);
-        lidar_sub_ = nh_.subscribe(config_.sensors.lidar, 200000, &SlamOdometryV2Node::onLidar, this);
+        imu_sub_ = nh_.subscribe(config_.sensors.imu, 200, &SlamOdometryV2Node::onImu, this);
+        lidar_sub_ = nh_.subscribe(config_.sensors.lidar, 10, &SlamOdometryV2Node::onLidar, this);
         if (config_.slam.use_vel) {
             can_sub_ = nh_.subscribe(config_.sensors.wheel, 1000, &SlamOdometryV2Node::onCan, this);
         }

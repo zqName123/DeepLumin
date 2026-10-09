@@ -1,0 +1,5 @@
+<launch>
+  <node pkg="lio_odometry_plus" type="lio_odometry_plus_node" name="lio_odometry_plus" output="screen">
+    <param name="config_path" value="$(find lio_odometry_plus)/config/lio_odometry.yaml" />
+  </node>
+</launch>

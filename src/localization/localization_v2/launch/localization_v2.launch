@@ -12,9 +12,9 @@
     roslaunch localization_v2 localization_v2.launch start_relocalization:=true
 -->
 <launch>
-  <!-- <arg name="slam_config" default="$(find slam_odometry_v2)/config/slam_odometry_v2.yaml" /> -->
+  <arg name="slam_config" default="$(find slam_odometry_v2)/config/slam_odometry_v2.yaml" />
   <!-- <arg name="slam_config" default="$(find lio_odometry)/config/lio_odometry.yaml" /> -->
-  <arg name="slam_config" default="$(find lio_odometry_voxelmap)/config/lio_odometry.yaml" />
+  <!-- <arg name="slam_config" default="$(find lio_odometry_voxelmap)/config/lio_odometry.yaml" /> -->
   <!-- <arg name="global_matcher_config" default="$(find global_matcher_v2)/config/global_matcher.yaml" /> -->
   <arg name="relocalization_config" default="$(find relocalization)/config/relocalization.yaml" />
 
@@ -25,10 +25,16 @@
   <arg name="rviz" default="true" />
 
   <arg name="play_bag" default="false" />
-  <arg name="bag" default="/home/hhy/2004ros/data/2026-07-14-11-17-21.bag" />
+  <arg name="bag" default="/home/hhy/2004ros/data/mimo.bag" />
+  <!-- <arg name="bag1" default="/home/hhy/2004ros/data/ousterpoints/2025-10-20-16-09-51.bag" />
+  <arg name="bag2" default="/home/hhy/2004ros/data/ousterimu/2025-10-20-16-09-21.bag" />
+  <arg name="bag3" default="/home/hhy/2004ros/data/can_receive_info/2025-10-20-16-10-09.bag" /> -->
+
+
+
   <arg name="bag_rate" default="1.0" />
-  <arg name="bag_delay" default="2.0" />
-  <arg name="clock" default="false" />
+  <arg name="bag_delay" default="5.0" />
+  <arg name="clock" default="true" />
 
   <arg name="pcd_path" default="/home/hhy/2004ros/relocalization_ws/global_map_manual_imu.pcd" />
   <!-- <arg name="pcd_path" default="/home/hhy/2004ros/data/manual_mapping_out/global.pcd" /> -->
@@ -39,39 +45,40 @@
   <param name="/use_sim_time" value="$(arg clock)" />
 
   <!-- 1. slam_odometry_v2：局部里程计 -->
-  <!-- <node if="$(arg start_slam)" pkg="slam_odometry_v2" type="slam_odometry_v2_node"
+  <node if="$(arg start_slam)" pkg="slam_odometry_v2" type="slam_odometry_v2_node"
         name="slam_odometry_v2" output="screen">
     <rosparam file="$(arg slam_config)" command="load" />
     <param name="node/faster_lio_config_yaml" value="$(arg slam_config)" />
     <param name="node/publish_tf" value="false" />
-  </node> -->
+  </node>
   <!-- <node if="$(arg start_slam)" pkg="lio_odometry" type="lio_odometry_node"
         name="lio_odometry" output="screen">
     <param name="config_path" value="$(arg slam_config)" />
     <param name="log_dir" value="$(arg log_dir)" />
   </node> -->
-  <node if="$(arg start_slam)" pkg="lio_odometry_voxelmap" type="lio_odometry_voxelmap_node"
+  <!-- <node if="$(arg start_slam)" pkg="lio_odometry_voxelmap" type="lio_odometry_voxelmap_node"
         name="lio_odometry_voxelmap" output="screen">
     <param name="config_path" value="$(arg slam_config)" />
     <param name="log_dir" value="$(arg log_dir)" />
-  </node>
+  </node> -->
 
   <!-- 2. localization_v2：融合节点 -->
   <node pkg="localization_v2" type="localization_v2_node" name="localization_v2" output="screen">
     <rosparam file="$(find localization_v2)/config/localization_v2.yaml" command="load" />
 
     <param name="log_dir" value="$(arg log_dir)" />
+    <param name="traj_path" value="$(find localization_v2)/traj.txt" />
     
     <param name="frames/map" value="map" />
     <param name="frames/odom" value="odom" />
     <param name="frames/base_link" value="base_link" />
 
-    <!-- <param name="topics/slam_odom" value="/localization/slam_odom" /> -->
-    <param name="topics/slam_odom" value="/slam_odometry/odom" />
+    <param name="topics/slam_odom" value="/localization/slam_odom" />
+    <!-- <param name="topics/slam_odom" value="/slam_odometry/odom" /> -->
     <param name="topics/global_matcher_result" value="/localization/global_matcher/result" />
     <param name="topics/initial_pose" value="/initialpose" />
-    <param name="topics/source_cloud" value="/slam_odometry/cloud_effect" />
-    <!-- <param name="topics/source_cloud" value="/localization/cloud_registered_effect" /> -->
+    <!-- <param name="topics/source_cloud" value="/slam_odometry/cloud_effect" /> -->
+    <param name="topics/source_cloud" value="/localization/cloud_registered_effect" />
     <param name="topics/fused_odom" value="/localization_v2/odom" />
     <param name="topics/map_to_odom" value="/localization_v2/map_to_odom" />
     <param name="topics/fused_path" value="/localization_v2/path" />
@@ -135,11 +142,11 @@
     <param name="map/mode" value="$(arg map_mode)" />
     <param name="map/pcd_path" value="$(arg pcd_path)" />
     <param name="map/map_dir" value="$(arg map_dir)" />
-    <param name="topics/source_cloud" value="/slam_odometry/cloud_effect" />
-    <!-- <param name="topics/source_cloud" value="/localization/cloud_registered_effect" /> -->
+    <!-- <param name="topics/source_cloud" value="/slam_odometry/cloud_effect" /> -->
+    <param name="topics/source_cloud" value="/localization/cloud_registered_effect" />
     <param name="topics/initial_pose" value="/localization_v2/odom" />
-    <param name="topics/source_odom" value="/slam_odometry/odom" />
-    <!-- <param name="topics/source_odom" value="/localization/slam_odom" /> -->
+    <!-- <param name="topics/source_odom" value="/slam_odometry/odom" /> -->
+    <param name="topics/source_odom" value="/localization/slam_odom" />
     <param name="runtime/source_cloud_is_odom_frame" value="true" />
     <param name="runtime/source_cloud_frame" value="odom" />
     <param name="result/pose_frame" value="odom" />
@@ -180,5 +187,8 @@
         args="-d $(find localization_v2)/rviz/localization_v2.rviz" />
 
   <node if="$(arg play_bag)" pkg="rosbag" type="play" name="localization_v2_bag"
-        args="--clock --delay=$(arg bag_delay) -r $(arg bag_rate) $(arg bag)" output="screen" />
+        args="--clock --delay=$(arg bag_delay) $(arg bag)" output="screen" />
+
+  
+
 </launch>

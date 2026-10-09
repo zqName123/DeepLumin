@@ -13,7 +13,7 @@ int main(int argc, char** argv) {
     SYS_LOG_INIT_FULL(log_dir,
                         syslog::LogSeverity::INFO,
                         50,
-                        "lio_odometry");
+                        "lio_odometry3");
 
     slam_odometry_ros::RosAdapter adapter;
 

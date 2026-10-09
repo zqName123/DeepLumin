@@ -1,0 +1,110 @@
+lio_odometry:
+  # -------------------- 坐标系与外参 --------------------
+  frames:
+    map: "map"
+    odom: "odom"
+    base_link: "base_link"
+    imu: "imu_link"
+    lidar: "lidar_link"
+
+  extrinsics:
+    base_to_imu:
+      translation: [0.0, 0.0, 0.0]
+      rotation: [1.0, 0.0, 0.0,
+                 0.0, 1.0, 0.0,
+                 0.0, 0.0, 1.0]
+    base_to_lidar:
+      translation: [0.0, 0.0, 0.0]
+      rotation: [1.0, 0.0, 0.0,
+                 0.0, 1.0, 0.0,
+                 0.0, 0.0, 1.0]
+
+  # -------------------- 订阅话题 --------------------
+  external:
+    imu_topic: "/ouster/imu"
+    lidar_topic: "/ouster/points"
+    wheel_topic: "/can_receive_info"
+    gnss_topic: "/gnss_chc_data"
+    correction_topic: "/slam_mapping_v2/correction"
+    use_imu: true
+    use_correction: false
+
+  outputs:
+    publish_odom: true
+    odom_topic: "/slam_odometry/odom"
+    registered_scan_topic: "/slam_odometry/cloud_registered"
+    effect_scan_topic: "/slam_odometry/cloud_effect"
+    publish_tf: false  
+    local_map_publish_interval: 10
+
+fasterlio:
+  # 点云采样与 IMU 噪声对齐原版 launch 使用的 default_vbr.yaml。
+  lidar_type: 3                # 1 for Livox serials LiDAR, 2 for Velodyne LiDAR, 3 for ouster LiDAR
+  scan_line: 64
+  blind: 1.2                   # 盲区，小于盲区距离的不会处理，对齐原版default_vbr.yaml
+  time_scale: 1e-3             # 兼容不同数据集的时间单位，仅对Velodyne LiDAR(lidar_type=2)生效
+  skip_lidar_num: 0            # 点云的跳帧情况
+  point_filter_num: 1         # 点云采样参数，对齐原版default.yaml
+  max_iteration: 6             # 最大迭代次数
+  filter_size_scan: 0.35        # 对scan进行的降采样，对齐原版default.yaml
+  filter_size_map: 0.5
+  ivox_grid_resolution: 0.2    # 对齐原版default.yaml
+  ivox_nearby_type: 18         # 6, 18, 26
+  esti_plane_threshold: 0.1    # default=0.1
+  use_aa: false                 # 使用 Anderson Acceleration 加速 IEKF 收敛，对齐原版
+  acc_cov: 0.1                 # 必须与原版 default_vbr.yaml 一致：过程噪声放大会让转弯时错误点面约束获得更高权重
+  gyr_cov: 0.1
+  imu_gap_limit: 0.15           # IMU 断流判定阈值(s)：短丢帧(几十ms)直接积分填补，超过该值才冻结
+  b_acc_cov: 0.0001
+  b_gyr_cov: 0.0001
+  extrinsic_est_en: false        # true: enable the online estimation of IMU-LiDAR extrinsic，对齐原版default_vbr.yaml
+  extrinsic_T: [0, 0.0, 0.0]
+  extrinsic_R: [0, 1, 0,
+                -1, 0, 0,
+                0, 0, 1]
+  # extrinsic_R: [0.000194610446804, 0.999455716366809, 0.032988378991442, -0.999934401868286, -0.000183299487987, 0.011452439111847, 0.011452252489657, -0.032988443779704, 0.999390118267089] 
+  keep_first_imu_estimation: false
+  lidar_update_r: 0.001        # LIDAR Update参数R，与原版 default_vbr.yaml 一致
+  map_trim_radius: 50.0       # iVox 局部地图剔除半径（米）；0=不剔除
+  map_trim_interval_frames: 10 # 每 N 帧执行一次剔除（控制开销）
+
+vel_gnss:
+  use_wheel_speed: true
+  use_gnss: true
+  # >>>>> [WHEEL-1D] BEGIN 1D 路径切换（方案A：1D轮速+NHC，互补无重复）<<<<<
+  # 注意语义：use_wheel_1d=true 时 wheel_velocity_noise 是 σ(m/s)，代码内 R=σ²；
+  #          （3D 路径时该值被"当方差"用——两条路径语义不一致，调参先看这里）
+  # σ=0.03 → R=9e-4；配合 Huber(0.8) 抗滑移/量化毛刺。调参看 [WHEEL] dvel 行。
+  wheel_velocity_noise: 0.03   # σ(m/s)：0.03→K≈0.5；想更强减小，想更稳增大
+  use_wheel_1d: true           # 1D=车体系前向速度(+Huber)，侧/垂向交给 NHC
+  # >>>>> [WHEEL-1D] END <<<<<
+  gnss_attitude_noise: 0.001   # 0.03
+  gnss_pitch_window_size: 10
+  # >>>>> [GNSS-REZERO] BEGIN —— 停车期 GNSS 基准重零（回退：false）<<<<<
+  gnss_rezero: true            # 静止时把 GNSS 相对基准重锚到当前 LIO 姿态（残差恒0、起步无台阶）
+  # >>>>> [GNSS-REZERO] END <<<<<
+
+  wheel_huber_delta: 0.8        # Huber 阈值 m/s，制动滑移残差超限时自动降权、不丢弃
+  wheel_min_speed: 0.5          # 区间均速低于此值不更新（m/s）
+  wheel_max_age: 0.15           # 最新轮速样本最大允许年龄（s）
+
+# >>>>> [ZUPT/NHC] BEGIN 零速约束 + 非完整约束（设计文档 docs/zupt_nhc_design.md；回退：删本段 + enable: false）<<<<<
+zupt:
+  enable: true
+  wheel_thresh: 0.15          # 静止轮速阈值 (m/s)
+  gyr_thresh_deg: 0.5         # 静止陀螺峰值阈值 (deg/s)
+  acc_thresh: 0.15            # |||acc|-g| 峰值阈值 (m/s²)
+  stationary_frames: 20       # 连续满足 N 帧进入静止模式 (10Hz≈2s)
+  release_factor: 2.0         # 速度>阈值×此倍数才解除（滞回）
+  zupt_var: 1e-4              # ZUPT 速度观测方差 (m/s)² → K≈1
+  bg_calib_frames: 20         # 静止 N 帧后标定陀螺零偏（每次停车一次）
+  bg_p_target: 1e-6           # 标定后 bg 的 P 对角目标
+  gravity_align_frames: 100   # 静止 ≥N 帧(10s)才做重力对齐（软）
+  gravity_noise_deg: 1.0      # 重力对齐观测 σ（要松，防与地图拉锯）
+  use_nhc: true               # 行驶非完整约束（车体系 vy=vz=0）
+  nhc_var: 0.04               # NHC 观测方差 (m/s)²（σ=0.2 m/s）
+  nhc_min_speed: 1.0          # 低于此速度不启用 NHC (m/s)
+  nhc_pitchrate_thresh_deg: 3.0  # 俯仰角速度门限(°/s)：变坡/颠簸时禁用 NHC（下坡场景防护）
+  nhc_yawrate_thresh_deg: 5.0    # 偏航角速度门限(°/s)：转弯时杆臂假侧向速度大，禁用 NHC
+  nhc_lever_arm: [0.0, 0.0, 0.0] # 杆臂（约束参考点→IMU，车体系 m）。标定：定常转弯时 vy_residual≈ω×lever_x
+# >>>>> [ZUPT/NHC] END <<<<<

@@ -164,8 +164,9 @@ bool ESKF::Update(ESKF::ObsType obs, const double& R) {
         }
 
         if (obs == ObsType::WHEEL_SPEED) {
-            Eigen::MatrixXd h_x_cur = Eigen::MatrixXd::Zero(3, state_dim_);
-            h_x_cur.block(0, 12, 3, 3) = custom_obs_model_.h_x_;
+            const int m = custom_obs_model_.h_x_.rows(); 
+            Eigen::MatrixXd h_x_cur = Eigen::MatrixXd::Zero(m, state_dim_);
+            h_x_cur.block(0, 12, m, 3) = custom_obs_model_.h_x_;
             Eigen::MatrixXd K =
                 P_ * h_x_cur.transpose() * (h_x_cur * P_ * h_x_cur.transpose() + custom_obs_model_.R_).inverse();
             dx_current = K * custom_obs_model_.residual_;

@@ -60,7 +60,7 @@ class LaserOdometryCore {
     void ProcessIMU(const IMUPtr& msg_in);
 
     void FeedWheelSpeed(double timestamp, double speed_kmh, int gear);
-    void FeedGnssAttitude(double heading_deg, double pitch_deg, double roll_deg);
+    void FeedGnssAttitude(double heading_deg, double pitch_deg, double roll_deg, int status, int nsv);
 
     const NavState& GetState() const { return state_point_; }
     CloudPtr GetScanUndist() const { return scan_undistort_; }
@@ -73,9 +73,16 @@ class LaserOdometryCore {
 
    private:
     bool SyncPackages();
+    // 传感器时间回退时的轻量对齐：只清输入缓冲与跨帧积分衔接，保留滤波器状态、
+    // IMU 初始化结果和地图，避免行驶中被强制冷启动（静止初始化假设不成立会导致飘飞）。
+    void ResyncStreams();
+    // 完整重启（当前仅保留接口，无调用方）：清地图、重置滤波器并重新做 IMU 初始化。
+    void ResetTracking();
     void ObsModel(NavState& s, ESKF::CustomObservationModel& obs);
-    void ObsModelWelspeed(NavState& s, ESKF::CustomObservationModel& obs);
+    void ObsModelWheelspeed(NavState& s, ESKF::CustomObservationModel& obs);
     void ObsModelGPS(NavState& s, ESKF::CustomObservationModel& obs);
+    // 按激光帧区间消费轮速队列，产出 wheel_v_mean_, wheel_valid_this_frame_ [testwheel]
+    void ConsumeWheelSpeedForFrame(double t_beg, double t_end);
 
     inline void PointBodyToWorld(const PointType& pi, PointType& po) {
         Vec3d p_global(state_point_.rot_ *
@@ -169,10 +176,25 @@ class LaserOdometryCore {
     int map_trim_interval_frames_ = 10;        // 每 N 帧执行一次剔除（控制开销）
 
     bool keep_first_imu_estimation_ = false;
-
+    // [testwheel]
     double wheel_speed_obs_ = 0.0;
     double can_speed_double_ = 0.0;
     bool have_new_wheel_speed_ = false;
+
+    struct WheelSpeedSample {
+        double timestamp = 0.0; // CAN 时间戳
+        double wheel_speed = 0.0; // 轮速观测 m/s
+    };
+    std::deque<WheelSpeedSample> wheel_speed_buf_;
+    double wheel_v_mean_ = 0.0;  // 当前帧内的平均轮速
+    bool wheel_valid_this_frame_ = false; // 当前帧是否有有效轮速观测
+    bool use_wheel_1d_ = true; // 是否使用 1D 轮速模型
+    double wheel_sigma_ = 0.25; // 轮速模型噪声标准差 m/s
+    double wheel_huber_delta_ = 0.8; // huber 阈值 m/s 残差超限自动降权
+    double wheel_min_speed_ = 0.5; // 区间均速低于此值不更新
+    double wheel_max_age_ = 0.15; // 轮速观测最大年龄（秒）；超过此值则认为过期
+
+
 
     double hc_heading_ = 0.0;
     double hc_pitch_ = 0.0;

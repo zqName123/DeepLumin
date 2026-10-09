@@ -130,6 +130,42 @@ struct VisualLoopConfig {
     0., 0., 0., 1.).finished();
 };
 
+// [回环改造]
+// 回环配准器配置
+struct LoopRegistrationConfig {
+  std::string type = "vgicp";
+  double max_correspondence_distance = 1.5; // 细层对应距离阈值
+  int max_iterations = 20; // 最大迭代次数
+  double transformation_epsilon = 1e-6; // 变换误差阈值
+  int num_threads = 4; // 线程数
+  int cov_num_neighbors = 20; // 协方差计算邻居数
+  double voxel_resolution = 0.5; // 体素分辨率
+  double coarse_scale = 4.0; // 粗层缩放因子
+  double fine_scale = 1.0; // 细层缩放因子
+  std::string robust_kernel = "huber"; // 鲁棒核函数 "cauchy"
+  double robust_kernel_scale = 1.0; // 鲁棒核参数
+
+};
+
+// 回环内点质量门控
+struct LoopInlierGateConfig {
+  double inlier_distance = 0.5; 
+  double min_inlier_ratio = 0.4; 
+  double max_inlier_rmse = 0.3; // 内点 rmse 上限
+};
+
+// 打分/配准前区域裁剪
+struct LoopCropConfig {
+  bool enable = true;
+  double forward = 40.0;
+  double backward = 40.0;
+  double left = 30.0;
+  double right = 30.0;
+  double up = 10.0;
+  double down = 5.0;
+
+};
+
 struct LoopClosureConfig {
   bool enable = true;
   std::string detector_type = "laser";     // "laser" | "visual" | "hybrid"
@@ -148,6 +184,11 @@ struct LoopClosureConfig {
   double loop_score_floor = 0.05;
   double odom_rot_noise = 1e-6;   ///< 里程计因子旋转噪声
   double odom_pos_noise = 1e-4;   ///< 里程计因子平移噪声
+
+  LoopRegistrationConfig registration; // 配准器
+  LoopInlierGateConfig inlier_gate; // 内点门控
+  LoopCropConfig crop;  // 区域裁剪
+
   GnssConfig gnss;
   VisualLoopConfig visual;         ///< 视觉回环配置
 };

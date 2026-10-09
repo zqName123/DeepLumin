@@ -114,12 +114,13 @@ inline Eigen::Matrix<T, 3, 3> Exp(const Eigen::Matrix<T, 3, 1>& ang_vel, const T
     }
 }
 
-// Quaternion exponential: a rotation vector theta requires scale=0.5.
-inline SO3 exp(const Vec3d& vec, double scale = 1.0) {
-    const double angle = std::abs(scale) * vec.norm();
-    const double sinc = angle < 1e-6 ? 1.0 - angle * angle / 6.0 : std::sin(angle) / angle;
-    const Vec3d qv = (scale * sinc) * vec;
-    return SO3(Quatd(std::cos(angle), qv.x(), qv.y(), qv.z()));
+// MTK quaternion exponential convention: scale is applied to the HALF angle.
+// For a rotation vector theta use exp(theta, 0.5), or SO3::exp(theta).
+inline SO3 exp(const Vec3d& vec, const double scale = 1.0) {
+    const double ang = std::abs(scale) * vec.norm();
+    const double sinc = ang < 1e-6 ? 1.0 - ang * ang / 6.0 : std::sin(ang) / ang;
+    const Vec3d result = (sinc * scale) * vec;
+    return SO3(Quatd(std::cos(ang), result.x(), result.y(), result.z()));
 }
 
 template <typename T>
@@ -421,7 +422,7 @@ struct PointXYZIT {
     EIGEN_MAKE_ALIGNED_OPERATOR_NEW
 };
 
-struct VelodynePoint {
+struct EIGEN_ALIGN16 VelodynePoint {
     PCL_ADD_POINT4D
     float intensity;
     float time;
@@ -429,7 +430,7 @@ struct VelodynePoint {
     EIGEN_MAKE_ALIGNED_OPERATOR_NEW
 };
 
-struct OusterPoint {
+struct EIGEN_ALIGN16 OusterPoint {
     PCL_ADD_POINT4D
     EIGEN_MAKE_ALIGNED_OPERATOR_NEW
 
@@ -445,7 +446,7 @@ struct OusterPoint {
 
 // clang-format off
 POINT_CLOUD_REGISTER_POINT_STRUCT(slam_odometry::PointXYZIT,
-    (float, x, x)(float, y, y)(float, z, z)(float, intensity, intensity)(double, time, time))
+    (float, x, x)(float, y, y)(float, z, z)(float, intensity, intensity)(double, time, timestamp))
 
 POINT_CLOUD_REGISTER_POINT_STRUCT(slam_odometry::VelodynePoint,
     (float, x, x)(float, y, y)(float, z, z)(float, intensity, intensity)

@@ -163,13 +163,14 @@ void ImuProcess::UndistortPcl(const MeasureGroup& meas, ESKF& kf_state, CloudPtr
         acc = acc_avr;
         gyro = angvel_avr;
 
-        // gap 判据只看【真实相邻 IMU 样本间隔】tail-head，绝不能用有效积分间隔
-        // dt(=tail-last_lidar_end_time_)：空包跳窗时后者会把正常的跨窗相位差
-        // （~100ms）误判成 IMU 断流。实测该数据集样本间隔最大 33ms，取 50ms 为
-        // 断流阈值；真断流时与原版一致——状态空间凝固、时间戳对齐区间起点。
-        constexpr double kImuSampleGapLimit = 0.05;
-        if (tail->timestamp - head->timestamp > kImuSampleGapLimit) {
-            std::cerr << "[ImuProcess] real IMU sample gap: " << (tail->timestamp - head->timestamp)
+        // 断流判据只看【整段有效积分 dt】，用与 slam_odometry_v2/原版一致的计算。
+        // 短丢帧（几十 ms，如数据集里的 60ms 规律缺口）dt 很小，直接积分填补、
+        // 不中断——避免把正常短丢误判成断流导致每帧 SetTime+break 冻结、状态时间
+        // 基准与激光错位而飘飞。仅当整段 dt 超过 imu_gap_limit_（默认 0.15s，真正
+        // 长断流）时才冻结：状态空间凝固、时间戳对齐区间起点。
+        if (dt > imu_gap_limit_) {
+            std::cerr << "[ImuProcess] real IMU gap: " << dt
+                      << "s > " << imu_gap_limit_
                       << "s; freeze state and skip gap" << std::endl;
             kf_state.SetTime(head->timestamp);
             break;

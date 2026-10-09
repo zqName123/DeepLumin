@@ -46,14 +46,15 @@ fasterlio:
   skip_lidar_num: 0            # 点云的跳帧情况
   point_filter_num: 1         # 点云采样参数，对齐原版default.yaml
   max_iteration: 6             # 最大迭代次数
-  filter_size_scan: 0.2        # 对scan进行的降采样，对齐原版default.yaml
+  filter_size_scan: 0.35        # 对scan进行的降采样，对齐原版default.yaml
   filter_size_map: 0.5
   ivox_grid_resolution: 0.2    # 对齐原版default.yaml
   ivox_nearby_type: 18         # 6, 18, 26
   esti_plane_threshold: 0.1    # default=0.1
-  use_aa: true                 # 使用 Anderson Acceleration 加速 IEKF 收敛，对齐原版
+  use_aa: false                 # 使用 Anderson Acceleration 加速 IEKF 收敛，对齐原版
   acc_cov: 0.1                 # 必须与原版 default_vbr.yaml 一致：过程噪声放大会让转弯时错误点面约束获得更高权重
   gyr_cov: 0.1
+  imu_gap_limit: 0.15           # IMU 断流判定阈值(s)：短丢帧(几十ms)直接积分填补，超过该值才冻结
   b_acc_cov: 0.0001
   b_gyr_cov: 0.0001
   extrinsic_est_en: false        # true: enable the online estimation of IMU-LiDAR extrinsic，对齐原版default_vbr.yaml
@@ -69,7 +70,15 @@ fasterlio:
 
 vel_gnss:
   use_wheel_speed: true
-  use_gnss: false
-  wheel_velocity_noise: 0.5   # 0.33
-  gnss_attitude_noise: 0.01   # 0.03
-  gnss_pitch_window_size: 50
+  use_gnss: true
+  wheel_velocity_noise: 0.009   # 0.33
+  gnss_attitude_noise: 0.001   # 0.03
+  gnss_pitch_window_size: 10
+  # >>>>> [GNSS-REZERO] BEGIN —— 停车期 GNSS 基准重零（回退：false）<<<<<
+  gnss_rezero: true            # 静止时把 GNSS 相对基准重锚到当前 LIO 姿态（残差恒0、起步无台阶）
+  # >>>>> [GNSS-REZERO] END <<<<<
+
+  use_wheel_1d: false            # 仅车体前向一维约束（推荐）；false=旧三维
+  wheel_huber_delta: 0.8        # Huber 阈值 m/s，制动滑移残差超限时自动降权、不丢弃
+  wheel_min_speed: 0.5          # 区间均速低于此值不更新（m/s）
+  wheel_max_age: 0.15           # 最新轮速样本最大允许年龄（s）

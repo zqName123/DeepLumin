@@ -175,7 +175,14 @@ void RosAdapter::OnGnss(const deeplumin_msgs::Gpchc::ConstPtr& msg) {
     if (!core_) {
         return;
     }
-    core_->FeedGnssAttitude(msg->heading, msg->pitch, msg->roll);
+    // 在这里进行简单的gnss质量判断
+    int status = msg->status;
+    int nsv = msg->nsv1 + msg->nsv2;
+    // if (status < 33 || nsv < 4) {
+    //     std::cout << "gnss status < 33 or nsv < 4 " << std::endl;
+    //     return;
+    // }
+    core_->FeedGnssAttitude(msg->header.stamp.toSec(), msg->heading, msg->pitch, msg->roll, status, nsv);
 }
 
 void RosAdapter::OnCorrection(const nav_msgs::Odometry::ConstPtr& msg) {

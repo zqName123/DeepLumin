@@ -91,6 +91,61 @@ loop_closure:
   # 里程计因子平移噪声（米）：GTSAM 中相邻关键帧间 odometry 约束的平移分量方差
   odom_pos_noise: 1e-4
 
+  # 配准器参数
+  registration:
+    # "vgicp"  : small_gicp 两级 VGICP（粗体素 + 细体素，推荐，抗部分重叠）
+    # "gicp"   : small_gicp 两级 GICP（粗层降采样点云 + 细层原始分辨率，KdTree）
+    # "pcl_icp": 原 PCL 点到面 ICP（对照）
+    type: "vgicp"
+    # 细层对应点最大距离（米）；原 PCL 路径硬编码 20m，过大易引入假对应
+    max_correspondence_distance: 1.5
+    max_iterations: 30
+    transformation_epsilon: 1e-6
+    num_threads: 4
+    # GICP 协方差估计邻域点数
+    cov_num_neighbors: 20
+    # 基础体素/降采样边长（米）：
+    #   vgicp 粗层体素 = voxel_resolution*coarse_scale，细层 = voxel_resolution*fine_scale
+    #   gicp  粗层 leaf = voxel_resolution*coarse_scale（细层为原始分辨率）
+    voxel_resolution: 0.5
+    coarse_scale: 4.0
+    fine_scale: 1.0
+    # 鲁棒核抑制室外植被等假对应："none" | "huber" | "cauchy"
+    robust_kernel: "huber"
+    robust_kernel_scale: 1.0
+
+  # ===== 内点门控（取代全局 fitness 均值判据） =====
+  inlier_gate:
+    # 内点判定距离（米）：配准后最近邻距离小于该值计为内点
+    inlier_distance: 0.5
+    # 内点率下限
+    min_inlier_ratio: 0.4
+    # 内点 RMSE 上限（米）
+    max_inlier_rmse: 0.3
+
+  # ===== 打分/配准前区域裁剪（候选历史关键帧坐标系下的盒式范围，米） =====
+  crop:
+    enable: true
+    forward: 40.0
+    backward: 40.0
+    left: 30.0
+    right: 30.0
+    up: 10.0
+    down: 5.0
+
+  # ICP 配准 fitness score 阈值：现已不参与门控，仅作为回环因子噪声的上限夹取值
+  # （pose_graph_optimizer.buildLoopNoiseModel）。score 现为内点 RMSE（米制），
+  # 请将此值设为与 inlier_gate/max_inlier_rmse 一致。
+  icp_fitness_thresh: 0.3
+  # 噪声下限夹取（米制）
+  loop_score_floor: 0.05
+
+
+
+
+
+
+
   # ===== 视觉回环配置（detector_type: "visual" 或 "hybrid" 时生效） =====
   visual:
     # ORB 词库路径（从 ORB-SLAM3 移植的预训练词库）

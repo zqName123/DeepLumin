@@ -152,17 +152,19 @@ bool ESKF::Update(ESKF::ObsType obs, const double& R) {
             gps_obs_func_(x_, custom_obs_model_);
         }
 
+        // 残差【严格回升】超过 1% 才回退。必须用严格大于：残差为 0 时
+        // "0 >= 0*1.01" 恒真，会在收敛平台上误触发回退并提前结束迭代。
         if (use_aa_ && i > -1 && (obs == ObsType::LIDAR || obs == ObsType::WHEEL_SPEED_AND_LIDAR) &&
-            custom_obs_model_.lidar_residual_mean_ >= last_lidar_res * 1.01) {
+            custom_obs_model_.lidar_residual_mean_ > last_lidar_res * 1.01) {
             // 与原版 lightning-lm 一致：AA 使残差回升时回退到上一个被接受的状态并结束迭代，
             // 不整帧拒绝。P_ 保持此刻上一轮重线性化后的传播协方差（位于 last_x 切空间），
             // 不能重置为 start_x 切空间下的 P_propagated。
             x_ = last_x;
             // 在被接受的状态上重算一次观测，使 ptpl_list_/对应关系与最终位姿一致，供建图使用。
             lidar_obs_func_(x_, custom_obs_model_);
-            if (!custom_obs_model_.valid_) {
-                return reject(2);
-            }
+            // 与原版无条件接受一致：即使重算恰好无效（退化场景当帧有效点临时为 0），
+            // 也接受 last_x——它是残差回升前最后一个已验证状态，比整帧拒绝（退回纯 IMU
+            // 预测）安全得多；最近邻停留在旧状态仅影响本帧加点取舍。
             return true;
         }
         iterated_num += 1;
@@ -174,8 +176,9 @@ bool ESKF::Update(ESKF::ObsType obs, const double& R) {
         }
 
         if (obs == ObsType::WHEEL_SPEED) {
-            Eigen::MatrixXd h_x_cur = Eigen::MatrixXd::Zero(3, state_dim_);
-            h_x_cur.block(0, 12, 3, 3) = custom_obs_model_.h_x_;
+            const int m = custom_obs_model_.h_x_.rows();
+            Eigen::MatrixXd h_x_cur = Eigen::MatrixXd::Zero(m, state_dim_);
+            h_x_cur.block(0, 12, m, 3) = custom_obs_model_.h_x_;
             Eigen::MatrixXd K =
                 P_ * h_x_cur.transpose() * (h_x_cur * P_ * h_x_cur.transpose() + custom_obs_model_.R_).inverse();
             dx_current = K * custom_obs_model_.residual_;
@@ -314,7 +317,9 @@ bool ESKF::Update(ESKF::ObsType obs, const double& R) {
             custom_obs_model_.converge_ = true;
         }
 
-        if (converged_times > 0 || i == maximum_iter_ - 1) {
+        // 连续收敛次数达到要求才接受（lidar_converged_times_required_，默认 1 = 收敛即接受）。
+        // 此前写死 converged_times > 0，导致 yaml 的 converged_times_required 是死参数。
+        if (converged_times >= lidar_converged_times_required_ || i == maximum_iter_ - 1) {
             CovType J = CovType::Identity();
             for (const auto& st : x_.SO3_states_) {
                 const Vec3d delta = dx_current.segment<3>(st.idx_);

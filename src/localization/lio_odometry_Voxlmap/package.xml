@@ -19,4 +19,5 @@
   <depend>yaml-cpp</depend>
   <depend>eigen</depend>
   <depend>libpcl-all-dev</depend>
+  <depend>deeplumin_health_checker</depend>
 </package>
