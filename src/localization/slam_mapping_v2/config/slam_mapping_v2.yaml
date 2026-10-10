@@ -57,7 +57,7 @@ keyframe:
   min_frame_gap: 10
 
 loop_closure:
-  enable: false
+  enable: true
   # 检测器类型："laser" | "visual" | "hybrid"
   detector_type: "laser"
   # 回环候选帧筛选：当前关键帧与历史关键帧的最小索引间隔，低于此值不检测回环
@@ -73,7 +73,7 @@ loop_closure:
   # KD-Tree 空间搜索半径（米）：在当前帧位姿附近 max_range 范围内搜索历史关键帧作为回环候选
   max_range: 10.0
   # 子图构建：以候选历史帧为中心，前后各取 submap_search_num 个关键帧拼接成历史子图用于 ICP 配准
-  submap_search_num: 5
+  submap_search_num: 20
   # 子图降采样体素分辨率（米）：拼接子图后通过 VoxelGrid 降采样，降低 ICP 计算量
   submap_resolution: 0.2
   # ICP 配准 fitness score 阈值：ICP 得分高于此阈值认为配准失败，回环不成立

@@ -167,10 +167,20 @@ UNINITIALIZED ──(slam 到达 & auto_start)──▶ RELOCALIZING ──(初�
 |---|---|---|---|
 | 跟踪丢失（快） | GM 连续失败/坏质 ≥ `gm_fail_fast_count(3)`（≈0.3s）或出图快路径 | **≤0.5s** | → TRACKING_LOST，reloc start，level=DEGRADED |
 | 出图快路径 | GM 拒因 ∈ {cropped target empty, map chunks not ready, target map not ready} 连续 ≥ `map_miss_count(3)` | **≤0.5s** | `failure_reason="out of map"` |
-| 定位失效（快） | TRACKING_LOST 内 `lost_timeout_sec(3s)` 未确认恢复，或 reloc 连续失败 ≥ `reloc_failure_threshold(10)` | **≤3.5s** | → LOCALIZATION_FAILURE，level=FAILURE，output_valid=false |
-| 无修正看门狗 | 距最后被采纳的修正 > `no_correction_timeout_sec(3s)`（被 jump guard 连续拒绝 / GM 静默） | ≤0.5s 内进 LOST，再 3s 判失效 | → TRACKING_LOST（交恢复流程），未恢复则 LOCALIZATION_FAILURE（修 P8/P11） |
-| 人工验证超时 | 人工位姿后 `verify_timeout_sec(5s)` 仍未通过匹配验证 | 到点即转 | → TRACKING_LOST（人工位姿不可信，交恢复） |
+| 人工验证失败 | 验证期连续未通过 ≥ `verify_fail_threshold(10)` 或验证超时 `verify_timeout_sec(5s)`（**独立计数，不计入跟踪失败**） | ≤1s / 5s | → TRACKING_LOST（`failure_reason="manual pose unverified"`），交恢复 |
+| 恢复预算耗尽 | TRACKING_LOST 内 `lost_timeout_sec(15s)` 未确认恢复，或 reloc 连续失败 ≥ `reloc_failure_threshold(10)` | 预算耗尽时 | → LOCALIZATION_FAILURE（无法恢复），reloc stop |
+| 无修正看门狗 | 距最后被采纳的修正 > `no_correction_timeout_sec(3s)`（被 jump guard 连续拒绝 / GM 静默） | ≤0.5s 内进 LOST | → TRACKING_LOST（交恢复流程），预算耗尽则 LOCALIZATION_FAILURE（修 P8/P11） |
 | SLAM 断流 | `slam_odom` 年龄 > `slam_timeout_sec(0.5s)` | 立即 | → LOCALIZATION_FAILURE |
+
+**两级状态语义（下游契约）**：
+
+| 状态 | 语义 | 下游动作 | 时机 |
+|---|---|---|---|
+| TRACKING_LOST | 定位不可信、**正在恢复**（恢复预算内） | **停车**（降级位姿仍输出，便于受控停车） | 检测快（0.3~0.5s 报出） |
+| LOCALIZATION_FAILURE | **恢复失败 / 无法恢复**，需人工 | 停车 + 标记定位不可用 | 恢复预算耗尽（15s） |
+
+> 恢复预算必须覆盖重定位 1~2 个完整匹配周期（SC 检索 + GICP 秒级）+ 恢复确认窗口
+> （`reloc_recovery_threshold=2` 连续成功）；预算过短会出现"reloc 未匹配完就 stop"。
 
 GM 拒因分类（`FailureDetector` 内建三类）：
 
@@ -311,7 +321,8 @@ manual_pose:                 # 人工位姿流程
   z_search_radius: 5.0
   map_pcd_path: ""
   settle_sec: 0.3            # 丢弃过期 GM 结果的短窗口
-  verify_timeout_sec: 5.0    # 仍未验证 → 转恢复流程
+  verify_timeout_sec: 5.0    # 验证超时 → 转恢复流程
+  verify_fail_threshold: 10  # 验证期连续未通过阈值（独立计数，不计入跟踪失败）
   publish_gm_anchor: true
 
 failure_detection:           # 快速失效（替代 50 帧 / 30s）
@@ -319,7 +330,7 @@ failure_detection:           # 快速失效（替代 50 帧 / 30s）
   degraded_count: 20         # 连续 degraded → TRACKING_LOST（保留 v2 语义）
   map_miss_count: 3          # 出图快路径
   no_correction_timeout_sec: 3.0  # 无有效修正看门狗
-  lost_timeout_sec: 3.0      # TRACKING_LOST → FAILURE
+  lost_timeout_sec: 15.0     # TRACKING_LOST 恢复预算（覆盖 reloc 1~2 次匹配）→ 耗尽进 FAILURE
   slam_timeout_sec: 0.5      # SLAM 断流 → 立即 FAILURE
   reloc_failure_threshold: 10
 

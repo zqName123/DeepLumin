@@ -167,7 +167,7 @@ class SlamMappingV2Node {
 
     // ROS_INFO_THROTTLE(5.0, "[slam_mapping_v2] Image received: %dx%d ch=%d stamp=%.3f",
     //                   image.cols, image.rows, image.channels(), msg->header.stamp.toSec());
-    SYS_LOG(syslog::LogSeverity::INFO, false) << "Image received: " << image.cols << "x" << image.rows << "x" << image.channels() << " " << msg->header.stamp.toSec();
+    // SYS_LOG(syslog::LogSeverity::INFO, false) << "Image received: " << image.cols << "x" << image.rows << "x" << image.channels() << " " << msg->header.stamp.toSec();
 
     publishDebugImage(image, msg->header.stamp);
     cv::rotate(image, image, cv::ROTATE_90_COUNTERCLOCKWISE);

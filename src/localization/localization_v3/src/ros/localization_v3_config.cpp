@@ -102,6 +102,8 @@ LocalizationV3Config loadLocalizationV3Config(ros::NodeHandle& pnh) {
       loadDouble(pnh, "manual_pose/settle_sec", cfg.fusion.manual_settle_sec);
   cfg.manual_verify_timeout_sec =
       loadDouble(pnh, "manual_pose/verify_timeout_sec", cfg.manual_verify_timeout_sec);
+  cfg.manual_verify_fail_threshold =
+      loadInt(pnh, "manual_pose/verify_fail_threshold", cfg.manual_verify_fail_threshold);
   cfg.publish_gm_anchor = loadBool(pnh, "manual_pose/publish_gm_anchor", cfg.publish_gm_anchor);
   cfg.initial_pose_z_completion =
       loadBool(pnh, "manual_pose/z_completion_enabled", cfg.initial_pose_z_completion);

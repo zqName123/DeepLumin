@@ -27,7 +27,7 @@ enum class RejectClass {
 struct FailureDetectorConfig {
   int map_miss_count = 3;                  ///< 出图连击阈值（≈0.3s @10Hz）
   double no_correction_timeout_sec = 3.0;  ///< 无有效修正看门狗
-  double lost_timeout_sec = 3.0;           ///< TRACKING_LOST 未恢复超时
+  double lost_timeout_sec = 15.0;          ///< TRACKING_LOST 恢复预算（s）：需覆盖重定位 1~2 次完整匹配 + 确认窗口
   double slam_timeout_sec = 0.5;           ///< SLAM 断流超时
 };
 

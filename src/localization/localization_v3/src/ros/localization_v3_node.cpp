@@ -283,6 +283,16 @@ class LocalizationV3Node {
       return;
     }
 
+    // 人工验证期：失败只计"验证失败"（独立判据），不计入跟踪失败计数
+    if (fusion_.manualVerifyPending()) {
+      if (failure_detector_.mapMissExceeded()) {
+        failManualVerify("out of map (" + reject_reason + ")", now);
+        return;
+      }
+      onVerifyFailure(reject_reason, now);
+      return;
+    }
+
     if (failure_detector_.mapMissExceeded()) {
       // 出图快路径：直接判定跟踪丢失
       state_machine_.forceTrackingLost();
@@ -303,8 +313,18 @@ class LocalizationV3Node {
   /// TRACKING：质量计数 + 位姿写入（settle / 人工验证 / jump guard 均在 FusionCore）
   void handleGmTracking(QualityLevel quality, const deeplumin_msgs::GlobalMatchResult& msg,
                         double now) {
-    // ---- 质量计数（bad/退化达阈值 → 跟踪丢失） ----
-    if (quality == QualityLevel::kBad) {
+    // ---- 人工验证期：非 good 结果不写位姿，只计验证失败（与跟踪失败计数隔离） ----
+    if (fusion_.manualVerifyPending()) {
+      if (quality != QualityLevel::kGood) {
+        onVerifyFailure(std::string("quality=") + qualityName(quality) +
+                            " inlier=" + std::to_string(msg.inlier_ratio) +
+                            " rmse=" + std::to_string(msg.inlier_rmse),
+                        now);
+        return;
+      }
+      // good 结果落到下方 applyGlobalMatch：验证采纳（不经 jump guard）
+    } else if (quality == QualityLevel::kBad) {
+      // ---- 质量计数（bad/退化达阈值 → 跟踪丢失） ----
       state_machine_.onTrackingFailure();
       state_machine_.resetDegradedCounter();
       if (state_machine_.state() == State::kTrackingLost) {
@@ -313,8 +333,7 @@ class LocalizationV3Node {
                           now);
       }
       return;  // bad 结果不应用位姿
-    }
-    if (quality == QualityLevel::kDegraded) {
+    } else if (quality == QualityLevel::kDegraded) {
       state_machine_.onTrackingDegraded();
       if (state_machine_.state() == State::kTrackingLost) {
         enterTrackingLost("GM quality degraded for " +
@@ -438,6 +457,7 @@ class LocalizationV3Node {
     state_machine_.onManualPose();
     failure_detector_.onCorrectionAccepted(now);
     manual_verify_deadline_ = now + config_.manual_verify_timeout_sec;
+    verify_fail_count_ = 0;
     last_manual_stamp_ = now;
     failure_reason_.clear();
     syncFailureDetectorState(now);
@@ -635,14 +655,12 @@ class LocalizationV3Node {
     }
 
     // 2) 人工验证超时：位姿不可信，交恢复流程（reloc/GM 全局搜索）
-    if (fusion_.manualVerifyPending() && now > manual_verify_deadline_) {
-      fusion_.cancelManualVerify();
-      state_machine_.forceTrackingLost();
-      if (state_machine_.state() == State::kTrackingLost) {
-        enterTrackingLost("manual pose not verified within " +
-                              std::to_string(config_.manual_verify_timeout_sec) + "s",
-                          now);
-      }
+    //    仅在 TRACKING 处理：进 LOST 时 enterTrackingLost 已结束验证期，不会重复触发
+    if (state == State::kTracking && fusion_.manualVerifyPending() &&
+        now > manual_verify_deadline_) {
+      failManualVerify("manual pose not verified within " +
+                           std::to_string(config_.manual_verify_timeout_sec) + "s",
+                       now);
       return;
     }
 
@@ -658,10 +676,13 @@ class LocalizationV3Node {
       return;
     }
 
-    // 4) TRACKING_LOST 恢复超时 → 定位失效
+    // 4) 恢复预算耗尽仍无确认恢复 → 定位失效（代表无法恢复，需人工）
     if (state == State::kTrackingLost && failure_detector_.lostTimeout(now)) {
       state_machine_.forceLocalizationFailure();
-      declareFailure(failure_reason_.empty() ? "recovery timeout" : failure_reason_, now);
+      declareFailure("recovery budget exhausted (" +
+                         std::to_string(config_.failure.lost_timeout_sec) + "s): " +
+                         (failure_reason_.empty() ? "no confirmed recovery" : failure_reason_),
+                     now);
     }
   }
 
@@ -670,11 +691,33 @@ class LocalizationV3Node {
   // ===================================================================
 
   void enterTrackingLost(const std::string& reason, double now) {
+    // 进入恢复流程：结束人工验证期（后续由 reloc/GM 恢复写位姿，无 jump guard）
+    fusion_.cancelManualVerify();
+    verify_fail_count_ = 0;
     failure_detector_.onTrackingLost(now);
     failure_reason_ = reason;
     dispatchRelocalizationCommand();
     SYS_LOG(syslog::LogSeverity::WARNING, true)
         << "tracking lost: " << reason << ", starting relocalization recovery";
+  }
+
+  /// 人工验证期的失败：独立计数（不计入跟踪失败），达阈值交恢复流程
+  void onVerifyFailure(const std::string& detail, double now) {
+    ++verify_fail_count_;
+    if (verify_fail_count_ < config_.manual_verify_fail_threshold) {
+      return;
+    }
+    failManualVerify("manual pose unverified (" + detail + ")", now);
+  }
+
+  /// 验证失败定论：退出验证期并转恢复流程（reason 由调用方给）
+  void failManualVerify(const std::string& reason, double now) {
+    fusion_.cancelManualVerify();
+    verify_fail_count_ = 0;
+    state_machine_.forceTrackingLost();
+    if (state_machine_.state() == State::kTrackingLost) {
+      enterTrackingLost(reason, now);
+    }
   }
 
   void declareFailure(const std::string& reason, double now) {
@@ -965,6 +1008,7 @@ class LocalizationV3Node {
 
   // ---- 人工验证 ----
   double manual_verify_deadline_ = -1.0;
+  int verify_fail_count_ = 0;  ///< 验证期连续未通过计数（独立于跟踪失败计数）
 
   // ---- 初始化仲裁缓存 ----
   double relocalizing_since_ = -1.0;

@@ -103,6 +103,7 @@ void LocalizationStateMachine::onManualPose() {
     request(RelocCommand::kStop);
   }
   transitionTo(State::kTracking, true);
+  resetCounters();  // 人工位姿 = 全新起点：清残留失败/退化计数（状态未变时 transitionTo 不清）
 }
 
 void LocalizationStateMachine::onRelocalizationResult(bool accepted) {

@@ -453,7 +453,7 @@ bool KdtreeGicpLoopDetector::alignCandidateSubmaps(const std::vector<Keyframe>& 
                                                    double* score, Mat3d* diff_rot,
                                                    Vec3d* diff_pos) {
   if (!score || !diff_rot || !diff_pos) return false;
-  auto cur_submap = buildSubmap(kfs, current_idx, 0);
+  auto cur_submap = buildSubmap(kfs, current_idx, 5);
   auto hist_submap = buildSubmap(kfs, history_idx, cfg_.submap_search_num);
 
   // ---- 区域裁剪：配准与打分前只保留候选历史关键帧附近的盒式区域 ----

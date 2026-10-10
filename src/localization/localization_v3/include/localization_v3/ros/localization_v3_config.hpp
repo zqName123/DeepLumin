@@ -64,7 +64,8 @@ struct LocalizationV3Config {
   RelocalizationPolicy reloc_policy;  ///< 重定位启停策略
 
   // ---- 人工位姿 ----
-  double manual_verify_timeout_sec = 5.0; ///< 未验证成功 → 转恢复流程
+  double manual_verify_timeout_sec = 5.0;      ///< 验证超时：仍未验证成功 → 转恢复流程
+  int manual_verify_fail_threshold = 10;       ///< 验证期连续未通过阈值 → 转恢复流程（独立于跟踪失败计数）
   bool publish_gm_anchor = true;          ///< 人工位姿/验证后向 GM 发锚点
   bool initial_pose_z_completion = true;  ///< 人工位姿 z 补全
   double initial_pose_z_search_radius = 5.0;

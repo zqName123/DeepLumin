@@ -299,3 +299,49 @@
 [2026-10-10 14:36:00.041] [INFO] [TID:134497178197184] [localization_v3_node.cpp:450] [onInitialPose] reset map->odom from manual initial pose frame=map z=-144.384 (verify within 5s)
 [2026-10-10 14:36:00.539] [INFO] [TID:134497178197184] [localization_v3_node.cpp:867] [publishGmAnchor] published gm anchor
 [2026-10-10 14:36:00.539] [INFO] [TID:134497178197184] [localization_v3_node.cpp:340] [handleGmTracking] manual pose verified by global matcher map_id=default inlier=1 rmse=0.0625862 pos=(-1846.97, -63.1778)
+[2026-10-10 14:59:44.457] [INFO] [TID:139654724238528] [localization_v3_node.cpp:150] [LocalizationV3Node] trajectory saving enabled -> /home/hhy/2004ros/DeepLumin_zq/src/localization/localization_v3/traj.txt
+[2026-10-10 14:59:44.468] [INFO] [TID:139654724238528] [relocalization_ros_adapter.cpp:15] [RelocalizationRosAdapter] relocalization adapter: result=/localization/relocalization/result command=/localization_v2/relocalization/command
+[2026-10-10 14:59:44.497] [INFO] [TID:139654724238528] [localization_v3_node.cpp:197] [LocalizationV3Node] localization_v3 started slam=/localization/slam_odom GM=/localization/global_matcher/result reloc_result=/localization/relocalization/result reloc_cmd=/localization_v2/relocalization/command fused=/localization_v2/odom
+[2026-10-10 14:59:44.507] [WARN] [TID:139654724238528] [localization_v3_node.cpp:631] [onTimer] waiting for slam odom: /localization/slam_odom
+[2026-10-10 14:59:54.517] [WARN] [TID:139654724238528] [localization_v3_node.cpp:631] [onTimer] waiting for slam odom: /localization/slam_odom
+[2026-10-10 15:00:04.517] [WARN] [TID:139654724238528] [localization_v3_node.cpp:631] [onTimer] waiting for slam odom: /localization/slam_odom
+[2026-10-10 15:00:14.527] [WARN] [TID:139654724238528] [localization_v3_node.cpp:631] [onTimer] waiting for slam odom: /localization/slam_odom
+[2026-10-10 15:00:21.005] [INFO] [TID:139654724238528] [relocalization_ros_adapter.cpp:25] [start] relocalization start requested
+[2026-10-10 15:00:38.818] [INFO] [TID:139654724238528] [relocalization_ros_adapter.cpp:30] [stop] relocalization stop requested
+[2026-10-10 15:00:38.818] [INFO] [TID:139654724238528] [localization_v3_node.cpp:910] [publishGmAnchor] published gm anchor
+[2026-10-10 15:00:38.818] [INFO] [TID:139654724238528] [localization_v3_node.cpp:596] [completeWithReloc] initialized from relocalization method=csc_vgicp map_id=default (reloc inlier=0.82628 rmse=0.243669 vs gm inlier=0 rmse=inf)
+[2026-10-10 15:00:39.328] [INFO] [TID:139654724238528] [relocalization_ros_adapter.cpp:25] [start] relocalization start requested
+[2026-10-10 15:00:39.328] [WARN] [TID:139654724238528] [localization_v3_node.cpp:700] [enterTrackingLost] tracking lost: GM consecutive failures=3, starting relocalization recovery
+[2026-10-10 15:00:41.475] [WARN] [TID:139654724238528] [localization_v3_node.cpp:487] [onRelocalizationResult] relocalization failed, consecutive=1/10
+[2026-10-10 15:00:44.613] [INFO] [TID:139654724238528] [localization_v3_node.cpp:539] [onRelocalizationResult] relocalization recovery accumulating, waiting for confirmation window
+[2026-10-10 15:00:48.508] [INFO] [TID:139654724238528] [localization_v3_node.cpp:539] [onRelocalizationResult] relocalization recovery accumulating, waiting for confirmation window
+[2026-10-10 15:00:53.492] [WARN] [TID:139654724238528] [localization_v3_node.cpp:487] [onRelocalizationResult] relocalization failed, consecutive=2/10
+[2026-10-10 15:00:54.337] [INFO] [TID:139654724238528] [relocalization_ros_adapter.cpp:30] [stop] relocalization stop requested
+[2026-10-10 15:00:54.337] [ERROR] [TID:139654724238528] [localization_v3_node.cpp:726] [declareFailure] localization failure: recovery budget exhausted (15.000000s): GM consecutive failures=3
+[2026-10-10 15:01:07.506] [INFO] [TID:139654724238528] [localization_v3_node.cpp:938] [computeInitPoseZ] loaded map for initial pose z completion: /home/hhy/2004ros/relocalization_ws/global_map_manual_imu.pcd (12988414 pts)
+[2026-10-10 15:01:07.542] [INFO] [TID:139654724238528] [relocalization_ros_adapter.cpp:30] [stop] relocalization stop requested
+[2026-10-10 15:01:07.542] [INFO] [TID:139654724238528] [localization_v3_node.cpp:910] [publishGmAnchor] published gm anchor
+[2026-10-10 15:01:07.542] [INFO] [TID:139654724238528] [localization_v3_node.cpp:470] [onInitialPose] reset map->odom from manual initial pose frame=map z=1.39549 (verify within 5s)
+[2026-10-10 15:01:09.590] [INFO] [TID:139654724238528] [relocalization_ros_adapter.cpp:25] [start] relocalization start requested
+[2026-10-10 15:01:09.591] [WARN] [TID:139654724238528] [localization_v3_node.cpp:700] [enterTrackingLost] tracking lost: manual pose unverified (inlier ratio below threshold), starting relocalization recovery
+[2026-10-10 15:01:09.739] [WARN] [TID:139654724238528] [localization_v3_node.cpp:487] [onRelocalizationResult] relocalization failed, consecutive=1/10
+[2026-10-10 15:01:09.881] [WARN] [TID:139654724238528] [localization_v3_node.cpp:487] [onRelocalizationResult] relocalization failed, consecutive=2/10
+[2026-10-10 15:01:10.010] [WARN] [TID:139654724238528] [localization_v3_node.cpp:487] [onRelocalizationResult] relocalization failed, consecutive=3/10
+[2026-10-10 15:01:10.140] [WARN] [TID:139654724238528] [localization_v3_node.cpp:487] [onRelocalizationResult] relocalization failed, consecutive=4/10
+[2026-10-10 15:01:10.303] [WARN] [TID:139654724238528] [localization_v3_node.cpp:487] [onRelocalizationResult] relocalization failed, consecutive=5/10
+[2026-10-10 15:01:10.434] [WARN] [TID:139654724238528] [localization_v3_node.cpp:487] [onRelocalizationResult] relocalization failed, consecutive=6/10
+[2026-10-10 15:01:10.563] [WARN] [TID:139654724238528] [localization_v3_node.cpp:487] [onRelocalizationResult] relocalization failed, consecutive=7/10
+[2026-10-10 15:01:10.696] [WARN] [TID:139654724238528] [localization_v3_node.cpp:487] [onRelocalizationResult] relocalization failed, consecutive=8/10
+[2026-10-10 15:01:10.836] [WARN] [TID:139654724238528] [localization_v3_node.cpp:487] [onRelocalizationResult] relocalization failed, consecutive=9/10
+[2026-10-10 15:01:10.993] [WARN] [TID:139654724238528] [localization_v3_node.cpp:487] [onRelocalizationResult] relocalization failed, consecutive=10/10
+[2026-10-10 15:01:10.993] [INFO] [TID:139654724238528] [relocalization_ros_adapter.cpp:30] [stop] relocalization stop requested
+[2026-10-10 15:01:10.993] [ERROR] [TID:139654724238528] [localization_v3_node.cpp:726] [declareFailure] localization failure: relocalization recovery failed (10 consecutive failures)
+[2026-10-10 15:01:12.143] [INFO] [TID:139654724238528] [relocalization_ros_adapter.cpp:30] [stop] relocalization stop requested
+[2026-10-10 15:01:12.143] [INFO] [TID:139654724238528] [localization_v3_node.cpp:910] [publishGmAnchor] published gm anchor
+[2026-10-10 15:01:12.143] [INFO] [TID:139654724238528] [localization_v3_node.cpp:470] [onInitialPose] reset map->odom from manual initial pose frame=map z=1.39549 (verify within 5s)
+[2026-10-10 15:01:12.477] [INFO] [TID:139654724238528] [localization_v3_node.cpp:910] [publishGmAnchor] published gm anchor
+[2026-10-10 15:01:12.478] [INFO] [TID:139654724238528] [localization_v3_node.cpp:359] [handleGmTracking] manual pose verified by global matcher map_id=default inlier=0.907587 rmse=0.159935 pos=(9.13885, 37.4029)
+[2026-10-10 15:01:24.627] [INFO] [TID:139654724238528] [localization_v3_node.cpp:910] [publishGmAnchor] published gm anchor
+[2026-10-10 15:01:24.627] [INFO] [TID:139654724238528] [localization_v3_node.cpp:470] [onInitialPose] reset map->odom from manual initial pose frame=map z=-2.28243 (verify within 5s)
+[2026-10-10 15:01:24.976] [INFO] [TID:139654724238528] [localization_v3_node.cpp:910] [publishGmAnchor] published gm anchor
+[2026-10-10 15:01:24.976] [INFO] [TID:139654724238528] [localization_v3_node.cpp:359] [handleGmTracking] manual pose verified by global matcher map_id=default inlier=0.963532 rmse=0.12697 pos=(29.0457, 7.85823)

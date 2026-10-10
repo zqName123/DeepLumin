@@ -73,20 +73,24 @@ jump_guard:
 #       （不与人工位姿比距离——人工本身不精确），采纳并锚定 GM，继续常规跟踪。
 manual_pose:
   settle_sec: 0.3              # 人工位姿后丢弃 GM 结果的短窗口（等 GM 以新锚点算出的新鲜结果）
-  verify_timeout_sec: 5.0      # 仍未验证成功 → 转恢复流程（TRACKING_LOST）
+  verify_timeout_sec: 5.0      # 验证超时：仍未验证成功 → 转恢复流程（TRACKING_LOST）
+  verify_fail_threshold: 10    # 验证期连续未通过阈值 → 转恢复流程（独立计数，不计入跟踪失败）
   publish_gm_anchor: true      # 人工位姿/验证通过后向 GM 发锚点
   z_completion_enabled: true   # RViz 2D 初值 z 补全（附近地图点云高度中值）
   z_search_radius: 5.0         # z 补全搜索半径（m）
   map_pcd_path: ""             # z 补全用地图 PCD（留空则关闭）
 
 # -------------------- 快速失效判定 --------------------
-# 替代 v2 的"50 帧静默 + 30s 重定位"长等待。
+# 两级语义（下游契约）：
+#   TRACKING_LOST        = 定位不可信、正在恢复 → 下游停车（检测要快：0.3~0.5s 报出）
+#   LOCALIZATION_FAILURE = 恢复预算耗尽仍失败 = 无法恢复 → 停车 + 需人工
 failure_detection:
   gm_fail_fast_count: 3            # GM 连续失败/坏质阈值 → TRACKING_LOST（≈0.3s @10Hz）
   degraded_count: 20               # GM 连续退化阈值 → TRACKING_LOST
   map_miss_count: 3                # 出图连击阈值 → TRACKING_LOST（failure_reason="out of map"）
   no_correction_timeout_sec: 3.0   # 无有效修正看门狗（s）：被 jump guard 连续拒绝/GM 静默
-  lost_timeout_sec: 3.0            # TRACKING_LOST 未恢复超时（s）→ LOCALIZATION_FAILURE
+  lost_timeout_sec: 15.0           # TRACKING_LOST 恢复预算（s）：覆盖重定位 1~2 次完整匹配+确认窗口
+                                   # 耗尽未确认恢复 → LOCALIZATION_FAILURE（reloc 收 stop）
   slam_timeout_sec: 0.5            # SLAM 断流超时（s）→ 立即 LOCALIZATION_FAILURE
   reloc_failure_threshold: 10      # 重定位连续失败阈值 → LOCALIZATION_FAILURE
 

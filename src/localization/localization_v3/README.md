@@ -42,7 +42,7 @@ relocalization ──── /localization/relocalization/result (map->base_link)
 | 人工位姿 | 无条件写入（**不经 jump guard**）→ settle 0.3s 滤过期结果 → 首个质量 good 的匹配结果验证通过并锚定 GM → 从该位姿继续跟踪 |
 | 跟踪（TRACKING） | 质量三级分级 + **jump guard**（小跳直过 / 大跳 3 帧一致确认 / 超限拒绝）——防几何相似误匹配跳变 |
 | 恢复（TRACKING_LOST / FAILURE） | **不用 jump guard**（恢复即大跳变）：质量门限 + 恢复确认窗口（GM 3 次 / reloc 2 次） |
-| 失效判定 | 快计数 3 帧（≈0.3s）→ TRACKING_LOST；3s 未恢复 → LOCALIZATION_FAILURE；出图快路径 / 无修正看门狗 / SLAM 断流 |
+| 失效判定 | 两级语义：**TRACKING_LOST = 不可信、正在恢复 → 下游停车**（0.3~0.5s 快报出，恢复预算 15s 给 reloc 匹配）；**LOCALIZATION_FAILURE = 无法恢复 → 停车+人工**（预算耗尽）。另有出图快路径 / 无修正看门狗 / SLAM 断流；人工验证失败独立计数（`verify_fail_threshold`），不计入跟踪失败 |
 
 状态机（五态）：`UNINITIALIZED → RELOCALIZING → TRACKING ⇄ TRACKING_LOST → LOCALIZATION_FAILURE`
 人工位姿在任意状态生效并强制回 TRACKING。
