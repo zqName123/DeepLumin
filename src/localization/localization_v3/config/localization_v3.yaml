@@ -1,0 +1,124 @@
+# =============================================================================
+# localization_v3 配置文件
+#
+# 设计原则：一个阶段一个机制（详见 docs/localization_v3_optimization_plan.md）
+#   jump_guard   : 仅 TRACKING 常规 GM 修正 —— 防几何相似误匹配跳变
+#   manual_pose  : 人工位姿流程 —— settle 滤过期结果 + 匹配质量验证
+#   failure_detection : 快速失效判定 —— 快计数 / 出图快路径 / 看门狗 / 超时
+#   recovery     : 恢复确认窗口与驻留防抖
+#
+# 话题默认值与 localization_v2 保持一致，下游零改动。
+# =============================================================================
+
+# -------------------- 坐标系 --------------------
+frames:
+  map: map
+  odom: odom
+  base_link: base_link
+
+# -------------------- 话题 --------------------
+topics:
+  slam_odom: /localization/slam_odom                 # 输入：slam_odometry_v2 odom->base_link
+  global_matcher_result: /localization/global_matcher/result  # 输入：GM 匹配结果
+  initial_pose: /initialpose                          # 输入：RViz 人工初始位姿（最高优先级）
+  source_cloud: /localization/cloud_registered_effect # 输入：当前帧点云（仅可视化）
+  fused_odom: /localization_v2/odom                  # 输出：map->base_link 融合里程计
+  map_to_odom: /localization_v2/map_to_odom          # 输出：map->odom 修正量
+  fused_path: /localization_v2/path                  # 输出：融合轨迹（可视化）
+  status: /localization_v2/status                    # 输出：FusionStatus 定位状态
+  current_scan_in_map: /localization_v2/current_scan_in_map  # 输出：点云在 map 系（可视化）
+  gm_anchor: /localization_v2/gm_anchor              # 输出：通知 GM 重锚（人工位姿/验证/初始化仲裁后）
+  loc_point: /localization_v2/loc_point              # 输出：规划订阅的位姿
+
+# -------------------- 运行时 --------------------
+runtime:
+  output_rate_hz: 100.0        # 融合输出频率（Hz）
+  max_path_size: 5000          # 历史轨迹最大长度（防内存膨胀）
+  publish_tf: true             # 是否发布 TF
+  publish_map_to_odom_tf: true # 发布 map->odom（本节点负责）
+  publish_odom_to_base_tf: false  # odom->base 由 slam_odometry_v2 发布，避免重复
+  publish_path: true           # 是否发布历史轨迹
+  publish_current_scan_in_map: true  # 是否发布 map 系当前帧点云
+  base_yaw_offset: -1.5707963  # 适配下游 y 朝前的 yaw 偏移（弧度），0 表示不偏
+
+# -------------------- GM 结果语义与质量门限 --------------------
+global_matcher:
+  result_pose_frame: odom      # odom: 结果为 map->odom；base: 结果为 map->base_link
+  # 质量三级（只用 inlier_ratio / inlier_rmse，不使用 fitness_score）：
+  #   good     : inlier_ratio >= good_min 且 rmse <= max_inlier_rmse → 应用并清失败计数
+  #   degraded : inlier_ratio >= degraded_min 且 rmse <= max → 应用 + 退化计数
+  #   bad      : 其余（含 rmse 超标）→ 不应用 + 失败计数
+  good_min_inlier_ratio: 0.69      # 好/退化分界
+  degraded_min_inlier_ratio: 0.4   # 退化/差分界
+  max_inlier_rmse: 0.4             # RMSE 上限（米），超标一律 bad
+
+# -------------------- 跳变门限（仅 TRACKING 常规 GM 修正） --------------------
+# 目的：防几何相似（重复巷道）误匹配造成的不合理跳变。
+# 比较量为修正前后 fused_pose 变化量（不是 map_odom 绝对值差）。
+# 不适用：人工位姿写入、人工验证结果、恢复期（TRACKING_LOST/FAILURE）结果。
+jump_guard:
+  enabled: true
+  soft_max_translation: 1.5    # 小跳上限（m）：以内直接接受（正常修正）
+  soft_max_yaw_deg: 10.0        # 小跳上限（deg）
+  hard_max_translation: 10.0   # 大跳/拒绝分界（m）：以内需连续一致确认，以外拒绝
+  hard_max_yaw_deg: 20.0       # 大跳/拒绝分界（deg）
+  confirm_frames: 3            # 大跳需连续一致的候选帧数（单帧误匹配被拦下）
+  confirm_consistency_trans: 0.5    # 确认帧之间平移一致性（m）
+  confirm_consistency_yaw_deg: 2.0  # 确认帧之间偏航一致性（deg）
+  confirm_window_sec: 1.0      # 确认缓冲时效（s），超时未攒够帧数则清空
+
+# -------------------- 人工位姿流程 --------------------
+# 人工位姿优先级最高：写入不经 jump guard，输出立即生效。
+# 之后：settle 期丢弃过期 GM 结果 → 首个质量 good 的匹配结果即验证通过
+#       （不与人工位姿比距离——人工本身不精确），采纳并锚定 GM，继续常规跟踪。
+manual_pose:
+  settle_sec: 0.3              # 人工位姿后丢弃 GM 结果的短窗口（等 GM 以新锚点算出的新鲜结果）
+  verify_timeout_sec: 5.0      # 仍未验证成功 → 转恢复流程（TRACKING_LOST）
+  publish_gm_anchor: true      # 人工位姿/验证通过后向 GM 发锚点
+  z_completion_enabled: true   # RViz 2D 初值 z 补全（附近地图点云高度中值）
+  z_search_radius: 5.0         # z 补全搜索半径（m）
+  map_pcd_path: ""             # z 补全用地图 PCD（留空则关闭）
+
+# -------------------- 快速失效判定 --------------------
+# 替代 v2 的"50 帧静默 + 30s 重定位"长等待。
+failure_detection:
+  gm_fail_fast_count: 3            # GM 连续失败/坏质阈值 → TRACKING_LOST（≈0.3s @10Hz）
+  degraded_count: 20               # GM 连续退化阈值 → TRACKING_LOST
+  map_miss_count: 3                # 出图连击阈值 → TRACKING_LOST（failure_reason="out of map"）
+  no_correction_timeout_sec: 3.0   # 无有效修正看门狗（s）：被 jump guard 连续拒绝/GM 静默
+  lost_timeout_sec: 3.0            # TRACKING_LOST 未恢复超时（s）→ LOCALIZATION_FAILURE
+  slam_timeout_sec: 0.5            # SLAM 断流超时（s）→ 立即 LOCALIZATION_FAILURE
+  reloc_failure_threshold: 10      # 重定位连续失败阈值 → LOCALIZATION_FAILURE
+
+# -------------------- 恢复防抖 --------------------
+recovery:
+  gm_recovery_threshold: 3         # GM 恢复确认窗口：连续 N 次高质量才回到 TRACKING
+  reloc_recovery_threshold: 2      # 重定位恢复确认窗口：连续 N 次成功才回到 TRACKING
+  tracking_min_dwell_sec: 0.2      # TRACKING 最小驻留（仅防瞬时抖动，不拖慢失效发现）
+  tracking_lost_min_dwell_sec: 1.0 # TRACKING_LOST 最小驻留（防恢复抖动）
+
+# -------------------- 初始化策略 --------------------
+initialization:
+  require_initial_pose: false      # true: 必须有初值才输出；false: 无初值先以当前 map->odom 输出
+  use_relocalization_init: true    # 允许用重定位结果初始化
+  use_manual_initialpose: true     # 允许人工 initial pose 初始化/重置
+  use_global_matcher_init: true    # 允许 GM 自身成功即初始化
+
+# -------------------- 重定位接口 --------------------
+relocalization:
+  result_topic: /localization/relocalization/result   # 输入：RelocalizationResult（map->base_link）
+  command_topic: /localization_v2/relocalization/command  # 输出：start/stop
+  enabled: true
+  auto_start: true               # 未初始化时自动请求启动重定位
+  stop_on_success: true          # 重定位成功后停止
+  stop_on_manual_pose: true      # 人工位姿后停止
+  stop_on_global_match: true     # GM 初始化成功后停止
+  require_accepted: false        # true: 仅接受 accepted=true 的结果
+  min_inlier_ratio: 0.69         # 重定位结果质量门限：内点率下限
+  max_inlier_rmse: 0.4           # 重定位结果质量门限：RMSE 上限（米）
+  fallback_timeout: 8.0          # 双源初始化仲裁超时（s）：超时取已就绪源，防阻塞
+  result_max_age_sec: 3.0        # 初始化仲裁中重定位结果时效窗（s）
+
+# -------------------- 降级输出 --------------------
+degraded:
+  allow_degraded_output: true    # TRACKING_LOST 时是否继续输出降级位姿

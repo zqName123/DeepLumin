@@ -76,7 +76,7 @@ class IVox {
     bool GetClosestPoint(const PointType& pt, PointType& closest_pt);
 
     /// get nn with condition
-    bool GetClosestPoint(const PointType& pt, PointVector& closest_pt, int max_num = 5, double max_range = 5.0);
+    bool GetClosestPoint(const PointType& pt, PointVector& closest_pt, int max_num = 5, double max_range = 3.0);
 
     /// get nn in cloud
     bool GetClosestPoint(const PointVector& cloud, PointVector& closest_cloud);

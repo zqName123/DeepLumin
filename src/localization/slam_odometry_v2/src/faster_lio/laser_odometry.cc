@@ -120,6 +120,23 @@ bool LaserOdometry::LoadParamsFromYAML(const std::string &yaml_file) {
         extrinR_ = yaml["mapping"]["extrinsic_R"].as<std::vector<double>>();
         map_trim_radius_ = yaml["mapping"]["map_trim_radius"].as<float>(0.0f);
         map_trim_interval_frames_ = yaml["mapping"]["map_trim_interval_frames"].as<int>(10);
+        // iVox 体素硬顶（LRU 兜底）。默认 25 万体素 ≈ 0.5m 分辨率下覆盖 80m 半径的表面，
+        // 内存上限约 110MB（原默认 100 万 ≈ 400~500MB）。
+        ivox_options_.capacity_ = yaml["mapping"]["ivox_capacity"].as<std::size_t>(250000);
+
+        // 静止检测（移植自 lio_odometry_v2）：静止时不插点，与 GNSS/轮速开关解耦。
+        // enable=false 时 Update() 永不确认静止，回到无条件插点（运行时回退）。
+        if (yaml["stationary"]) {
+            auto st = yaml["stationary"];
+            stationary_opt_.enable = st["enable"].as<bool>(stationary_opt_.enable);
+            stationary_opt_.min_speed_mps = st["min_speed_mps"].as<double>(stationary_opt_.min_speed_mps);
+            stationary_opt_.resume_speed_mps =
+                st["resume_speed_mps"].as<double>(stationary_opt_.resume_speed_mps);
+            stationary_opt_.confirm_frames = st["confirm_frames"].as<int>(stationary_opt_.confirm_frames);
+            stationary_opt_.resume_hold_frames =
+                st["resume_hold_frames"].as<int>(stationary_opt_.resume_hold_frames);
+        }
+        stationary_.Configure(stationary_opt_);
 
         // 缓冲区治理（Stage 2）：不写 buffer_policy 段时用结构体默认值（=启用）
         if (yaml["buffer_policy"]) {
@@ -962,6 +979,22 @@ bool LaserOdometry::Run() {
         "IEKF Solve and Update");
 
     // update local map
+    //
+    // ---- 速度 → 静止判定（移植自 lio_odometry_v2）----
+    // 轮速必须自带新鲜度：last_can_.speed_kmh 是"最后一条 CAN 的值"，CAN 停发后会冻结，
+    // 用旧值会把在动的车误判为静止（那是导致地图不更新的已知 bug）。
+    // 判定基准是数据时间轴（本帧扫描末端时刻），不是 ros::Time::now()。
+    {
+        const double t_ref = measures_.lidar_end_time_;
+        const bool can_fresh =
+            has_can_ && std::fabs(t_ref - last_can_.timestamp) <= can_timeout_sec_;
+        speed_for_map_ = can_fresh ? std::fabs(last_can_.speed_kmh / 3.6)
+                                   : state_point_.vel.norm();
+        stationary_this_frame_ = stationary_.Update(speed_for_map_);
+    }
+
+    // 插点优先级：DCReg 冻结 > 静止 > 解除后尾帧 > 正常插点（串行短路，任一命中就不插）
+    //
     // 退化 episode 期间冻结增量：错配帧（实测 effect num 可暴跌至 152）的点不插入 iVox，
     // 阻止"错配状态→地图污染→后续全量更新焊死误差"正反馈。冻结不做剔除，地图保持冻结前规模。
     if (dcreg_constrain_enabled_ && map_freeze_this_frame_) {
@@ -969,6 +1002,21 @@ bool LaserOdometry::Run() {
         //                         << degenerate_hold_counter_ << "), effect num=" << effect_feat_num_;
         SYS_LOG(syslog::LogSeverity::WARNING, true) << "[DCReg] map incremental FROZEN (hold="
             << degenerate_hold_counter_ << "), effect num=" << effect_feat_num_;
+    } else if (stationary_this_frame_) {
+        // 静止时不插点：同一批点反复入图会导致地图膨胀/拖影。
+        // 注意与 GNSS/轮速开关无关，只由速度决定。
+        if (SHOULD_LOG(1.0)) {
+            SYS_LOG(syslog::LogSeverity::INFO, true)
+                << "[MAP] skip insert: stationary hold=" << stationary_.hold_count()
+                << " speed=" << speed_for_map_;
+        }
+    } else if (stationary_.resume_hold() > 0) {
+        // 解除静止后再跳过若干帧，等位姿稳定了才恢复插点
+        stationary_.TickResumeHold();
+        if (SHOULD_LOG(1.0)) {
+            SYS_LOG(syslog::LogSeverity::INFO, true)
+                << "[MAP] skip insert: resume hold=" << stationary_.resume_hold();
+        }
     } else {
         Timer::Evaluate([&, this]() { MapIncremental(); }, "    Incremental Mapping");
     }

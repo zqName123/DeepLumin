@@ -1,0 +1,98 @@
+<!--
+  localization_v3 定位链路启动文件
+
+  节点组成：
+    slam_odometry_v2   : 局部里程计（odom->base_link）
+    global_matcher_v2  : 全局点云匹配（输出 map->odom）
+    localization_v3    : 融合节点（本包）
+    global_relocalization : 重定位（初始化 / 跟踪丢失恢复）
+
+  典型运行：
+    roslaunch localization_v3 localization_v3.launch
+    roslaunch localization_v3 localization_v3.launch start_relocalization:=true
+-->
+<launch>
+  <arg name="slam_config" default="$(find slam_odometry_v2)/config/slam_odometry_v2.yaml" />
+  <arg name="relocalization_config" default="$(find relocalization)/config/relocalization.yaml" />
+
+  <arg name="start_slam" default="true" />
+  <arg name="start_relocalization" default="true" />
+  <arg name="start_aruco_reloc" default="false" />
+  <arg name="rviz" default="true" />
+
+  <arg name="play_bag" default="false" />
+  <arg name="bag" default="/home/hhy/2004ros/data/mimo.bag" />
+  <arg name="bag_rate" default="1.0" />
+  <arg name="bag_delay" default="5.0" />
+  <arg name="clock" default="false" />
+
+  <!-- <arg name="pcd_path" default="/home/hhy/2004ros/data/manual_mapping_out/global.pcd" /> -->
+  <arg name="pcd_path" default="/home/hhy/2004ros/relocalization_ws/global_map_manual_imu.pcd" />
+  <arg name="map_mode" default="single" />
+  <arg name="map_dir" default="" />
+
+  <!-- 日志路径 -->
+  <arg name="log_dir" default="$(find localization_v3)/../loclog" />
+
+  <param name="/use_sim_time" value="$(arg clock)" />
+
+  <!-- 1. slam_odometry_v2：局部里程计 -->
+  <node if="$(arg start_slam)" pkg="slam_odometry_v2" type="slam_odometry_v2_node"
+        name="slam_odometry_v2" output="screen">
+    <rosparam file="$(arg slam_config)" command="load" />
+    <param name="node/faster_lio_config_yaml" value="$(arg slam_config)" />
+    <param name="node/publish_tf" value="false" />
+  </node>
+
+  <!-- 2. localization_v3：融合节点 -->
+  <node pkg="localization_v3" type="localization_v3_node" name="localization_v3" output="screen">
+    <rosparam file="$(find localization_v3)/config/localization_v3.yaml" command="load" />
+
+    <param name="log_dir" value="$(arg log_dir)" />
+    <param name="traj_path" value="$(find localization_v3)/traj.txt" />
+
+    <!-- 人工初值 z 补全地图（与 global_matcher 共用 pcd_path） -->
+    <param name="manual_pose/map_pcd_path" value="$(arg pcd_path)" />
+  </node>
+
+  <!-- 3. global_matcher_v2：全局匹配（结果 = map->odom） -->
+  <node pkg="global_matcher_v2" type="global_matcher_v2_node" name="global_matcher_v2"
+        output="screen">
+    <rosparam file="$(find global_matcher_v2)/config/global_matcher_v2.yaml" command="load" />
+    <param name="log_dir" value="$(arg log_dir)" />
+    <param name="map/mode" value="$(arg map_mode)" />
+    <param name="map/pcd_path" value="$(arg pcd_path)" />
+    <param name="map/map_dir" value="$(arg map_dir)" />
+    <param name="topics/source_cloud" value="/localization/cloud_registered_effect" />
+    <param name="topics/initial_pose" value="/localization_v2/odom" />
+    <param name="topics/source_odom" value="/localization/slam_odom" />
+    <param name="runtime/source_cloud_is_odom_frame" value="true" />
+    <param name="runtime/source_cloud_frame" value="odom" />
+    <param name="result/pose_frame" value="odom" />
+  </node>
+
+  <!-- 4. 重定位：初始化 / 跟踪丢失恢复 -->
+  <node if="$(arg start_relocalization)" pkg="relocalization" type="global_relocalization_node"
+        name="global_relocalization" output="screen">
+    <rosparam file="$(arg relocalization_config)" command="load" />
+    <param name="log_dir" value="$(arg log_dir)" />
+    <param name="lidar_topic" value="/ouster/points" />
+    <param name="query_cloud_frame" value="lidar" />
+  </node>
+
+  <!-- 5. 可选：ArUco 视觉重定位（与 global_relocalization 共用 result topic） -->
+  <arg name="aruco_config_file" default="$(find aruco_relocalization)/config/aruco_relocalization.yaml"/>
+  <rosparam command="load" file="$(arg aruco_config_file)"/>
+  <node if="$(arg start_aruco_reloc)" pkg="aruco_relocalization" type="aruco_reloc_online_node"
+        name="aruco_reloc_online" output="screen" respawn="false">
+    <rosparam command="load" file="$(arg aruco_config_file)"/>
+    <param name="marker_map_path" value="$(find aruco_relocalization)/config/marker_map.yaml" />
+    <param name="log_dir" value="$(arg log_dir)" />
+  </node>
+
+  <node if="$(arg rviz)" pkg="rviz" type="rviz" name="localization_v3_rviz"
+        args="-d $(find localization_v3)/rviz/localization_v3.rviz" />
+
+  <node if="$(arg play_bag)" pkg="rosbag" type="play" name="localization_v3_bag"
+        args="--clock --delay=$(arg bag_delay) --rate=$(arg bag_rate) $(arg bag)" output="screen" />
+</launch>

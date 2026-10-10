@@ -1,0 +1,31 @@
+<?xml version="1.0"?>
+<package format="2">
+  <name>localization_v3</name>
+  <version>0.1.0</version>
+  <description>
+    localization_v3: 定位融合节点。融合 slam 局部里程计与 global_matcher 全局匹配
+    （map->odom 修正思路），人工位姿优先级最高（settle + 匹配质量验证），
+    jump guard 防几何相似跳变，快速失效判定（快计数/出图快路径/看门狗/超时）。
+  </description>
+  <maintainer email="deeplumin@example.com">DeepLumin Team</maintainer>
+  <license>BSD</license>
+
+  <buildtool_depend>catkin</buildtool_depend>
+
+  <depend>roscpp</depend>
+  <depend>std_msgs</depend>
+  <depend>geometry_msgs</depend>
+  <depend>nav_msgs</depend>
+  <depend>sensor_msgs</depend>
+  <depend>tf2_ros</depend>
+  <depend>pcl_ros</depend>
+  <depend>pcl_conversions</depend>
+  <depend>deeplumin_msgs</depend>
+  <depend>libpcl-dev</depend>
+  <depend>libeigen3-dev</depend>
+  <depend>deeplumin_health_checker</depend>
+
+  <export>
+    <build_type>catkin</build_type>
+  </export>
+</package>

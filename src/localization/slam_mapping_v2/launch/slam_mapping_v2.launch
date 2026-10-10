@@ -6,6 +6,7 @@
 
   <arg name="start_slam" default="true" />
   <arg name="rviz" default="true" />
+  <arg name="log_dir" default="$(find slam_mapping_v2)/../loclog" />
 
   <group if="$(arg start_slam)">
     <!-- <node pkg="slam_odometry_v2" type="slam_odometry_v2_node" name="slam_odometry_v2" output="screen">
@@ -19,6 +20,7 @@
 
   <node pkg="slam_mapping_v2" type="slam_mapping_v2_node" name="slam_mapping_v2" output="screen">
     <rosparam command="load" file="$(arg config)" />
+    <param name="log_dir" value="$(arg log_dir)" />
   </node>
 
   <node if="$(arg rviz)" pkg="rviz" type="rviz" name="mapping_rviz" 

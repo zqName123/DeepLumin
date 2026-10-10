@@ -28,6 +28,7 @@
 #include "options.h"
 #include "pointcloud_preprocess.h"
 #include "dcreg_wrapper.h"
+#include "stationary_detector.h"
 
 namespace faster_lio {
 
@@ -226,6 +227,14 @@ class LaserOdometry {
     double filter_size_map_min_ = 0;
     float map_trim_radius_ = 0.0f;        ///< iVox 局部地图剔除半径（米，0=不剔除）
     int map_trim_interval_frames_ = 10;   ///< 每 N 帧执行一次剔除
+
+    /// 静止检测（移植自 lio_odometry_v2）：静止时不往 iVox 插点，
+    /// 避免同一批点被反复插入导致地图膨胀/拖影。与 GNSS/轮速开关解耦。
+    StationaryDetector stationary_;
+    StationaryDetector::Options stationary_opt_;
+    /// 本帧是否静止（供日志/诊断读取）
+    bool stationary_this_frame_ = false;
+    double speed_for_map_ = 0.0;
 
     /// params
     std::vector<double> extrinT_{3, 0.0};  // lidar-imu translation
