@@ -11285,3 +11285,10 @@
 [2026-09-29 08:59:49.980] [INFO] [TID:126923867049664] [global_relocalization_node.cpp:129] [GlobalRelocalizationNode] Loaded 4798 descriptors
 [2026-09-29 08:59:49.980] [INFO] [TID:126923867049664] [global_relocalization_node.cpp:139] [GlobalRelocalizationNode] result_topic=/localization/relocalization/result frame_id=map child_frame_id=base_link lidar_frame_id=lidar_link query_cloud_frame=lidar map_id=default method=csc_vgicp command_topic=/localization_v2/relocalization/command
 [2026-09-29 08:59:49.980] [INFO] [TID:126923867049664] [global_relocalization_node.cpp:150] [GlobalRelocalizationNode] query_frame.rotate_xy_y_negx=true yaw_deg=0
+[2026-10-10 01:51:53.759] [INFO] [TID:131742321414784] [keyframe_database.cpp:52] [load] （no for visualization）Loaded global map: 996939 points, voxel_leaf=0.5
+[2026-10-10 01:51:53.998] [INFO] [TID:131742321414784] [csc_descriptor.cpp:642] [load] CscDescriptor] loaded entries=4798 sectors=60 height_bins=16 channels=4 height=[-1000,15] max_radius=100 min_range=3 ground=-1000 ring_key_candidates=300 path=/home/hhy/2004ros/relocalization_framework/csc_database_v6_pre.bin
+[2026-10-10 01:51:53.999] [INFO] [TID:131742321414784] [relocalization_core.cpp:63] [initialize] descriptor: csc entries=4798 sectors=60 height_bins=16 channels=4 similarity=l1
+[2026-10-10 01:51:53.999] [INFO] [TID:131742321414784] [relocalization_core.cpp:65] [initialize] matcher: vgicp voxel=0.5 coarse=10 fine=1 target=crop gate=20
+[2026-10-10 01:51:54.004] [INFO] [TID:131742321414784] [global_relocalization_node.cpp:129] [GlobalRelocalizationNode] Loaded 4798 descriptors
+[2026-10-10 01:51:54.004] [INFO] [TID:131742321414784] [global_relocalization_node.cpp:139] [GlobalRelocalizationNode] result_topic=/localization/relocalization/result frame_id=map child_frame_id=base_link lidar_frame_id=lidar_link query_cloud_frame=lidar map_id=default method=csc_vgicp command_topic=/localization_v2/relocalization/command
+[2026-10-10 01:51:54.004] [INFO] [TID:131742321414784] [global_relocalization_node.cpp:150] [GlobalRelocalizationNode] query_frame.rotate_xy_y_negx=true yaw_deg=0

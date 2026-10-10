@@ -4,7 +4,7 @@
 # =============================================================================
 
 runtime:
-  auto_start: false
+  auto_start: true
   task_name: "manual_mapping"
   output_root: "/home/hhy/2004ros/deeplumin_mapping_2"
   publish_tf: true           # 发布 map→odom（有关键帧后即发布）
@@ -96,7 +96,7 @@ loop_closure:
     # "vgicp"  : small_gicp 两级 VGICP（粗体素 + 细体素，推荐，抗部分重叠）
     # "gicp"   : small_gicp 两级 GICP（粗层降采样点云 + 细层原始分辨率，KdTree）
     # "pcl_icp": 原 PCL 点到面 ICP（对照）
-    type: "vgicp"
+    type: "pcl_icp"
     # 细层对应点最大距离（米）；原 PCL 路径硬编码 20m，过大易引入假对应
     max_correspondence_distance: 1.5
     max_iterations: 30

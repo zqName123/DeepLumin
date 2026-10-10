@@ -75,6 +75,14 @@ NodeConfig loadNodeConfig(ros::NodeHandle& pnh) {
     pnh.param<double>("node/startup/imu_warmup_duration", cfg.startup.imu_warmup_duration, 1.0);
     pnh.param<int>("node/startup/min_imu_samples", cfg.startup.min_imu_samples, 20);
 
+    // 订阅队列（Stage 1）：enable_override=false 时恢复旧常量
+    pnh.param<bool>("queue_size/enable_override", cfg.queue.enable_override, true);
+    pnh.param<int>("queue_size/imu", cfg.queue.imu, 200);
+    pnh.param<int>("queue_size/lidar", cfg.queue.lidar, 10);
+    pnh.param<int>("queue_size/wheel", cfg.queue.wheel, 100);
+    pnh.param<int>("queue_size/gnss", cfg.queue.gnss, 50);
+    pnh.param<int>("queue_size/correction", cfg.queue.correction, 50);
+
     return cfg;
 }
 

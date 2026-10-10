@@ -67,6 +67,18 @@ struct StartupConfig {
     int min_imu_samples = 20;
 };
 
+/// 订阅队列长度（单位：条）。
+/// enable_override=false 时逐字恢复旧常量（imu/lidar=200000, wheel=1000, gnss/correction=100），
+/// 用于运行时回退，无需重编译。详见 src/localization/docs/odom_buffer_memory_fix.md
+struct QueueSizeConfig {
+    bool enable_override = true;
+    int imu = 200;         // 200Hz × 1s
+    int lidar = 10;        // 10Hz × 1s，单帧 ~2MB，必须小
+    int wheel = 100;
+    int gnss = 50;
+    int correction = 50;
+};
+
 struct NodeConfig {
     FrameConfig frames;
     ExtrinsicConfig extrinsics;
@@ -74,6 +86,7 @@ struct NodeConfig {
     OutputTopicConfig outputs;
     SlamConfig slam;
     StartupConfig startup;
+    QueueSizeConfig queue;
     bool publish_tf = true;
     int local_map_publish_interval = 10;  ///< local_map 发布间隔（帧），0=每帧
 };

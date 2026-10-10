@@ -236,6 +236,21 @@ bool LaserOdometryCore::LoadParamsFromYAML(const std::string& yaml_file) {
         map_trim_radius_ = yaml["fasterlio"]["map_trim_radius"].as<float>(0.0f);
         map_trim_interval_frames_ = yaml["fasterlio"]["map_trim_interval_frames"].as<int>(10);
 
+        // 缓冲区治理（Stage 2）：不写 buffer_policy 段时用结构体默认值（=启用）
+        if (yaml["buffer_policy"]) {
+            auto bp = yaml["buffer_policy"];
+            buffer_policy_.enable = bp["enable"].as<bool>(buffer_policy_.enable);
+            buffer_policy_.lidar_keep_sec = bp["lidar_keep_sec"].as<double>(buffer_policy_.lidar_keep_sec);
+            buffer_policy_.lidar_max_frames = bp["lidar_max_frames"].as<int>(buffer_policy_.lidar_max_frames);
+            buffer_policy_.lidar_catchup_frames =
+                bp["lidar_catchup_frames"].as<int>(buffer_policy_.lidar_catchup_frames);
+            buffer_policy_.imu_keep_margin_sec =
+                bp["imu_keep_margin_sec"].as<double>(buffer_policy_.imu_keep_margin_sec);
+            buffer_policy_.imu_max_samples = bp["imu_max_samples"].as<int>(buffer_policy_.imu_max_samples);
+            buffer_policy_.imu_orphan_keep_sec =
+                bp["imu_orphan_keep_sec"].as<double>(buffer_policy_.imu_orphan_keep_sec);
+        }
+
     } catch (...) {
         return false;
     }
@@ -364,8 +379,89 @@ void LaserOdometryCore::ProcessPointCloud(const pcl::PointCloud<VelodynePoint>::
     ProcessPointCloud(out, timestamp);
 }
 
+/// 缓冲区治理（Stage 2）：时间裁剪 + 条数兜底 + drop-to-latest 追帧。
+/// 必须在持有 mtx_buffer_ 时调用（SyncPackages 开头、空判之前）。
+///
+/// 为什么 LiDAR 可以丢而 IMU 不能乱丢：LiDAR 丢帧由 IMU 跨空档积分
+/// （现有 imu_gap_limit 已支持）；IMU 丢在窗口内会破坏去畸变与预测。
+/// 因此 IMU 的裁剪下界跟随"最旧保留的 LiDAR 帧"，而不是 IMU 自身的时间窗。
+BufferDropCount LaserOdometryCore::PruneBuffers() {
+    BufferDropCount drop;
+    if (!buffer_policy_.enable) {
+        return drop;
+    }
+
+    // ---- LiDAR 侧 ----
+    // ① 时间窗：丢掉 t_newest_lidar - lidar_keep_sec 之前的帧
+    const double t_newest = time_buffer_.empty() ? 0.0 : time_buffer_.back();
+    while (!time_buffer_.empty() &&
+           (t_newest - time_buffer_.front()) > buffer_policy_.lidar_keep_sec) {
+        time_buffer_.pop_front();
+        lidar_buffer_.pop_front();
+        ++drop.lidar;
+    }
+    // ② 条数硬上限：时间戳冻结/卡顿时兜底
+    while (static_cast<int>(lidar_buffer_.size()) > buffer_policy_.lidar_max_frames) {
+        time_buffer_.pop_front();
+        lidar_buffer_.pop_front();
+        ++drop.lidar;
+    }
+    // ③ 追帧：已掉出实时则只留最新一帧，避免永久播旧账
+    if (static_cast<int>(lidar_buffer_.size()) > buffer_policy_.lidar_catchup_frames) {
+        drop.lidar += static_cast<int>(lidar_buffer_.size()) - 1;
+        time_buffer_.erase(time_buffer_.begin(), time_buffer_.end() - 1);
+        lidar_buffer_.erase(lidar_buffer_.begin(), lidar_buffer_.end() - 1);
+    }
+    // ④ 丢过帧就必须作废半状态：lidar_pushed_==true 时 measures_.scan_ 指向的是
+    //    旧的 front()，lidar_end_time_ 也随之过期；不作废会让下一帧用错误时间窗消费 IMU。
+    if (drop.lidar > 0) {
+        lidar_pushed_ = false;
+        measures_.scan_.reset();
+    }
+
+    // ---- IMU 侧（下界跟随最旧保留的 LiDAR）----
+    if (imu_buffer_.empty()) {
+        return drop;
+    }
+    double t_floor = 0.0;
+    if (!time_buffer_.empty()) {
+        t_floor = time_buffer_.front() - buffer_policy_.imu_keep_margin_sec;
+    } else {
+        // LiDAR 断流：只保留最近 imu_orphan_keep_sec 的 IMU，否则 SyncPackages 的
+        // "lidar_buffer_ 为空直接 return" 会让 IMU 一枚都不消费、无限增长。
+        t_floor = imu_buffer_.back()->timestamp - buffer_policy_.imu_orphan_keep_sec;
+    }
+    while (!imu_buffer_.empty() && imu_buffer_.front()->timestamp < t_floor) {
+        imu_buffer_.pop_front();
+        ++drop.imu;
+    }
+    // 条数兜底
+    while (static_cast<int>(imu_buffer_.size()) > buffer_policy_.imu_max_samples) {
+        imu_buffer_.pop_front();
+        ++drop.imu;
+    }
+    return drop;
+}
+
 bool LaserOdometryCore::SyncPackages() {
     std::lock_guard<std::mutex> lock(mtx_buffer_);
+
+    // 缓冲区治理（Stage 2）：必须在空判之前执行——LiDAR 断流时也要裁剪 IMU。
+    const BufferDropCount dropped = PruneBuffers();
+    if (dropped.lidar > 0 || dropped.imu > 0) {
+        dropped_lidar_frames_ += static_cast<std::uint64_t>(dropped.lidar);
+        dropped_imu_samples_ += static_cast<std::uint64_t>(dropped.imu);
+        if (SHOULD_LOG(1.0)) {
+            SYS_LOG(syslog::LogSeverity::WARNING, true)
+                << "[BUFFER] drop lidar=" << dropped.lidar
+                << " (total=" << dropped_lidar_frames_ << ")"
+                << " drop imu=" << dropped.imu
+                << " (total=" << dropped_imu_samples_ << ")"
+                << " buf_lidar=" << lidar_buffer_.size()
+                << " buf_imu=" << imu_buffer_.size();
+        }
+    }
+
     if (lidar_buffer_.empty() || imu_buffer_.empty()) {
         return false;
     }

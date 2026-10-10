@@ -50,6 +50,18 @@ outputs:
   registered_scan_topic: "/localization/cloud_registered"
   effect_scan_topic: "/localization/cloud_registered_effect"
 
+# -------------------- 节点层：订阅队列（单位：条）--------------------
+# 队列不是越大越好：LiDAR 单帧 ~2MB，旧值 200000 理论上限数十 GB。
+# enable_override: false 时恢复旧常量（imu/lidar=200000, wheel=1000, gnss/correction=100）。
+# 详见 src/localization/docs/odom_buffer_memory_fix.md
+queue_size:
+  enable_override: true
+  imu: 200          # 200Hz × 1s
+  lidar: 10         # 10Hz × 1s
+  wheel: 100
+  gnss: 50
+  correction: 50
+
 # -------------------- 节点层：运行参数 --------------------
 node:
   publish_tf: false
@@ -70,8 +82,8 @@ common:
 
 # 轮速/GNSS 辅助：唯一来源（核心 yaml 读取 + 节点订阅开关共用）
 vel_gnss:
-  use_vel: true    # 轮速观测（3D 世界系速度伪观测，LiDAR→轮速→GNSS 顺序更新第二级）
-  use_gnss_attitude: true
+  use_vel: false    # 轮速观测（3D 世界系速度伪观测，LiDAR→轮速→GNSS 顺序更新第二级）
+  use_gnss_attitude: false
   can_vel_diff_thresh_kmh: 2.0
   can_timeout_sec: 0.5
   gnss_attitude_timeout_sec: 0.2
@@ -157,11 +169,25 @@ mapping:
   #               0.0, 1.0, 0.0,
   #               0.0, 0.0, 1.0]
 
-point_filter_num: 1
-max_iteration: 6
-filter_size_surf: 0.1            # 对齐 lm_slam（原 0.2）：稀疏点 → LiDAR 单帧信息量天然小一个量级，
+point_filter_num: 2
+max_iteration: 4
+filter_size_surf: 0.35            # 对齐 lm_slam（原 0.2）：稀疏点 → LiDAR 单帧信息量天然小一个量级，
 filter_size_map: 0.5             # 对齐 lm_slam（原 0.35）：P_pitch 不被钉死，轮速/GNSS 无需干预即有增益
 
 ivox_grid_resolution: 0.5
 ivox_nearby_type: 18     # 6 / 18 / 26
 esti_plane_threshold: 0.1
+
+# -------------------- 算法层：缓冲区治理（Stage 2）--------------------
+# 解决：lidar_buffer_/imu_buffer_ 无界 + SyncPackages 每 tick 只弹 1 帧，
+#       掉实时后缓冲单调增长、永远播旧账。
+# enable: false 时 PruneBuffers() 直接返回，恢复无界缓冲（运行时回退）。
+# 详见 src/localization/docs/odom_buffer_memory_fix.md
+buffer_policy:
+  enable: false
+  lidar_keep_sec: 0.8          # LiDAR 时间窗
+  lidar_max_frames: 10         # LiDAR 条数硬上限（时间戳冻结时兜底）
+  lidar_catchup_frames: 3      # 超过即 drop-to-latest，只留最新一帧
+  imu_keep_margin_sec: 0.2     # IMU 下界 = 最旧 LiDAR 时间 - margin
+  imu_max_samples: 3000        # IMU 条数硬上限
+  imu_orphan_keep_sec: 2.0     # LiDAR 断流时 IMU 相对自身的保留窗

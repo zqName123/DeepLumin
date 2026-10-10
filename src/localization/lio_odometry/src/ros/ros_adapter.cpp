@@ -42,38 +42,46 @@ bool RosAdapter::Init(ros::NodeHandle& nh, ros::NodeHandle& pnh) {
 
     correction_handler_ = std::make_unique<slam_odometry::CorrectionHandler>();
 
+    // 订阅队列收敛（Stage 1）：队列单位是条不是字节，LiDAR 旧值 200000 × ~2MB 理论上限数十 GB。
+    // enable_override=false 时逐字恢复旧常量，用于运行时回退（docs/odom_buffer_memory_fix.md）。
+    const int q_imu = config_.queue.enable_override ? config_.queue.imu : 200000;
+    const int q_lidar = config_.queue.enable_override ? config_.queue.lidar : 200000;
+    const int q_wheel = config_.queue.enable_override ? config_.queue.wheel : 1000;
+    const int q_gnss = config_.queue.enable_override ? config_.queue.gnss : 100;
+    const int q_correction = config_.queue.enable_override ? config_.queue.correction : 100;
+
     if (config_.external.use_imu) {
-        imu_sub_ = nh.subscribe(config_.external.imu_topic, 200000, &RosAdapter::OnImu, this);
+        imu_sub_ = nh.subscribe(config_.external.imu_topic, q_imu, &RosAdapter::OnImu, this);
         // ROS_INFO("Subscribed IMU: %s", config_.external.imu_topic.c_str());
-        SYS_LOG(syslog::LogSeverity::INFO, true) 
-                << "Subscribed IMU: " << config_.external.imu_topic;
+        SYS_LOG(syslog::LogSeverity::INFO, true)
+                << "Subscribed IMU: " << config_.external.imu_topic << " queue=" << q_imu;
     }
 
-    lidar_sub_ = nh.subscribe(config_.external.lidar_topic, 200000, &RosAdapter::OnLidar, this);
+    lidar_sub_ = nh.subscribe(config_.external.lidar_topic, q_lidar, &RosAdapter::OnLidar, this);
     // ROS_INFO("Subscribed LiDAR: %s", config_.external.lidar_topic.c_str());
     SYS_LOG(syslog::LogSeverity::INFO, true) 
-                << "Subscribed LiDAR: " << config_.external.lidar_topic;
+                << "Subscribed LiDAR: " << config_.external.lidar_topic << " queue=" << q_lidar;
 
     if (config_.external.use_wheel_speed) {
-        wheel_sub_ = nh.subscribe(config_.external.wheel_topic, 1000, &RosAdapter::OnWheelSpeed, this);
+        wheel_sub_ = nh.subscribe(config_.external.wheel_topic, q_wheel, &RosAdapter::OnWheelSpeed, this);
         // ROS_INFO("Subscribed Wheel: %s", config_.external.wheel_topic.c_str());
         SYS_LOG(syslog::LogSeverity::INFO, true) 
-                << "Subscribed Wheel: " << config_.external.wheel_topic;
+                << "Subscribed Wheel: " << config_.external.wheel_topic << " queue=" << q_wheel;
     }
 
     if (config_.external.use_gnss) {
-        gnss_sub_ = nh.subscribe(config_.external.gnss_topic, 100, &RosAdapter::OnGnss, this);
+        gnss_sub_ = nh.subscribe(config_.external.gnss_topic, q_gnss, &RosAdapter::OnGnss, this);
         // ROS_INFO("Subscribed GNSS: %s", config_.external.gnss_topic.c_str());
         SYS_LOG(syslog::LogSeverity::INFO, true) 
-                << "Subscribed GNSS: " << config_.external.gnss_topic;
+                << "Subscribed GNSS: " << config_.external.gnss_topic << " queue=" << q_gnss;
     }
 
     if (config_.external.use_correction) {
         correction_sub_ =
-            nh.subscribe(config_.external.correction_topic, 100, &RosAdapter::OnCorrection, this);
+            nh.subscribe(config_.external.correction_topic, q_correction, &RosAdapter::OnCorrection, this);
         // ROS_INFO("Subscribed Correction: %s", config_.external.correction_topic.c_str());
         SYS_LOG(syslog::LogSeverity::INFO, true) 
-                << "Subscribed Correction: " << config_.external.correction_topic;
+                << "Subscribed Correction: " << config_.external.correction_topic << " queue=" << q_correction;
     }
 
     if (config_.outputs.publish_odom) {

@@ -119,14 +119,22 @@ class SlamOdometryV2Node {
             config_.slam.wheel_velocity_noise, config_.slam.gnss_attitude_noise);
 
         // 3. 订阅传感器
-        imu_sub_ = nh_.subscribe(config_.sensors.imu, 200, &SlamOdometryV2Node::onImu, this);
-        lidar_sub_ = nh_.subscribe(config_.sensors.lidar, 10, &SlamOdometryV2Node::onLidar, this);
+        // 订阅队列配置化（Stage 1）：队列单位是条不是字节，LiDAR 单帧 ~2MB 必须小。
+        // enable_override=false 时逐字恢复旧常量（imu/lidar=200000, wheel=1000, gnss=100），
+        // 用于运行时回退（docs/odom_buffer_memory_fix.md）。
+        const int q_imu = config_.queue.enable_override ? config_.queue.imu : 200000;
+        const int q_lidar = config_.queue.enable_override ? config_.queue.lidar : 200000;
+        const int q_wheel = config_.queue.enable_override ? config_.queue.wheel : 1000;
+        const int q_gnss = config_.queue.enable_override ? config_.queue.gnss : 100;
+
+        imu_sub_ = nh_.subscribe(config_.sensors.imu, q_imu, &SlamOdometryV2Node::onImu, this);
+        lidar_sub_ = nh_.subscribe(config_.sensors.lidar, q_lidar, &SlamOdometryV2Node::onLidar, this);
         if (config_.slam.use_vel) {
-            can_sub_ = nh_.subscribe(config_.sensors.wheel, 1000, &SlamOdometryV2Node::onCan, this);
+            can_sub_ = nh_.subscribe(config_.sensors.wheel, q_wheel, &SlamOdometryV2Node::onCan, this);
         }
         // GNSS 订阅独立于轮速开关（否则关轮速做 GNSS 隔离调试时数据源一起消失）
         if (config_.slam.use_gnss_attitude) {
-            gnss_sub_ = nh_.subscribe(config_.sensors.gnss, 100, &SlamOdometryV2Node::onGnss, this);
+            gnss_sub_ = nh_.subscribe(config_.sensors.gnss, q_gnss, &SlamOdometryV2Node::onGnss, this);
         }
 
         // 4. 发布结果（话题与 slam_odometry 当前外接形式一致）

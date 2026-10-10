@@ -36,8 +36,8 @@
   <arg name="bag_delay" default="5.0" />
   <arg name="clock" default="true" />
 
-  <arg name="pcd_path" default="/home/hhy/2004ros/relocalization_ws/global_map_manual_imu.pcd" />
-  <!-- <arg name="pcd_path" default="/home/hhy/2004ros/data/manual_mapping_out/global.pcd" /> -->
+  <!-- <arg name="pcd_path" default="/home/hhy/2004ros/relocalization_ws/global_map_manual_imu.pcd" /> -->
+  <arg name="pcd_path" default="/home/hhy/2004ros/data/manual_mapping_out/global.pcd" />
   
   <!-- 日志路径-->
   <arg name="log_dir" default="$(find localization_v2)/../loclog" />

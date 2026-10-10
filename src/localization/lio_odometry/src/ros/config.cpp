@@ -61,6 +61,16 @@ bool NodeConfig::LoadFromYAML(const std::string& path) {
             external.use_gnss = vg["use_gnss"].as<bool>(external.use_gnss);
         }
 
+        if (yaml["lio_odometry"]["queue_size"]) {
+            auto q = yaml["lio_odometry"]["queue_size"];
+            queue.enable_override = q["enable_override"].as<bool>(queue.enable_override);
+            queue.imu = q["imu"].as<int>(queue.imu);
+            queue.lidar = q["lidar"].as<int>(queue.lidar);
+            queue.wheel = q["wheel"].as<int>(queue.wheel);
+            queue.gnss = q["gnss"].as<int>(queue.gnss);
+            queue.correction = q["correction"].as<int>(queue.correction);
+        }
+
         if (yaml["lio_odometry"]["outputs"]) {
             auto out = yaml["lio_odometry"]["outputs"];
             outputs.publish_odom = out["publish_odom"].as<bool>(outputs.publish_odom);

@@ -1,0 +1,8 @@
+<launch>
+  <!-- type 必须与 CMakeLists.txt 的 add_executable 目标名一致。
+       目标名带 _v2 后缀是必须的：与 lio_odometry 包的同名目标冲突会导致同工作区无法共存。 -->
+  <node pkg="lio_odometry_v2" type="lio_odometry_v2_node" name="lio_odometry_v2" output="screen">
+    <param name="log_dir" value="$(find lio_odometry_v2)/../loclog" />
+    <param name="config_path" value="$(find lio_odometry_v2)/config/lio_odometry.yaml" />
+  </node>
+</launch>

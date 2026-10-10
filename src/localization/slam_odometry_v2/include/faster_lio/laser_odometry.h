@@ -62,6 +62,28 @@ struct SensorHealth {
     }
 };
 
+/// 缓冲区治理策略（Stage 2）。
+/// 问题：lidar_buffer_/time_buffer_/imu_buffer_ 无界，处理跟不上时单调增长，
+///       且 SyncPackages 每 tick 只弹 1 帧，掉实时后永远播旧账。
+/// 策略：时间裁剪为主 + 条数兜底 + drop-to-latest 追帧；LiDAR/IMU 联合裁剪。
+/// enable=false 时 PruneBuffers() 直接返回，等于不存在（运行时回退）。
+/// 详见 src/localization/docs/odom_buffer_memory_fix.md
+struct BufferPolicyConfig {
+    bool enable = true;                ///< false → 旧行为（无界缓冲）
+    double lidar_keep_sec = 0.8;       ///< LiDAR 时间窗
+    int lidar_max_frames = 10;         ///< LiDAR 条数硬上限（时间戳冻结时兜底）
+    int lidar_catchup_frames = 3;      ///< 超过即 drop-to-latest，只留最新一帧
+    double imu_keep_margin_sec = 0.2;  ///< IMU 下界 = 最旧 LiDAR 时间 - margin
+    int imu_max_samples = 3000;        ///< IMU 条数硬上限
+    double imu_orphan_keep_sec = 2.0;  ///< LiDAR 断流时 IMU 相对自身的保留窗
+};
+
+/// PruneBuffers() 的丢弃统计，供限频日志
+struct BufferDropCount {
+    int lidar = 0;
+    int imu = 0;
+};
+
 /// 纯里程计核心：与 faster_lio_ws LaserMapping 的算法部分一致
 class LaserOdometry {
    public:
@@ -158,6 +180,11 @@ class LaserOdometry {
 
     bool LoadParamsFromYAML(const std::string &yaml);
 
+    /// 缓冲区治理（Stage 2）：时间裁剪 + 条数兜底 + drop-to-latest。
+    /// 必须在持有 mtx_buffer_ 时调用（SyncPackages 开头）。
+    /// 丢帧时会作废 lidar_pushed_ 半状态并断开 measures_.lidar_ 引用。
+    BufferDropCount PruneBuffers();
+
     void PrintState(const state_ikfom &s);
 
     /// 轮速/GNSS 辅助校正（与 faster_lio_ws ApplyVelocityGnssAid 一致）
@@ -220,6 +247,11 @@ class LaserOdometry {
     std::deque<double> time_buffer_;
     std::deque<PointCloudType::Ptr> lidar_buffer_;
     std::deque<sensor_msgs::Imu::ConstPtr> imu_buffer_;
+
+    /// 缓冲区治理策略与丢弃计数（Stage 2，见 docs/odom_buffer_memory_fix.md）
+    BufferPolicyConfig buffer_policy_;
+    std::uint64_t dropped_lidar_frames_ = 0;
+    std::uint64_t dropped_imu_samples_ = 0;
 
     /// options
     bool time_sync_en_ = false;

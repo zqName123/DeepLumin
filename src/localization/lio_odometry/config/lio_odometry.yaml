@@ -34,8 +34,20 @@ lio_odometry:
     odom_topic: "/slam_odometry/odom"
     registered_scan_topic: "/slam_odometry/cloud_registered"
     effect_scan_topic: "/slam_odometry/cloud_effect"
-    publish_tf: false  
+    publish_tf: false
     local_map_publish_interval: 10
+
+  # -------------------- 订阅队列（单位：条）--------------------
+  # 队列不是越大越好：LiDAR 单帧 ~2MB，旧值 200000 理论上限数十 GB。
+  # enable_override: false 时恢复旧常量（imu/lidar=200000, wheel=1000, gnss/correction=100）。
+  # 详见 src/localization/docs/odom_buffer_memory_fix.md
+  queue_size:
+    enable_override: true
+    imu: 200          # 200Hz × 1s
+    lidar: 10         # 10Hz × 1s
+    wheel: 100
+    gnss: 50
+    correction: 50
 
 fasterlio:
   # 点云采样与 IMU 噪声对齐原版 launch 使用的 default_vbr.yaml。
@@ -69,8 +81,8 @@ fasterlio:
   map_trim_interval_frames: 10 # 每 N 帧执行一次剔除（控制开销）
 
 vel_gnss:
-  use_wheel_speed: true
-  use_gnss: true
+  use_wheel_speed: false
+  use_gnss: false
   wheel_velocity_noise: 0.009   # 0.33
   gnss_attitude_noise: 0.001   # 0.03
   gnss_pitch_window_size: 10
@@ -82,3 +94,17 @@ vel_gnss:
   wheel_huber_delta: 0.8        # Huber 阈值 m/s，制动滑移残差超限时自动降权、不丢弃
   wheel_min_speed: 0.5          # 区间均速低于此值不更新（m/s）
   wheel_max_age: 0.15           # 最新轮速样本最大允许年龄（s）
+
+# -------------------- 缓冲区治理（Stage 2）--------------------
+# 解决：lidar_buffer_/imu_buffer_ 无界 + SyncPackages 每 tick 只弹 1 帧，
+#       掉实时后缓冲单调增长、永远播旧账。
+# enable: false 时 PruneBuffers() 直接返回，恢复无界缓冲（运行时回退）。
+# 详见 src/localization/docs/odom_buffer_memory_fix.md
+buffer_policy:
+  enable: true
+  lidar_keep_sec: 0.8          # LiDAR 时间窗
+  lidar_max_frames: 10         # LiDAR 条数硬上限（时间戳冻结时兜底）
+  lidar_catchup_frames: 3      # 超过即 drop-to-latest，只留最新一帧
+  imu_keep_margin_sec: 0.2     # IMU 下界 = 最旧 LiDAR 时间 - margin
+  imu_max_samples: 3000        # IMU 条数硬上限
+  imu_orphan_keep_sec: 2.0     # LiDAR 断流时 IMU 相对自身的保留窗
