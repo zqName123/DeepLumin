@@ -1,0 +1,16 @@
+<!--
+  dr_odometry_v2 启动文件
+  输出 /localization/dr_odom 供 localization_v3 的 LocalOdomSource 消费（SLAM 断流备用源）。
+-->
+<launch>
+  <arg name="log_dir" default="$(find dr_odometry_v2)/../loclog" />
+  <!-- 全局时基：true=ROS 时钟跟随 /clock（rosbag play 必须带 clock）；false=墙钟（实车/不带 clock 回放） -->
+  <arg name="use_sim_time" default="false" />
+
+  <param name="/use_sim_time" value="$(arg use_sim_time)" />
+
+  <node pkg="dr_odometry_v2" type="dr_odometry_v2_node" name="dr_odometry_v2" output="screen">
+    <rosparam file="$(find dr_odometry_v2)/config/dr_odometry_v2.yaml" command="load" />
+    <param name="log_dir" value="$(arg log_dir)" />
+  </node>
+</launch>

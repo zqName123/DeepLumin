@@ -1,366 +1,408 @@
-# DR 航位推算接管设计文档（SLAM 断流容错）
+# DR 航位推算接管设计文档（SLAM 断流容错）— 定稿
 
-> 版本：v1.0（设计评审稿，不含代码改动）
+> 版本：v2.0（完整方案，替代 v1.x 迭代稿）
 > 日期：2026-10-10
-> 关联：`docs/localization_v3_optimization_plan.md`（v3 主优化方案）
-> 范围：`localization_v3` 增加局部里程计源管理（SLAM 主 / DR 备）；`dr_odometry` 仅做只读审计 + 可选改进建议，主方案不改它。
+> 关联：`localization_v3_optimization_plan.md`（v3 主优化方案，本文是其扩展）
+> 改动范围：`dr_odometry`（观测接口，P0）+ `localization_v3`（源管理/fallback 云/失效扩展）。**本文档为设计方案，未含代码改动。**
 
 ---
 
-## 0. 背景与目标
+## 0. 问题、前提与问答速览
 
-当前 `localization_v3` 的局部里程计**只有一个来源**：`slam_odometry_v2`（`/localization/slam_odom`）。该链路断流后：
+**问题**：`localization_v3` 的局部里程计只有 SLAM 一个来源，断流后融合位姿冻结、`slam_timeout` 直接判 LOCALIZATION_FAILURE——完全失效。引入 `dr_odometry` 做短时备用。
 
-- `fusion_core` 的 `odom_base_` 冻结 → 融合位姿不再推进；
-- 失效判定 `slam_timeout_sec=0.5s` 触发 → **直接 LOCALIZATION_FAILURE**，系统完全失效。
+**前提（贯穿全文）**：dr_odometry 绝对精度差（无 GNSS 时 yaw 陀螺漂移 + 轮速积分误差），只适合"输出保活的短时桥接"。本方案的治本手段是**用定位结果辅助标定 DR**（§4.1），把它的短时精度提到可用水平。
 
-目标：引入 `dr_odometry`（IMU+轮速 ESKF）作为**短时备用里程计**——SLAM 断流时从当前位置继续提供 odom 位姿，**匹配判断机制与状态机转换保持完全一致**；SLAM 恢复后无痕接管回来。
-
-设计诉求（对应提问 1~4）：
-
-| # | 问题 | 本文回答 |
+| # | 问题 | 答案（详见） |
 |---|---|---|
-| Q1 | DR 与 SLAM 坐标系不一致，如何从当前位置续推？常驻运行是否冗余？ | §3.2：热备 + 换源时刻一次对齐（数学见 §4.1）；常驻成本论证见 §3.2-C |
-| Q2 | DR 接管后失效怎么判？点云怎么办？ | §4.2：原始点云按统一 odom 位姿注册 → GM 匹配/质量分级/失效计数**机制不变** |
-| Q3 | SLAM 恢复如何回切？如何丝滑？ | §4.3：回切重锚（保 map_base 连续）+ 滞回防抖，数学见 §4.3 |
-| Q4 | DR 无 GPS 时是否只靠姿态+轮速？IMU+轮速融合对不对？开关怎么留？ | §2.2 审计结论 + §4.6 开关矩阵与短时推理约定 |
+| Q1 | DR 订阅定位的 status + odom，status 正常时把 odom 作观测更新 DR 状态，并做跳变判断防伪跳变污染，可行吗？ | **可行，本方案的核心机制 §4.1**。门控= status TRACKING + SLAM 新鲜；跳变判断=创新分级（小跳直收/大跳多帧一致/超限拒） |
+| Q2 | 文档说对齐到 SLAM odom 系，但定位发布的是 map 系，该用哪个？ | **DR 世界系 = map 系**（§3.2）。观测=定位 map->base 零转换；接管对齐量退化为现成的 `map_odom(t0)⁻¹`。"对齐 odom 系"版本已废弃（转换是恒等式，见 §3.2 对比表） |
+| Q3 | DR 源替换时直接替换即可？判断校验/状态切换要改吗？ | **位姿层不能直接换**（需锚定投影 + 源点云 fallback + 失效源信号扩展）；**判断/校验/状态机完全不改**（§3.1、§5.3） |
+| Q4 | 无 GPS 时 DR 靠什么？IMU+轮速融合对不对？开关怎么留？ | 审计 §1.3 全部通过；开关矩阵 §4.6 保持不变 |
+| Q5 | DR 效果差、热备是否有问题？ | 裸热备有问题；本方案 = **辅助标定热备 + 接管准入 + 保活桥接定位**（§3.4/§4.2） |
+| Q6 | SLAM 正常时用定位结果约束 DR 零偏，断流时 DR 自带好估计？ | **成立，治本**（§4.1）：外部姿态观测使 gyro bias 可观，yaw 漂移率降一个量级 |
 
 ---
 
-## 1. 现状分析
+## 1. 现状与审计
 
-### 1.1 localization_v3 的单源依赖（断流即失效链路）
+### 1.1 localization_v3 的单源依赖（断流即失效）
 
 ```
-slam_odometry_v2 ──/localization/slam_odom───────────► fusion_.setOdomBase()   （唯一 odom 输入）
-                 ──/localization/cloud_registered_effect─► GM 源点云            （唯一匹配点云来源）
-                                                          │
-slam 断流 ──► odom_base 冻结 / GM 无源点云 ──► failure_detector.slamTimeout(0.5s)
-                                              └──► forceLocalizationFailure（直接失效）
+slam_odometry_v2 ──/localization/slam_odom────────────► fusion_.setOdomBase()   （唯一 odom 输入）
+                 ──/localization/cloud_registered_effect─► GM 源点云             （唯一匹配点云来源）
+slam 断流 ──► odom_base 冻结 / GM 无源点云 ──► slam_timeout(0.5s) ──► 直接 LOCALIZATION_FAILURE
 ```
 
-受影响的三件事：**位姿推进**（odom_base）、**匹配判据**（GM 源点云）、**失效判定**（slam_timeout 直接判死）。接管方案必须同时兜住这三件事。
+受影响三件事：**位姿推进**、**匹配点云**、**失效判定**。接管方案必须同时兜住。
 
-### 1.2 dr_odometry 现状（只读梳理）
+### 1.2 dr_odometry 现状
 
 | 项 | 现状 | 位置 |
 |---|---|---|
-| 架构 | 15 维误差状态卡尔曼（ESKF）：p/v/θ/bg/ba | `dr_odometry/core/dr_eskf.*` |
-| 预测 | IMU 中值积分（陀螺推姿态、加计推速度，`max_dt=0.05` 截断） | `dr_eskf.cpp:82-129,163-200` |
-| 观测 | 轮速（世界系纵向速度 + 非完整约束）、GNSS（heading/velocity/position 三个独立开关） | `dr_eskf.cpp:213-299` |
-| 输出 | `/localization/dr_odom`（nav_msgs/Odometry，frames `odom->base_link`）、status、path | `dr_odometry_node.cpp:62-64` |
-| 坐标系 | 自己的局部系：原点=启动时刻（或首个有效 GNSS 位置） | `dr_odometry.yaml` 头注释 |
-| 运行方式 | **常驻**：spin 循环 100Hz 发布，IMU 回调驱动滤波 | `dr_odometry_node.cpp:79-86` |
-| 状态注入 | `DrEskf::reset(DrState)` 核心已有（"外部强制重置"），**节点未暴露接口** | `dr_eskf.hpp:43,69-73` |
-| 资源 | 纯滤波（无点云），每 IMU 帧一次 15×15 传播 + 1~4 维更新 | — |
+| 架构 | 15 维 ESKF（p/v/θ/bg/ba），IMU 预测 + 轮速/GNSS 观测 | `dr_odometry/core/dr_eskf.*` |
+| 输出 | `/localization/dr_odom`（Odometry）、status、path | `dr_odometry_node.cpp` |
+| 坐标系 | 自有局部系（原点=启动/首帧 GNSS），frames 名与 SLAM 同名 `odom` | `dr_odometry.yaml` |
+| 运行 | 常驻 spin（100Hz 发布，IMU 驱动滤波） | `dr_odometry_node.cpp:79-86` |
+| 状态接口 | `reset(DrState)` 核心有、节点未暴露；**无观测注入接口（P0 要加）** | `dr_eskf.hpp:43` |
+| 资源 | 纯滤波，微秒级/帧（相对 LIO 可忽略） | — |
 
-### 1.3 DR ESKF 融合正确性审计（Q4）
+### 1.3 ESKF 融合正确性审计（Q4）
 
-| # | 审查项 | 结论 | 依据 |
-|---|---|---|---|
-| 1 | 预测模型：`p+=v·dt+½a·dt², v+=a·dt, q⊗=δq(ω,dt)` | ✅ 正确 | `dr_eskf.cpp:175-179` |
-| 2 | 重力符号（z-up，静止时 R·accel+g=0） | ✅ 正确 | `dr_eskf.cpp:165-173`，`g=(0,0,-9.80665)` |
-| 3 | 误差状态 F：`δp'=δv；δv'=-R[a]×δθ-R·δba；δθ'=-δbg` | ✅ 正确 | `dr_eskf.cpp:185-191` |
-| 4 | 轮速更新：世界系速度观测 + 非完整约束（侧向/垂向≈0），噪声随 yaw 旋转对齐 | ✅ 正确 | `dr_eskf.cpp:213-258` |
-| 5 | 轮速**只修速度、不污染姿态**（H 无姿态项，避免轮速残差反向注入 yaw） | ✅ 设计正确 | `dr_eskf.cpp:240-242` 注释 |
-| 6 | GNSS 三开关独立（heading/velocity/position），heading 有车速门限 | ✅ 正确 | `dr_eskf.cpp:260-299`，`min_wheel_speed_for_heading=0.2` |
-| 7 | `use_gnss_position` **默认 false**（不绑绝对位置/原点漂移） | ✅ 已符合"默认无 GPS"诉求 | `dr_odometry.yaml:85` |
-| 8 | 轮速可用性开关：`can_use_valid_flag=false` 时速度有限即参与 | ✅ 开关保留 | `ros_adapter.cpp:139-149` |
-| 9 | 卡尔曼更新：Joseph 形式 + 对称化 + 有限性检查 + LDLT | ✅ 健壮 | `dr_eskf.cpp:301-340` |
-| 10 | **初始化未做重力对齐**：roll/pitch 从 0 起步，靠滤波相关性慢慢修正 | ⚠️ 短板 | `initializeFromImu` 只记时间戳（`dr_eskf.cpp:75-80`） |
-| 11 | **无 GNSS 航向时 yaw 纯陀螺漂移**，轮速无法修 yaw（H 无姿态项） | ⚠️ 固有 | 由 #5 的正确设计决定 |
-| 12 | `max_dt=0.05` 截断：IMU 断流恢复会丢积分时间 | ⚠️ 边界 | `dr_eskf.cpp:107` |
-| 13 | frames 配置 `odom/base_link` 与 SLAM 同名（TF 混淆隐患） | ⚠️ 命名 | `dr_odometry.yaml` frames 段；`publish_tf=false` 暂无冲突 |
+| # | 审查项 | 结论 |
+|---|---|---|
+| 1 | 预测：中值 IMU 积分、dt 截断、`δp'=δv; δv'=-R[a]×δθ-R·δba; δθ'=-δbg` | ✅ 正确 |
+| 2 | 重力符号（z-up）；Joseph 协方差更新；有限性检查 | ✅ 正确 |
+| 3 | 轮速：世界系速度观测 + 非完整约束；**H 无姿态项不污染 yaw** | ✅ 设计正确 |
+| 4 | GNSS 三开关独立；`use_gnss_position` 默认 false（不绑 GPS 绝对位置） | ✅ 符合"默认无 GPS" |
+| 5 | `use_wheel` / `use_gnss*` / `can_use_valid_flag` 开关完备 | ✅ 保持不动 |
+| 6 | 初始化未做重力对齐（roll/pitch 从 0 起步） | ⚠️ 被辅助标定覆盖（观测直接给姿态） |
+| 7 | 无 GNSS 航向时 **yaw 零偏基本不可观**（轮速修不了 yaw）→ 漂移 | ⚠️ 被 §4.1 辅助标定治本 |
+| 8 | frames 与 SLAM 同名；`publish_tf=false` 暂无冲突 | ⚠️ 建议改名 `dr_odom`（不阻塞） |
 
-**审计总结**：IMU+轮速融合推理**正确可用**，符合短时航位推算定位；两处固有限制（#10 姿态初始化、#11 yaw 漂移）分别用"接管时姿态对齐"（§4.1，主方案解决）与"限制 DR 模式时长 + 在线漂移监视"（§4.6）覆盖。开关机制（use_wheel / use_gnss* / can_use_valid_flag）**保持不动**。
+**总结**：IMU+轮速融合推理正确；短板 #6/#7 由辅助标定（§4.1）解决，不是靠调参。
 
 ---
 
 ## 2. 设计原则
 
-1. **一个主语义**：统一"局部里程计"（unified local odom）。SLAM/DR 只是它的两个实现，切换发生在源管理层，**下游（GM/失效判定/状态机）无感知**——这是"判断和状态转换保持一致"的根本保证。
-2. **切换保连续**：任何换源时刻 map_base 连续（§4.1/§4.3 的锚定数学），不引入输出跳变。
-3. **判断机制不变**：DR 模式下 GM 继续匹配、质量三级、jump guard、失效计数全部照旧；只换源数据。
-4. **失效语义不变**：五态状态机不动；仅把"slam_timeout=直接失效"改为"源切换事件"，全源丢失才失效。
-5. **DR 只做短时**：DR 是桥接不是替代；带最长时长与漂移监视（§4.6）。
-6. **不破坏现有定位效果**：SLAM 正常时所有路径与现状逐字节一致（透传）。
+1. **一个主语义**：统一"局部里程计"。SLAM/DR 是两个源，切换在源管理层完成，**下游判断层无感知**——这是 Q3"判断和状态切换不改"的根本保证。
+2. **切换保连续**：任何换源时刻 map_base 连续，不引入输出跳变。
+3. **用定位结果标定 DR**：定位正常时的 map->base 是全局校正后的正确位姿，作 DR 观测（含跳变防污染）。
+4. **判断机制不变**：GM 质量三级、jump guard、失效计数、状态机转移、恢复预算全部沿用。
+5. **DR 只做短时保活**：带接管准入、漂移监视、时长上限；预期"快速进 TRACKING_LOST→reloc"是正常路径。
+6. **不破坏现有定位效果**：SLAM 正常时的输出路径与现状逐字节一致。
 
 ---
 
 ## 3. 总体方案
 
-### 3.1 核心结构：LocalOdomSource（局部里程计源管理）
+### 3.1 核心结构：统一局部里程计源（LocalOdomSource）
 
 ```
-                ┌────────────────────────────────────────────┐
-slam_odom ─────►│                                            │
-                │   LocalOdomSource（新模块，纯逻辑可测）      │──► 统一 odom->base
-dr_odom ───────►│   · 源状态机：kSlam ⇄ kDr ⇄ kNone          │    （锚定换源，连续）
-                │   · 换源锚定 / 回切重锚 / 滞回防抖           │──► 统一源点云（fallback 注册）
-                └────────────────────────────────────────────┘
-                                    │
-                     fusion_core（不变）· GM（配置不变）· 状态机（不变）
+                    ┌──────────────────────────────────────────────┐
+slam_odom ─────────►│ LocalOdomSource                              │──► 统一 odom->base
+                    │  源状态：kSlam ⇄ kDr ⇄ kNone                 │    （换源锚定，map_base 连续）
+map_base_dr ───────►│  · SLAM 在：透传 SLAM                        │──► 统一源点云（fallback 注册）
+                    │  · SLAM 断：投影锚定后用 DR                   │
+                    └──────────────────────────────────────────────┘
+                    fusion_core / jump_guard / quality_gate / 状态机   【全部不变】
 ```
 
-### 3.2 坐标系与续推策略（Q1）——三方案对比
+统一源输出喂给：`fusion_.setOdomBase()`（融合）、GM `source_odom`、fallback 云注册、TF。
 
-**方案 A（推荐）：DR 热备 + 换源时刻一次对齐**
+### 3.2 坐标系方案（Q2 核心）：DR 世界系 = map 系
 
-DR 常驻运行在自己的 `dr_odom` 系下推算；SLAM 断流时刻 t0 由 `LocalOdomSource` 计算一次对齐：
+**观测源是定位发布的 map->base（全局正确位姿），DR 世界系直接对齐 map 系**：
 
-```
-A = T_odom_base(t0) ⊕ (T_dr_base(t0))⁻¹        （dr 系 → SLAM odom 系，接管期间常量）
-T_odom_base(t) = A ⊕ T_dr_base(t)               （统一里程计继续在 SLAM odom 系里推进）
-```
+| 方案 | 观测 | DR 世界系 | 评价 |
+|---|---|---|---|
+| a. 观测 SLAM odom | `/localization/slam_odom` | SLAM odom 系 | 丢掉 GM 全局修正，观测混着 LIO 漂移 |
+| b. 观测定位结果，转换到 odom 系 | `map_odom⁻¹ ⊕ map_base` | odom 系 | **恒等式**：化简后=SLAM odom，转换白做 |
+| **c. 观测定位结果，世界系=map（采用）** | `map->base` **零转换** | **map 系** | 观测质量最高；接管对齐量=现成的 `map_odom(t0)⁻¹` |
 
-- **从当前位置续推**：t0 时刻 `A ⊕ T_dr_base(t0) = T_odom_base(t0)`，严格无缝；
-- **下游零感知**：GM 的 `source_odom`、云注册、TF 全部继续用 SLAM 的 odom 语义；
-- **map->odom 不动** → map_base 连续；
-- 无需修改 `dr_odometry`。
-
-**方案 B（备选）：按需启动 + 位姿注入**
-
-SLAM 断流才拉起 dr_odometry，并把 SLAM 最后位姿注入（`DrEskf::reset` 已有核心能力，节点需补一个注入接口）。优缺点：
-
-- ✅ 不跑 DR 不占资源；注入后输出天然在 SLAM odom 系（无需 A）；
-- ❌ 冷启动零偏未收敛（gyro bias 靠相关性慢慢修）、首帧姿态无重力对齐（审计 #10）、拉起延迟（ROS 节点启动 + 首帧 IMU 对齐）——**接管瞬间到前几秒精度最差，恰是最需要它的时刻**；
-- ❌ 需要改 dr_odometry（暴露注入 service/topic）。
-
-**方案 C（否决）：双里程计紧耦合/实时对齐**——复杂度高、收益低。
-
-**热备成本论证（回应"占资源/冗余"顾虑）**：
-
-| 项 | dr_odometry（热备） | slam_odometry_v2（主） |
-|---|---|---|
-| 每周期计算 | 15×15 矩阵传播 + 1~4 维更新（**微秒级**） | 每帧点云 KD-tree/体素配准（**几十 ms**） |
-| 数据量 | IMU 200Hz + CAN 50Hz（纯标量/向量） | 每帧数万点 |
-| 结论 | 相对 LIO **可忽略**（<1% 量级） | — |
-
-"冗余"是链路冗余而非逻辑冗余：两条链路被 `LocalOdomSource` 收编为一个抽象下的两个源，状态机/判断层仍然单线。**推荐方案 A**；方案 B 作为配置项 `dr_mode: hot | on_demand` 保留演进空间（本期不做）。
-
-### 3.3 数据流（两种模式）
+**方案 c 的完整数学**：
 
 ```
-【SLAM 模式（常态）】
-slam_odom ──────────────透传──► /localization/odom_source ──► GM source_odom
-cloud_registered_effect ─透传──► /localization/source_cloud ─► GM source_cloud
-fusion_.setOdomBase( SLAM pose )      （与现状逐字节一致）
+【热备期（SLAM 活、status TRACKING）】
+  DR 状态活在 map 系；观测 z = T_map_base（/localization_v2/odom，经 §4.1 门控）
+  统一源 = SLAM odom->base（透传，与现状逐字节一致）
 
-【DR 模式（SLAM 断流）】
-dr_odom ──A⊕T_dr_base──► /localization/odom_source ──► GM source_odom（配置不变）
-/ouster/points ─⊕T_odom_base⊕T_base_lidar──► /localization/source_cloud ─► GM source_cloud
-fusion_.setOdomBase( A⊕T_dr_base )    （GM 匹配/质量/失效判断机制全部不变）
+【接管 t0（SLAM 断流）】
+  T_odom_base(t) := map_odom(t0)⁻¹ ⊕ T_map_base_dr(t)      （map_odom(t0) 冻结为常量 A⁻¹）
+  ⇒ map_base(t0⁺) = map_odom(t0) ⊕ T_odom_base(t0) = T_map_base_dr(t0)   严格连续
+
+【DR 模式中 GM 修正 map_odom → map_odom(t1)】
+  map_base = map_odom(t1) ⊕ T_odom_base = map_odom(t1) ⊕ map_odom(t0)⁻¹ ⊕ T_map_base_dr
+  ——GM 修正正常生效（因定义里用的是冻结的 map_odom(t0)，不自洽抵消）
+
+【回切 t1（SLAM 恢复）】
+  map_odom_new = map_base(t1⁻) ⊕ (odom_base_slam(t1))⁻¹    （缺口吸收进 map->odom，见 §4.4）
 ```
+
+**要点**：
+
+- map 系与 DR 重力模型一致（LIO z-up / DR g=(0,0,-g)），无系统性错切；
+- 辅助模式下"接管对齐"退化为一个现成常量 `map_odom(t0)⁻¹`，`LocalOdomSource` 无需额外标定；
+- **非辅助模式**（DR 未被观测标定，如冷启动）仍需经典对齐 `A = T_odom_base_slam(t0) ⊕ T_dr_base(t0)⁻¹`——保留该分支以兼容 `dr_mode: hot(辅助) | standalone`。
+
+### 3.3 数据流（三阶段）
+
+```
+【热备标定】定位 status+odom ──► DR 观测门控(§4.1) ──► DrEskf.update（零偏/速度/姿态收敛）
+            SLAM odom ──透传──► 统一源 ──► fusion/GM/TF            （同现状）
+【DR 接管】 dr map 位姿 ──⊕map_odom(t0)⁻¹──► 统一源 ──► fusion/GM/TF
+            /ouster/points ──⊕T_odom_base⊕T_base_lidar──► 统一源点云 ──► GM source_cloud
+            （GM 匹配/质量三级/jump guard/失效计数/状态机：机制全部不变）
+【回切】    SLAM odom 恢复 → map_odom 重锚 → 统一源切回透传（§4.4）
+```
+
+### 3.4 DR 角色定位（预期管理，DR 质量差前提）
+
+| 项 | 定位 |
+|---|---|
+| 核心价值 | reloc 恢复完成前**输出保活**：map_base/TF 连续 → 下游受控停车 |
+| 加分项 | 辅助标定后 GM 能在漂移尚小时继续匹配修正（匹配不上不强求） |
+| 明确不做 | 不承诺 DR 模式定位精度；不做长时间航位定位 |
+| 预期路径 | SLAM 断 → DR 保活 →（GM 修不动）TRACKING_LOST → reloc 全局恢复 → 回切。**快速进 TRACKING_LOST→reloc 是正常路径** |
+| 时长预期 | 实际使用十几秒~几十秒；`max_dr_duration_sec=120` 仅上限保护 |
 
 ---
 
-## 4. 关键机制设计
+## 4. 关键机制
 
-### 4.1 SLAM→DR 接管（含数学）
+### 4.1 辅助标定：定位结果观测 DR（Q1/Q6 核心）
 
-**触发**：`slam_odom` 新鲜度超 `slam_timeout_sec(0.5s)` 且 DR 源健康（最近 `dr_timeout_sec` 内有数据）。
+**目的**：把 gyro bias / accel bias / 速度 / 姿态在热备期标定好，接管时 DR 自带好估计。
 
-**锚定**（t0 为接管时刻，取最后一帧 SLAM 位姿与最近一帧 DR 位姿）：
+**为什么能行**：DR 误差状态已有 `δθ' = -δbg` 耦合（`dr_eskf.cpp:191`），缺外部姿态观测闭环——引入 map->base 观测后 yaw 误差被持续修正，**gyro bias 变得可观**；位置/速度观测辨识 accel bias 与轮速标度。车辆运动提供激励。
 
-```
-A            = T_odom_base_slam(t0) ⊕ (T_dr_base(t0))⁻¹
-T_odom_base  = A ⊕ T_dr_base(t)          （接管期间 A 常量）
-map_odom 不变 ⇒ map_base(t0⁺) = map_base(t0⁻)   （输出连续）
-```
+**预期改善（量级，需 bag 验证）**：
 
-**姿态一致性**：SLAM odom 与 DR 世界系均为 z-up（LIO 重力对齐 / DR 重力项 `(0,0,-g)`），A 的旋转差主要是 yaw + 小 roll/pitch，数学上无系统性错切。
-
-**接管后立即做两件事**：
-
-1. `fusion_core` 的 `setOdomBase` 输入切到统一源（同一 API，不改 fusion_core）；
-2. 校验 `A ⊕ T_dr_base(t0)` 与 `T_odom_base_slam(t0)` 的差为 0（构造保证），并记录接管日志（接管时 DR 速度/零偏健康摘要）。
-
-**若 DR 不可用**（无 IMU/无数据）：维持现状——`slam_timeout` 直接 LOCALIZATION_FAILURE（reason="all odometry sources lost"）。
-
-### 4.2 DR 模式下的匹配与失效判定（Q2）
-
-**结论：把原始点云用统一 odom 位姿注册到 odom 系，GM 机制原样继续。** 不是"转到 map 系再判"——GM 的接口就是"源点云（源系）+ 源里程计 + map 初值"，map 变换在 GM 内部由 `map_source` 猜测完成，**判据（inlier/rmse 三级 + jump guard + 失效计数）一行不改**。
-
-```
-fallback 云注册（SLAM 云断流时启用）：
-  T_odom_lidar = T_odom_base(t_cloud) ⊕ T_base_lidar      （T_base_lidar 外参，复用 GM 的 base_to_lidar）
-  cloud_in_odom = raw_cloud(/ouster/points) ⊕ T_odom_lidar
-  → 发布 /localization/source_cloud（header.frame_id = odom）
-```
-
-| 判定机制 | DR 模式下 | 说明 |
+| 指标 | 无辅助 | 辅助标定后 |
 |---|---|---|
-| GM 质量三级（good/degraded/bad） | **不变** | 同一套阈值 |
-| jump guard（防几何相似跳变） | **不变** | DR 漂移产生的中等修正走 L2 三帧确认，仍生效 |
-| GM 失败/坏质快计数 → TRACKING_LOST | **不变** | 判据一致 |
-| 出图快路径 / 无修正看门狗 | **不变** | — |
-| 恢复（reloc，用原始点云） | **不变** | reloc 本来就用 `/ouster/points`，SLAM 断流不影响 |
-| 人工位姿 + 验证 | **不变** | 验证匹配用 fallback 云，流程不变 |
-| 源超时 | **扩展** | `slam_timeout` 不再直接失效→切源；新增 `dr_timeout`（DR 模式下 DR 断流）→ 失效 |
+| yaw 漂移率 | 0.6~3 °/min | ~0.05~0.2 °/min |
+| 60s 后 yaw 误差 | 1-3°（GM 匹配域边缘） | 0.1~0.2° |
+| 有效桥接窗 | 几十秒 | 1~3 分钟量级 |
 
-**fallback 云的实现注意**：用扫描时刻（cloud stamp）的统一 odom 位姿注册（两帧间线性插值位置/球面插值姿态），保持与 SLAM 注册云同语义（GM 不感知差异）；原始点云也断流时 GM 侧转 TRANSIENT（轻计数）+ 看门狗兜底。
+#### 4.1.1 观测门控（订阅 status + odom）
 
-### 4.3 DR→SLAM 回切（Q3）：丝滑的数学与机制
-
-**触发（滞回防抖）**：SLAM 连续 `switch_back_confirm_frames(5)` 帧新鲜（≈0.5s）才回切；避免断续流导致源来回翻转。短时间多次翻转（如 60s 内 >3 次）→ 保持 DR 并告警。
-
-**回切重锚（保证 map_base 连续）**：SLAM 断流期间车辆在动，SLAM 恢复后其 odom->base 必然与 DR 续推有缺口（数据缺口或节点重启归零）。切换瞬间把缺口**全部吸收进 map->odom**（这正是修正帧的职责）：
+DR 订阅 `/localization_v2/status`（FusionStatus）与 `/localization_v2/odom`（map->base）。观测生效条件（与配置项对应）：
 
 ```
-T_map_base(t1⁻) = map_odom_old ⊕ T_odom_base_dr(t1)      （DR 当前位姿，切换前一瞬间）
-map_odom_new    = T_map_base(t1⁻) ⊕ (T_odom_slam_base(t1))⁻¹
-⇒ T_map_base(t1⁺) = map_odom_new ⊕ T_odom_slam_base(t1) = T_map_base(t1⁻)   （严格连续）
+state == "TRACKING"  &&  output_valid == true  &&  last_slam_age < obs_slam_age_limit(0.2s)
+（可选更严：level == LEVEL_NORMAL，配置 obs_require_level_normal）
 ```
 
-- SLAM **数据缺口型恢复**（节点存活、数据晚到）：缺口位移被 map->odom 吸收，随后 GM 逐帧修回；
-- SLAM **节点重启型恢复**（odom 归零）：公式同样成立（`T_odom_slam_base` 小、map_odom 补偿）；
-- 回切后若 `|T_odom_base_dr ⊖ T_odom_slam_base|` 过大（>3m/15°）记 WARNING（"slam gap absorbed"），供事后分析；
-- 速度/twist 源同步切回 SLAM；TF、话题均无跳变。
+- `last_slam_age` 用于排除**闭环回喂**：DR 模式下定位输出本身由 DR 驱动，必须关观测（否则 DR 更新 DR 自己）；
+- status 非 TRACKING（LOST/FAILURE/初始化）不观测——劣质结果不进滤波；
+- 观测内容：`map->base` 位姿（p/θ）+ twist 速度（body 系，免坐标转换）。
 
-**丝滑性验收指标**：map_base 位置/航向时序无阶跃（<1cm/0.1°，构造保证）；速度输出无尖峰；下游停车/规划无抖动。
+#### 4.1.2 跳变判断（防伪跳变污染）
 
-### 4.4 状态机与状态语义（保持一致）
+定位端 map_base 的跳变有两种：**真实修正**（GM 校正漂移，后续观测稳定在新水平）与**伪跳变**（几何相似误匹配，一次性/来回跳）。按创新量 `Δ = |观测 ⊖ DR 预测|` 分级：
 
-五态状态机**完全不动**。源切换只存在于 `LocalOdomSource` 层：
-
-| 状态 | DR 模式下的表现 | 与现状差异 |
+| 档 | 条件（默认） | 处理 |
 |---|---|---|
-| TRACKING | 正常跟踪（GM 继续修正）；level=WARNING，reason="slam odometry lost, running on DR" | 仅状态文案/告警 |
-| TRACKING_LOST | 恢复流程（reloc）正常 | 无 |
-| LOCALIZATION_FAILURE | 全源丢失 / 恢复预算耗尽 | failure_reason 增加源信息 |
+| 小跳 | Δ ≤ 0.5m / 2° | **直接接收**（正常跟踪） |
+| 大跳 | 0.5~5m / 2~15° | **多帧一致确认**：缓存候选，连续 K=3 帧互相一致（≤0.5m/2°）才作为**台阶修正**吸收（只修 p/θ，**不清零偏、不清协方差**）；不一致→清缓存拒收 |
+| 超限 | Δ > 5m / 15° | **拒收**（伪跳变特征），计数并拉大后续观测 R |
 
-FusionStatus 扩展（消息已有字段，无需改 msg）：`used_sources` 追加 `"dr_odometry"`；`last_dr_age` 真实化；`is_dr_available` 由 DR 数据年龄导出。
+> 与 TRACKING 的 jump guard **同构不同标的**：jump guard 防错误修正写进 map_odom（§见主优化方案）；这里是 DR 观测门控，防错误位姿污染滤波器状态。二者共享"几何相似误匹配"这一防御对象，但互不复用代码（作用域不同）。
 
-### 4.5 失效判定扩展（failure_detector）
+#### 4.1.3 ESKF 观测接口（dr_odometry 侧，P0）
+
+`reset()` 只写名义状态、无协方差更新——零偏学不到，**不可用**。需新增正规观测更新：
+
+```cpp
+// DrEskf（与 use_gnss_* 同风格开关）
+bool use_external_pose = true;              // 外部位姿观测总开关
+double external_pose_noise_trans = 0.05;    // 观测噪声（m）
+double external_pose_noise_yaw_deg = 0.5;   // 观测噪声（deg）
+double external_vel_noise = 0.2;            // 速度观测噪声（m/s）
+
+void feedExternalPose(const Pose3d& p_map_base, const Vec3d& v_body, double stamp);
+// 内部：创新门控(§4.1.2) → H 作用于 [p, v, θ] → update() → injectError()
+// 首帧观测：reanchor（定 map 系基准，保零偏与协方差结构）
+```
+
+配置开关保持现有风格（`use_wheel` / `use_gnss*` / `can_use_valid_flag` 不动，新增 `use_external_pose`）。
+
+### 4.2 SLAM→DR 接管
+
+**触发**：`slam_timeout_sec(0.5s)` 无 SLAM 且 DR 源新鲜 + 通过接管准入。
+
+**锚定**（方案 c）：统一源 `T_odom_base(t) = map_odom(t0)⁻¹ ⊕ T_map_base_dr(t)`，`map_odom(t0)` 冻结——map_base 构造连续（§3.2）。
+
+**接管准入分级**（辅助模式的可信度指标）：
+
+| 指标 | 说明 |
+|---|---|
+| bias 收敛度 | `√P_bg` 对角低于门限 + 辅助观测有效时长 ≥ `min_aid_duration_sec(30s)` |
+| 观测创新统计 | 近 10s 创新 RMS 在门限内 |
+| 拒收率 | 伪跳变拒收占比 < 30% |
+
+| 分级 | 策略 |
+|---|---|
+| good | 正常接管，走完整恢复预算 |
+| weak | 接管但直接 DEGRADED 输出，恢复预算减半 |
+| bad | **跳过 DR 保活**（`dr_bad_admission: skip`），直接 TRACKING_LOST→reloc；或 `keep_alive` 仅保活+DEGRADED |
+
+> 注：辅助模式下无法用"A(t) 漂移率"评估（观测使 DR 贴着定位走，读数恒小）——准入指标如上，取代 v1 稿的 A(t) 方案。
+
+**若 DR 不可用/准入 bad 且 skip**：`slam_timeout` 语义退回现状——LOCALIZATION_FAILURE（reason="all odometry sources lost"）。
+
+### 4.3 DR 模式：匹配与失效判定（Q2/Q3）
+
+**机制全部不变**，只换源数据：
+
+| 机制 | DR 模式 | 说明 |
+|---|---|---|
+| GM 质量三级 / jump guard / 失败快计数 / 出图快路径 / 无修正看门狗 | **不变** | 同一套阈值与逻辑 |
+| 恢复（reloc） | **不变** | reloc 用原始 `/ouster/points`，不依赖 SLAM/DR |
+| 人工位姿 + 验证 | **不变** | 验证匹配用 fallback 云 |
+| 状态机五态转移 | **不变** | 切换只在源管理层 |
+| 源点云 | **换 fallback** | SLAM 注册云死掉 → 原始点云按统一 odom 位姿注册（下） |
+| 源超时语义 | **扩展** | §4.5 |
+
+**fallback 云注册**（保留 GM 配置不动——GM 的接口就是"源点云(源系)+源里程计"）：
+
+```
+T_odom_lidar = T_odom_base(t_cloud) ⊕ T_base_lidar        （T_base_lidar 复用 GM 外参）
+cloud_in_odom = raw_cloud(/ouster/points) ⊕ T_odom_lidar   （扫描时刻位姿，帧间插值）
+→ /localization/source_cloud（frame_id=odom）──► GM source_cloud
+```
+
+**预期管理**：DR 漂出 GM 匹配收敛域后匹配失败是预期内——失败计数→TRACKING_LOST→reloc 全局恢复。GM 能匹配的时间窗就是有效桥接窗。
+
+### 4.4 DR→SLAM 回切（Q3 丝滑性）
+
+**触发（滞回）**：SLAM 连续 `switch_back_confirm_frames(5)` 帧新鲜；60s 内切换超 `flap_guard_count(3)` 次 → 保持 DR 并告警。
+
+**回切重锚**（缺口/归零误差全部吸收进 map->odom）：
+
+```
+map_odom_new = map_base(t1⁻) ⊕ (odom_base_slam(t1))⁻¹
+⇒ map_base(t1⁺) = map_base(t1⁻)   严格连续
+```
+
+- SLAM 数据缺口型 / 节点重启归零型恢复，公式均成立；
+- 回切后 `|T_odom_base_dr ⊖ odom_base_slam|` > 3m/15° 记 WARNING（"slam gap absorbed"）；
+- twist 源同步切回；TF/话题无跳变。
+
+### 4.5 失效判定扩展与状态语义
+
+**状态机五态与转移完全不变**。仅 `failure_detector` 源信号语义扩展：
 
 | 信号 | 现状 | 新行为 |
 |---|---|---|
-| `slam_timeout_sec(0.5s)` | → 立即 LOCALIZATION_FAILURE | → **切源事件**（DR 可用则切 DR）；DR 也不可用 → LOCALIZATION_FAILURE（"all odometry sources lost"） |
+| `slam_timeout_sec(0.5s)` | → 立即 LOCALIZATION_FAILURE | → **切源事件**（DR 可用则切 DR）；双源皆失 → FAILURE（"all odometry sources lost"） |
 | `dr_timeout_sec(0.5s)`（新） | — | DR 模式下 DR 断流 → LOCALIZATION_FAILURE |
-| `max_dr_duration_sec(300s)`（新） | — | DR 模式超时仍无 SLAM → 升级告警 / FAILURE（可配，§4.6） |
-| 无修正看门狗 / GM 计数 / 出图 / lost 预算 | 不变 | 不变 |
+| `max_dr_duration_sec(120s)`（新） | — | DR 超时仍无 SLAM → FAILURE（"DR fallback exceeded max duration"） |
+| DR 漂移监视（新） | — | GM good 修正 vs DR 续推：>2m/5° 告警；>3m/10° 直接 TRACKING_LOST 交恢复 |
+| GM 计数 / 出图 / 看门狗 / lost 预算 | 不变 | 不变 |
+
+**状态语义（下游契约不变）**：
+
+| 状态 | 语义 | 下游 |
+|---|---|---|
+| TRACKING_LOST | 定位不可信、正在恢复 | 停车（降级位姿仍输出） |
+| LOCALIZATION_FAILURE | 恢复失败/无法恢复 | 停车 + 标记不可用 |
+
+DR 模式下状态可保持 TRACKING，`level=WARNING`（reason="slam odometry lost, running on DR"），`used_sources` 追加 `dr_odometry`，`last_dr_age` 真实化（消息字段已有，无需改 msg）。
 
 ### 4.6 DR 使用约定（Q4）
 
 **开关矩阵（机制保留，只定推荐默认）**：
 
-| 场景 | use_imu_accel | use_wheel | use_gnss | use_gnss_heading | use_gnss_velocity | use_gnss_position |
-|---|---|---|---|---|---|---|
-| **无 GPS 矿井（默认）** | true | true | **false** | —（订阅都不订） | — | — |
-| 有 GPS（可选） | true | true | true | true（车速≥0.2m/s） | false | **false**（保持） |
+| 场景 | use_imu_accel | use_wheel | use_gnss | use_gnss_heading | use_gnss_velocity | use_gnss_position | use_external_pose |
+|---|---|---|---|---|---|---|---|
+| **无 GPS 矿井（默认）** | true | true | **false** | — | — | — | **true** |
+| 有 GPS | true | true | true | true（车速≥0.2） | false | false | true |
 
-- 无 GPS 时 DR = 陀螺姿态积分 + 轮速纵向速度 + 非完整约束；**位置是速度积分的结果，姿态（yaw/pitch/roll）来自陀螺+滤波**——即"只信姿态与短时推进、不信绝对位置"，与 `use_gnss_position=false` 的现状一致；
-- 轮速/GNSS 开关、`can_use_valid_flag` 语义**原样保留**，不改 dr_odometry。
+- 无 GPS 时 DR = 陀螺姿态 + 轮速纵向速度 + 非完整约束；位置是速度积分——**只信姿态与短时推进，不信绝对位置**；`use_gnss_position=false` 保持；
+- 轮速/GNSS 开关、`can_use_valid_flag` 语义原样保留。
 
-**短时推理正确性保障（在主方案内闭环）**：
+**短时推理正确性保障**：
 
-1. **姿态起点正确**：接管对齐（§4.1）直接继承 SLAM 姿态，绕开 DR 冷启动 roll/pitch 未对齐问题（审计 #10）；
-2. **在线漂移监视**：GM 每次 good 修正给出 map_base_GM，与 DR 续推 map_base 比较得漂移量 `drift = |map_base_GM ⊖ map_base_DR|`，滑窗统计——超 `dr_drift_warn(2m/5°)` 告警、超 `dr_drift_fail(5m/15°)` 判降级/失效（可配）；
-3. **最长时长**：`max_dr_duration_sec`（默认 300s）——超过仍未回 SLAM，升级 LOCALIZATION_FAILURE（reason="DR fallback exceeded max duration"）；
-4. 适用窗口结论：**分钟级短时可用**（轮速标度/打滑 + yaw 陀螺漂移决定），超过窗口必须靠 GM 修正或回 SLAM。
+1. 观测标定（§4.1）→ bias 收敛、姿态/速度对齐，接管即好估计；
+2. 接管准入分级（§4.2）→ 坏 DR 不无声接管；
+3. 接管后漂移监视（§4.5）→ 超限直接交恢复；
+4. `max_dr_duration_sec=120` 上限保护。适用窗口：辅助后 1~3 分钟量级，仍受轮速标度/打滑限制。
 
-**dr_odometry 侧改进建议（可选，不阻塞主方案）**：
+**dr_odometry 其他改进（后续，不阻塞）**：冷启动重力对齐；frames 改名 `dr_odom`；输出协方差/漂移率到 status。
 
-| # | 建议 | 收益 |
-|---|---|---|
-| D-a | `initializeFromImu` 做重力对齐（用首帧/前 N 帧加计定 roll/pitch） | 冷启动/无外部对齐场景的姿态精度 |
-| D-b | 暴露位姿重锚接口（只改 p/v/θ 保零偏与协方差的 `reanchor(pose,vel)`，区别于全量 `reset`） | 支持方案 B / 运行中重锚 |
-| D-c | frames 改名 `dr_odom/base_link`（或保持 `publish_tf=false`） | 避免与 SLAM 的 odom 同名混淆 |
-| D-c | 输出 DR 协方差/漂移率到 status | 供上层融合加权 |
+**进阶（P6，可选）**：DR 模式下 GM 间歇匹配成功时，把 GM 位姿低频回喂 DR（同一观测接口、R 拉大）——桥接期持续校准，桥接窗再延长。
 
 ---
 
-## 5. 代码优化方案（结构）
+## 5. 代码方案
 
-### 5.1 模块划分（localization_v3 内，风格与 v3 一致：core 纯逻辑可测 / ros 薄适配）
+### 5.1 模块划分
 
 ```
+dr_odometry/                                  【P0】
+├── core/dr_eskf.hpp/.cpp          [扩展] feedExternalPose 观测更新（H 作用 p/v/θ，创新门控）
+├── ros/ros_adapter.hpp/.cpp       [扩展] 订阅 FusionStatus + map->base odom；门控 + 跳变判断
+└── config/dr_odometry.yaml        [扩展] use_external_pose / 噪声 / 门控参数
+
 localization_v3/
 ├── core/
-│   ├── local_odom_source.hpp/.cpp        [新] 局部里程计源管理（核心）
-│   │     struct OdomSample { Pose3d pose; Vec3d velocity; double stamp; }
-│   │     enum class OdomSourceState { kSlam, kDr, kNone };
-│   │     onSlam(sample) / onDr(sample) / tick(now)
-│   │     unifiedPose(now) → OdomSample    （含 A 对齐、回切重锚、滞回）
-│   │     源切换事件回调（供 failure_detector / 日志）
-│   ├── failure_detector.hpp/.cpp         [扩展] 源超时语义（slam→切源，dr→失效，全丢→失效）
-│   ├── fusion_core / jump_guard / quality_gate / state_machine / init_arbiter   [不变]
+│   ├── local_odom_source.hpp/.cpp        [新] 统一源管理：透传/投影锚定(map_odom(t0)⁻¹)/回切重锚/滞回/准入
+│   ├── failure_detector.hpp/.cpp         [扩展] 源超时语义（slam→切源，dr→失效，双失→失效）+ 漂移监视
+│   └── fusion_core / jump_guard / quality_gate / state_machine / init_arbiter  【不变】
 ├── ros/
-│   ├── fallback_cloud_registrar.hpp/.cpp [新] 原始点云 → odom 系注册（SLAM 云断流时）
-│   │     输入 raw_cloud + 统一 odom 位姿 + T_base_lidar；输出 /localization/source_cloud
-│   ├── source_bridge.hpp/.cpp            [新] 统一源话题发布（odom_source / source_cloud 透传或注册）
-│   ├── status_publisher.hpp/.cpp         [扩展] used_sources += dr_odometry；last_dr_age 真实化
-│   └── localization_v3_node.cpp          [编排扩展] 订阅 DR/原始点云；驱动 LocalOdomSource
+│   ├── fallback_cloud_registrar.hpp/.cpp [新] 原始点云→odom 系注册
+│   ├── source_bridge.hpp/.cpp            [新] 统一源话题发布（odom_source / source_cloud）
+│   ├── status_publisher.hpp/.cpp         [扩展] used_sources/last_dr_age（消息字段已有）
+│   └── localization_v3_node.cpp          [扩展] 订阅 DR + raw cloud；驱动 LocalOdomSource
 └── config/localization_v3.yaml           [扩展] odometry_source / fallback_cloud 两段
 ```
 
-**职责边界**：
+### 5.2 dr_odometry 侧接口（P0 详情）
 
-| 模块 | 职责 | 不做 |
-|---|---|---|
-| `LocalOdomSource` | 源选择、换源锚定（A）、回切重锚、滞回、源健康 | 不碰 map_odom、不做质量判定 |
-| `fallback_cloud_registrar` | 点云坐标变换注册 | 不判质量 |
-| `failure_detector` | 源超时/漂移监视信号 | 不直接切源（切源是 LocalOdomSource 决策） |
-| `fusion_core` | **不变**：只消费统一 `odom_base` | — |
-| `state_machine` | **不变** | — |
+| 变更 | 内容 |
+|---|---|
+| `DrEskf::feedExternalPose(p_map_base, v_body, stamp)` | 正规观测更新（Joseph）；首帧 reanchor（定 map 基准，保零偏）；创新门控内嵌（小跳直收/大跳 K 帧一致/超限拒） |
+| ros_adapter 订阅 | `/localization_v2/status`（FusionStatus）+ `/localization_v2/odom`（map->base） |
+| 门控逻辑 | §4.1.1 条件 + §4.1.2 跳变判断（放 ros 层，core 只做更新） |
+| 配置 | `use_external_pose / external_pose_noise_* / external_vel_noise / obs_slam_age_limit / obs_require_level_normal / jump_confirm_frames(3) / jump_soft/hard 阈值` |
+| 开关模式 | 与 `use_gnss_*` 并列，可独立开关；`use_external_pose=false` 时行为=现状 |
 
-### 5.2 接口变化汇总
+### 5.3 接口变化汇总（不变项是重点）
 
 | 位置 | 变化 |
 |---|---|
-| `fusion_core` | **无**（`setOdomBase` 语义不变，输入改喂统一源） |
-| `state_machine` | **无** |
-| `jump_guard`/`quality_gate`/`init_arbiter` | **无** |
-| `failure_detector` | `slamTimeout` 语义拆分；新增 `drTimeout`、`drDrift` 信号、`max_dr_duration` |
-| `status_publisher` | DR 源信息（消息字段已有） |
-| `node` | 新增 DR 订阅、raw cloud 订阅、统一源话题发布 |
-| launch | GM 的 `topics/source_odom` → `/localization/odom_source`；`topics/source_cloud` → `/localization/source_cloud`；新增 `dr_odometry` 节点启动 |
-| `dr_odometry` | **主方案零改动**（改进建议见 §4.6-D） |
+| `fusion_core` / `jump_guard` / `quality_gate` / `state_machine` / `init_arbiter` | **无** |
+| GM（global_matcher_v2）配置 | **无**（仅 launch 把 source_odom/source_cloud 指到统一源话题） |
+| relocalization | **无** |
+| `failure_detector` | 源超时语义拆分 + 漂移监视 |
+| `status_publisher` | DR 源信息（msg 字段已有） |
+| launch | 启动 `dr_odometry`；GM 两话题改指 `/localization/odom_source`、`/localization/source_cloud` |
 
-### 5.3 配置（新增两段）
+### 5.4 配置（localization_v3 新增）
 
 ```yaml
-# -------------------- 局部里程计源（SLAM 主 / DR 备）--------------------
 odometry_source:
-  slam_topic: /localization/slam_odom        # 主源
-  dr_topic: /localization/dr_odom            # 备源（dr_odometry 输出）
-  dr_mode: hot                               # hot(热备,推荐) | off | on_demand(预留)
-  slam_timeout_sec: 0.5                      # SLAM 断流 → 切 DR
-  dr_timeout_sec: 0.5                        # DR 模式下 DR 断流 → 失效
-  switch_back_confirm_frames: 5              # 回切滞回：连续 N 帧 SLAM 新鲜才回切
-  flap_guard_count: 3                        # 60s 内切换超 N 次 → 保持 DR 并告警
-  max_dr_duration_sec: 300                   # DR 模式最长时长，超时升级失效
-  dr_drift_warn_trans: 2.0                   # 在线漂移监视告警门限（m / deg）
+  slam_topic: /localization/slam_odom
+  dr_topic: /localization/dr_odom
+  dr_mode: hot                      # hot(辅助热备,推荐) | off
+  slam_timeout_sec: 0.5             # SLAM 断流 → 切 DR
+  dr_timeout_sec: 0.5               # DR 模式下 DR 断流 → 失效
+  switch_back_confirm_frames: 5     # 回切滞回
+  flap_guard_count: 3
+  max_dr_duration_sec: 120
+  min_aid_duration_sec: 30          # 接管准入：辅助观测有效时长下限
+  admission_max_innovation_rms: 0.5 # 接管准入：创新 RMS 上限（m）
+  admission_max_reject_ratio: 0.3   # 接管准入：伪跳变拒收占比上限
+  dr_drift_warn_trans: 2.0          # 接管后漂移监视（m/deg）
   dr_drift_warn_yaw_deg: 5.0
-  dr_drift_fail_trans: 5.0
-  dr_drift_fail_yaw_deg: 15.0
+  dr_drift_fail_trans: 3.0
+  dr_drift_fail_yaw_deg: 10.0
+  dr_bad_admission: skip            # skip | keep_alive
 
-# -------------------- 源点云（SLAM 云断流时的 fallback 注册）--------------------
 fallback_cloud:
   enabled: true
-  raw_cloud_topic: /ouster/points            # 原始点云
-  source_cloud_topic: /localization/source_cloud   # 统一源点云输出（GM source_cloud 指向这里）
-  odom_source_topic: /localization/odom_source     # 统一源里程计输出（GM source_odom 指向这里）
-  base_to_lidar:                             # T_base_lidar（与 GM 外参一致）
-    translation: [0.0, 0.0, 0.0]
-    rotation: [1,0,0, 0,1,0, 0,0,1]
+  raw_cloud_topic: /ouster/points
+  source_cloud_topic: /localization/source_cloud
+  odom_source_topic: /localization/odom_source
+  base_to_lidar: {translation: [0,0,0], rotation: [1,0,0, 0,1,0, 0,0,1]}
 ```
 
-### 5.4 时序（正常→断流→恢复）
+dr_odometry 新增（见 §5.2）：`dr/use_external_pose / external_pose_noise_trans / external_pose_noise_yaw_deg / external_vel_noise / obs_slam_age_limit / obs_require_level_normal / jump_soft_trans / jump_soft_yaw_deg / jump_hard_trans / jump_hard_yaw_deg / jump_confirm_frames`。
+
+### 5.5 时序
 
 ```
-t        SLAM 正常（透传，一切同现状）
-t0       SLAM 断流（0.5s 无数据）
-t0+0.5s  LocalOdomSource：A = T_odom_base ⊕ T_dr_base⁻¹，切 DR
-         · fusion 输入 = A⊕T_dr_base（map_base 连续）
-         · 源点云切 fallback 注册（GM 继续匹配，判据不变）
-         · FusionStatus: used_sources += dr_odometry，level=WARNING
-t0+...   DR 短时续推；GM 正常修正；失效判定同常态
-         · 若 GM 漂移监视超门限 / DR 断流 / 超 max_dr_duration → 失效
-t1       SLAM 恢复（连续 5 帧新鲜）
-t1+ε     回切重锚：map_odom_new = map_base(t1⁻) ⊕ T_odom_slam_base(t1)⁻¹
-         · map_base 严格连续；SLAM 缺口吸收进 map->odom，GM 随后修回
-         · 源点云切回 SLAM 注册云；used_sources 去掉 dr_odometry
+热备   SLAM 正常：定位 status+odom 观测 DR（§4.1 门控+跳变判断），bias/速度/姿态收敛
+       统一源=SLAM 透传，一切同现状
+t0     SLAM 断流 0.5s：接管准入评估（bias 收敛度/创新 RMS/拒收率）
+       good/weak → 统一源 = map_odom(t0)⁻¹ ⊕ T_map_base_dr（map_base 严格连续）
+       bad+skip → 不接管，直接 TRACKING_LOST→reloc
+t0+    DR 保活；GM 用 fallback 云继续匹配（机制不变）；漂移监视在跑
+       （GM 修不动 → TRACKING_LOST → reloc 全局恢复 = 正常路径）
+t1     SLAM 恢复（连续 5 帧新鲜）→ 回切重锚 map_odom_new = map_base(t1⁻) ⊕ odom_base_slam(t1)⁻¹
+       统一源切回 SLAM 透传；used_sources 去掉 dr_odometry
 ```
 
 ---
@@ -369,44 +411,51 @@ t1+ε     回切重锚：map_odom_new = map_base(t1⁻) ⊕ T_odom_slam_base(t1)
 
 | 用例 | 通过标准 |
 |---|---|
-| 单测：`LocalOdomSource` 换源锚定 | A⊕T_dr(t0)=T_odom_base(t0)（构造连续）；切源前后 map_base 差 <1e-6 |
-| 单测：回切重锚 | map_base(t1⁻)=map_base(t1⁺)；SLAM 缺口/归零两种情形 |
-| 单测：滞回/防抖 | 0.5s 内抖动流不来回切换；flap_guard 生效 |
-| 单测：failure_detector 源信号 | slam 断→切源不判死；DR 断→失效；双源断→失效（"all odometry sources lost"） |
-| bag：kill slam 节点 | 0.5s 内切 DR；map_base 无跳变；GM 匹配持续、状态时间线同常态 |
-| bag：SLAM 断 30s 再恢复 | 回切连续；吸收 gap 后 GM 逐步修回；无 OUTPUT 尖峰 |
-| bag：无 GPS 全程 | DR 仅姿态+轮速；漂移监视数值合理（与 GM 修正差） |
-| bag：DR 模式内 GM 出图 | 出图快路径/失效语义与 SLAM 模式一致 |
+| 单测：`feedExternalPose`（P0） | 仿真零偏下辅助 N 秒后 bias 收敛（误差<50%）；跳变判断三档正确（小跳直收/大跳 K 帧确认/超限拒）；拒收伪跳变不污染 bias |
+| 单测：门控 | status 非 TRACKING / SLAM 不新鲜（防闭环）/ level 门 → 不观测 |
+| 单测：`LocalOdomSource` | 投影锚定后 map_base(t0⁺)=map_base(t0⁻)（<1e-6）；GM 修正 map_odom 后 map_base 正常响应；回切重锚连续 |
+| 单测：滞回/准入 | 抖动流不翻转；bad→skip 不接管；weak→预算减半 |
+| 单测：failure_detector 源信号 | slam 断→切源不判死；DR 断→失效；双失→"all odometry sources lost" |
+| bag：辅助标定有效性 | 同路线两遍（开/关 use_external_pose）对比接管后漂移率，预期降一个量级 |
+| bag：kill slam 节点 | 0.5s 切 DR，map_base 无跳变；GM 继续匹配或按预期进 LOST→reloc |
+| bag：伪跳变注入 | 人为制造 GM 误修正，DR 观测拒收、bias 不被污染 |
+| bag：SLAM 断 30s 再恢复 | 回切连续、gap 吸收、无输出尖峰 |
 
 ---
 
-## 7. 风险与决策点
+## 7. 决策点与风险
 
-| # | 决策点 | 推荐 | 备选 |
-|---|---|---|---|
-| D1 | DR 热备 vs 按需启动 | **热备**（成本可忽略，接管零预热） | 按需（省资源，代价：冷启动零偏/姿态、启动延迟，需改 dr_odometry） |
-| D2 | DR 模式下 GM 是否继续匹配 | **继续**（fallback 云注册，判据一致） | 仅看门狗+reloc（更简单但"判断机制"中断） |
-| D3 | DR 模式状态语义 | 状态不变（TRACKING）+ level=WARNING + used_sources 标注 | 新增状态（打破"状态转换一致"） |
-| D4 | DR 模式最长时长 | 300s（超时升级失效） | 600s / 仅告警不失效 |
-| D5 | 漂移监视超限的处置 | 告警(2m/5°) + 降级(5m/15°) | 仅告警 |
-| D6 | dr_odometry 改进（重力对齐/重锚 API/改名） | 列入后续，不阻塞 | 本期一并做 |
+| # | 决策 | 结论 |
+|---|---|---|
+| D1 | 热备 vs 按需 | **辅助标定热备**（成本可忽略、接管零预热、bias 已收敛）；按需冷启动否决 |
+| D2 | 坐标系 | **DR 世界系 = map 系**，观测零转换（§3.2 方案 c） |
+| D3 | 观测源 | 定位 map->base（status 门控），twist 速度并观测 |
+| D4 | 跳变判断 | 创新三档 + 大跳 K=3 帧一致确认；超限拒收 |
+| D5 | DR 模式 GM 匹配 | 继续（fallback 云），尽力而为；机制不变 |
+| D6 | DR 模式状态语义 | 状态不变 + level=WARNING + used_sources 标注 |
+| D7 | 接管准入 bad 处置 | **skip**（直接走恢复）；keep_alive 可配 |
+| D8 | DR 时长上限 | 120s（预期实际远短于此） |
 
-风险：
+风险与缓解：
 
-- **R1 fallback 注册云质量低于 SLAM 注册云**（无去畸变/运动补偿）→ GM inlier 可能下降；缓解：注册用扫描时刻位姿插值 + 保留 deskew 由 GM 内部处理；验收 bag 对比 inlier 分布。
-- **R2 DR 漂移导致 GM 大修正被 jump guard 拦** → L2 三帧确认放行真实漂移修正；漂移监视兜底告警。
-- **R3 双源抖动（SLAM 断续流）** → 回切滞回 + flap_guard。
-- **R4 A 对齐受外参/时间戳误差影响** → 接管时刻做一致性检查（构造差为 0）；DR/SLAM 时间戳统一用各自 header stamp。
+| 风险 | 缓解 |
+|---|---|
+| fallback 云无去畸变，GM inlier 偏低 | 扫描时刻位姿插值注册；bag 对比 inlier 分布 |
+| 观测被定位伪跳变污染 | §4.1.2 跳变判断（本方案核心防线）+ 拒收率进接管准入 |
+| DR 与 SLAM 误差相关（非独立备份） | 目标是连续性桥接非独立冗余；漂移监视兜底 |
+| DR 漂移出 GM 匹配域 | 预期内；TRACKING_LOST→reloc 是正常路径 |
+| 双源抖动 | 回切滞回 + flap_guard |
 
 ---
 
-## 附录 A：改动清单（供实施拆分）
+## 附录 A：实施拆分
 
 | 阶段 | 内容 | 涉及 |
 |---|---|---|
-| P1 | `core/local_odom_source` + 单测（锚定/回切/滞回） | localization_v3 |
-| P2 | `failure_detector` 源信号扩展 + 单测 | localization_v3 |
-| P3 | `ros/fallback_cloud_registrar` + `source_bridge` + node/launch/config | localization_v3 |
-| P4 | status_publisher 扩展 + 文档 | localization_v3 |
-| P5 | bag 回归（断流/恢复/无 GPS） | 测试 |
-| P6（可选） | dr_odometry 改进项 D-a~D-c | dr_odometry |
+| P0 | `feedExternalPose` + 观测门控（订阅 status/odom、跳变判断）+ 单测 | dr_odometry |
+| P1 | `core/local_odom_source`（投影锚定/回切重锚/滞回/准入）+ 单测 | localization_v3 |
+| P2 | `failure_detector` 源信号 + 漂移监视 + 单测 | localization_v3 |
+| P3 | `fallback_cloud_registrar` + `source_bridge` + node/launch/config | localization_v3 |
+| P4 | status_publisher 扩展 + 文档收尾 | localization_v3 |
+| P5 | bag 回归（辅助有效性/断流/伪跳变/回切） | 测试 |
+| P6（可选） | GM 位姿低频回喂 DR；frames 改名；重力对齐 | 两者 |

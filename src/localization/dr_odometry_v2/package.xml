@@ -1,0 +1,30 @@
+<?xml version="1.0"?>
+<package format="2">
+  <name>dr_odometry_v2</name>
+  <version>0.2.0</version>
+  <description>
+    dr_odometry_v2: 15 维 ESKF 航位推算。IMU 预测 + 轮速 (speed,0,0) 约束 +
+    GNSS 姿态(yaw/pitch/roll)/可选加速度观测 + 定位结果多状态观测（辅助标定）。
+    时间序事件处理（IMU 时基），core 纯 C++ 与 ROS 解耦。
+    设计见 docs/dr_odometry_v2_design.md。
+  </description>
+  <maintainer email="deeplumin@example.com">DeepLumin Team</maintainer>
+  <license>BSD</license>
+
+  <buildtool_depend>catkin</buildtool_depend>
+
+  <depend>roscpp</depend>
+  <depend>std_msgs</depend>
+  <depend>geometry_msgs</depend>
+  <depend>nav_msgs</depend>
+  <depend>sensor_msgs</depend>
+  <depend>tf</depend>
+  <depend>pcl_conversions</depend>
+  <depend>deeplumin_msgs</depend>
+  <depend>libpcl-dev</depend>
+  <depend>libeigen3-dev</depend>
+
+  <export>
+    <build_type>catkin</build_type>
+  </export>
+</package>
