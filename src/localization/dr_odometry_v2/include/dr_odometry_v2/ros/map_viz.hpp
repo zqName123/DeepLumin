@@ -5,7 +5,7 @@
  * @brief 全局地图可视化发布（仅 RViz 观察用，算法不消费）
  *
  * 用途：把建图 PCD 降采样后发到 DR 输出同系（frame_id=odom），
- * 配合 /localization/dr_path 观察 DR 轨迹形状是否与巷道一致。
+ * 配合 /dr_odometry/path 观察 DR 轨迹形状是否与巷道一致。
  *
  * 注意：地图原生在 map 系、DR 在自有局部系，二者无自动对齐；
  * 可用 offset_* 把地图平移/旋转到 DR 轨迹附近（粗对齐、目测用）。
@@ -28,7 +28,7 @@ class MapVizPublisher {
   struct Config {
     bool enabled = false;
     std::string pcd_path;
-    std::string topic = "/localization/dr_odometry_v2/global_map";
+    std::string topic = "/dr_odometry/global_map";
     std::string frame_id = "odom";
     double voxel_leaf = 5.0;       ///< 降采样体素（m）；0=不降采样
     double publish_period = 5.0;   ///< 周期重发（latched + 定时，方便后开 RViz）

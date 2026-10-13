@@ -104,7 +104,7 @@ void MapVizPublisher::publishOnce() {
   }
   sensor_msgs::PointCloud2 msg;
   pcl::toROSMsg(*cloud, msg);
-  msg.header.stamp = ros::Time::now();
+  msg.header.stamp = ros::Time::isValid() ? ros::Time::now() : ros::Time(0);  // 时钟未到不抛异常
   msg.header.frame_id = config_.frame_id;
   pub_.publish(msg);
 }

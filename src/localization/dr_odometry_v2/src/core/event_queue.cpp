@@ -24,10 +24,18 @@ bool EventQueue::popNext(Event* event) {
     Event e = heap_.top().event;
     heap_.pop();
     if (watermark_ >= 0.0 && e.stamp < watermark_) {
-      ++reordered_dropped_;  // 迟到事件：时间序已过，丢弃
-      continue;
+      // 位姿观测带扫描戳（处理链延迟晚于水位）：容忍窗内放行，不回退水位，
+      // 由 observePose 一阶外推到状态时刻再比对
+      const bool pose_late_ok =
+          e.type == EventType::kPose && pose_late_tolerance_ > 0.0 &&
+          (watermark_ - e.stamp) <= pose_late_tolerance_;
+      if (!pose_late_ok) {
+        ++reordered_dropped_;  // 迟到事件：时间序已过，丢弃
+        continue;
+      }
+    } else {
+      watermark_ = e.stamp;
     }
-    watermark_ = e.stamp;
     if (event != nullptr) {
       *event = e;
     }

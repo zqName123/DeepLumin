@@ -19,9 +19,9 @@
     <param name="map/mode" value="$(arg map_mode)" />
     <param name="map/pcd_path" value="$(arg pcd_path)" />
     <param name="map/map_dir" value="$(arg map_dir)" />
-    <param name="topics/source_cloud" value="/localization/cloud_registered_effect" />
-    <param name="topics/initial_pose" value="/localization_v2/odom" />
-    <param name="topics/source_odom" value="/localization/slam_odom" />
+    <param name="topics/source_cloud" value="/slam_odometry/cloud_effect" />
+    <param name="topics/initial_pose" value="/localization/fused_odom" />
+    <param name="topics/source_odom" value="/slam_odometry/odom" />
     <param name="runtime/source_cloud_is_odom_frame" value="true" />
     <param name="runtime/source_cloud_frame" value="odom" />
     <param name="result/pose_frame" value="odom" />

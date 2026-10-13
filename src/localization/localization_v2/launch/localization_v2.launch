@@ -73,17 +73,17 @@
     <param name="frames/odom" value="odom" />
     <param name="frames/base_link" value="base_link" />
 
-    <param name="topics/slam_odom" value="/localization/slam_odom" />
+    <param name="topics/slam_odom" value="/slam_odometry/odom" />
     <!-- <param name="topics/slam_odom" value="/slam_odometry/odom" /> -->
-    <param name="topics/global_matcher_result" value="/localization/global_matcher/result" />
+    <param name="topics/global_matcher_result" value="/global_matcher/result" />
     <param name="topics/initial_pose" value="/initialpose" />
     <!-- <param name="topics/source_cloud" value="/slam_odometry/cloud_effect" /> -->
-    <param name="topics/source_cloud" value="/localization/cloud_registered_effect" />
-    <param name="topics/fused_odom" value="/localization_v2/odom" />
-    <param name="topics/map_to_odom" value="/localization_v2/map_to_odom" />
-    <param name="topics/fused_path" value="/localization_v2/path" />
-    <param name="topics/status" value="/localization_v2/status" />
-    <param name="topics/current_scan_in_map" value="/localization_v2/current_scan_in_map" />
+    <param name="topics/source_cloud" value="/slam_odometry/cloud_effect" />
+    <param name="topics/fused_odom" value="/localization/fused_odom" />
+    <param name="topics/map_to_odom" value="/localization/map_to_odom" />
+    <param name="topics/fused_path" value="/localization/path" />
+    <param name="topics/status" value="/localization/status" />
+    <param name="topics/current_scan_in_map" value="/localization/current_scan_in_map" />
 
     <param name="runtime/output_rate_hz" value="100.0" />
     <param name="runtime/publish_tf" value="true" />
@@ -105,8 +105,8 @@
     <param name="initialization/use_manual_initialpose" value="true" />
     <param name="initialization/use_global_matcher_init" value="true" />
 
-    <param name="relocalization/result_topic" value="/localization/relocalization/result" />
-    <param name="relocalization/command_topic" value="/localization_v2/relocalization/command" />
+    <param name="relocalization/result_topic" value="/pc_reloc/result" />
+    <param name="relocalization/command_topic" value="/pc_reloc/command" />
     <param name="relocalization/enabled" value="true" />
     <param name="relocalization/auto_start" value="true" />
     <param name="relocalization/stop_on_success" value="true" />
@@ -124,9 +124,9 @@
         name="global_matcher" output="screen">
     <rosparam file="$(arg global_matcher_config)" command="load" />
     <param name="map/pcd_path" value="$(arg pcd_path)" />
-    <param name="topics/source_cloud" value="/localization/cloud_registered_effect" />
-    <param name="topics/initial_pose" value="/localization_v2/odom" />
-    <param name="topics/source_odom" value="/localization/slam_odom" />
+    <param name="topics/source_cloud" value="/slam_odometry/cloud_effect" />
+    <param name="topics/initial_pose" value="/localization/fused_odom" />
+    <param name="topics/source_odom" value="/slam_odometry/odom" />
     <param name="runtime/source_cloud_is_odom_frame" value="true" />
     <param name="runtime/source_cloud_frame" value="odom" />
     <param name="result/pose_frame" value="odom" />
@@ -143,10 +143,10 @@
     <param name="map/pcd_path" value="$(arg pcd_path)" />
     <param name="map/map_dir" value="$(arg map_dir)" />
     <!-- <param name="topics/source_cloud" value="/slam_odometry/cloud_effect" /> -->
-    <param name="topics/source_cloud" value="/localization/cloud_registered_effect" />
-    <param name="topics/initial_pose" value="/localization_v2/odom" />
+    <param name="topics/source_cloud" value="/slam_odometry/cloud_effect" />
+    <param name="topics/initial_pose" value="/localization/fused_odom" />
     <!-- <param name="topics/source_odom" value="/slam_odometry/odom" /> -->
-    <param name="topics/source_odom" value="/localization/slam_odom" />
+    <param name="topics/source_odom" value="/slam_odometry/odom" />
     <param name="runtime/source_cloud_is_odom_frame" value="true" />
     <param name="runtime/source_cloud_frame" value="odom" />
     <param name="result/pose_frame" value="odom" />
@@ -159,7 +159,7 @@
   <node if="$(arg start_relocalization)" pkg="relocalization" type="global_relocalization_node"
         name="global_relocalization" output="screen">
     <rosparam file="$(arg relocalization_config)" command="load" />
-    <!-- <param name="lidar_topic" value="/localization/cloud_registered_effect" />
+    <!-- <param name="lidar_topic" value="/slam_odometry/cloud_effect" />
     <param name="query_cloud_frame" value="odom" /> -->
     <param name="log_dir" value="$(arg log_dir)" />
     <param name="lidar_topic" value="/ouster/points" />
@@ -167,7 +167,7 @@
   </node>
 
   <!-- 5. 可选：ArUco 视觉重定位（默认不启动）
-       使用相机检测 ArUco marker 进行重定位，结果发布到 /localization/relocalization/result
+       使用相机检测 ArUco marker 进行重定位，结果发布到 /pc_reloc/result
        与 global_relocalization 共用 result topic，同一时间建议只启动一种重定位 -->
   <arg name="aruco_config_file" default="$(find aruco_relocalization)/config/aruco_relocalization.yaml"/>
   <!-- 共用配置加载到公有命名空间（相机内参、外参、ArUco 配置） -->

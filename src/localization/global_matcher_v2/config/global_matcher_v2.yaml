@@ -29,20 +29,20 @@ topics:
   source_odom: /slam_odometry/odom
   bootstrap_initial_pose: /localization/manager/initial_pose
   manual_initial_pose: /initialpose
-  gm_anchor: /localization_v2/gm_anchor            # localization_v2 初始化仲裁重锚（仅初始化阶段）
-  result: /localization/global_matcher/result
-  status: /localization/global_matcher/status
-  global_map: /localization/global_matcher/global_map
+  gm_anchor: /localization/gm_anchor            # localization_v2 初始化仲裁重锚（仅初始化阶段）
+  result: /global_matcher/result
+  status: /global_matcher/status
+  global_map: /global_matcher/global_map
   # 调试话题（配合 publish.* 开关）
-  source_initial_scan: /localization/global_matcher/source_scan_initial
-  aligned_scan: /localization/global_matcher/aligned_scan
-  target_submap: /localization/global_matcher/target_submap
-  initial_guess: /localization/global_matcher/initial_guess
-  path: /localization/global_matcher/path
-  load_map_command: /localization/global_matcher/load_map_command
-  set_map_segment_command: /localization/global_matcher/set_map_segment_command
-  difference_cloud: /localization/global_matcher/difference_cloud
-  cluster_cloud: /localization/global_matcher/cluster_cloud
+  source_initial_scan: /global_matcher/source_scan_initial
+  aligned_scan: /global_matcher/aligned_scan
+  target_submap: /global_matcher/target_submap
+  initial_guess: /global_matcher/initial_guess
+  path: /global_matcher/path
+  load_map_command: /global_matcher/load_map_command
+  set_map_segment_command: /global_matcher/set_map_segment_command
+  difference_cloud: /global_matcher/difference_cloud
+  cluster_cloud: /global_matcher/cluster_cloud
 
 # -------------------- 地图管理 --------------------
 map:
@@ -54,9 +54,9 @@ map:
   map_dir: ""                 # chunked 模式：分片目录（含 chunks.txt / index.txt / N.pcd）
   chunk_size: 100.0           # 分片边长（须与脚本一致）
   load_radius_chunks: 1       # 加载当前分片周围 (2r+1)^2 个分片
-  load_voxel_leaf: 0.1        # 分片加载时体素降采样
+  load_voxel_leaf: 0.2        # 分片加载时体素降采样  0.1
   max_loaded_chunks: 64       # 内存中最多保留分片数（LRU 淘汰）
-  cov_num_neighbors: 20       # 分片协方差估计近邻数（加载时一次性计算）
+  cov_num_neighbors: 12       # 分片协方差估计近邻数（加载时一次性计算）
   cov_num_threads: 4
   # VGICP 预构建体素地图（仅 matcher.type 为 vgicp / fast_gicp_vgicp 时构建）
   vgicp_voxel_resolution: 0.4 # 0.5
@@ -70,7 +70,7 @@ runtime:
   auto_match: true
   source_cloud_is_odom_frame: true      # true: source 点云位于 odom 系
   source_cloud_frame: odom              # auto 使用点云 header；也可显式 lidar/base_link/odom
-  match_rate: 10.0
+  match_rate: 5.0
   max_cloud_age: 1.0
   use_receive_time_for_cloud_age: true  # bag 测试时按回调接收时间判断点云时效
   use_tracking_initial_pose: true
@@ -89,7 +89,7 @@ manual_initial_pose:
 # -------------------- 可视化裁剪盒（仅 publish.target_submap 用） --------------------
 crop:
   forward: 70.0
-  backward: 7.0
+  backward: 35.0
   left: 35.0
   right: 35.0
   down: 35.0
@@ -104,7 +104,7 @@ matcher:
   target_voxel_leaf: 0.08
   coarse_scale: 8.0
   fine_scale: 1.0
-  max_iterations: 50
+  max_iterations: 20 # 50
   transformation_epsilon: 0.01
   max_correspondence_distance: 2.0
   # 0 = 使用 max_correspondence_distance * scale
@@ -114,7 +114,7 @@ matcher:
   robust_kernel: none
   robust_kernel_scale: 5.0
   num_threads: 4               # small_gicp 线程数 2
-  cov_num_neighbors: 20         # source 协方差估计近邻数
+  cov_num_neighbors: 12         # source 协方差估计近邻数 20
   cov_num_threads: 2
   fast_gicp_num_threads: 4
   fast_gicp_correspondence_randomness: 20
@@ -127,7 +127,7 @@ gate:
   min_source_points: 50
   min_target_points: 100
   max_fitness_score: 100.0      # 仅 fast_gicp 类型生效（PCL fitness 语义）
-  min_inlier_ratio: 0.69
+  min_inlier_ratio: 0.65
   max_inlier_rmse: 0.4
   inlier_distance: 0.5
   max_delta_translation: 20.0
@@ -138,7 +138,7 @@ gate:
 difference:
   distance_threshold: 0.5   # 点云差异距离阈值（米）
   rate_threshold: 0.25        # 差异点占比阈值，超过则认为定位失效
-  input_topic: /localization/cloud_registered
+  input_topic: /slam_odometry/cloud_registered
   # ---- 聚类（DBSCAN + KNN自适应eps） ----
   cluster_knn_k: 4            # KNN自适应eps的k值（越大eps越大，越不容易分簇）
   cluster_eps_scale: 1.2      # eps松弛因子（中位数 * scale）

@@ -62,10 +62,15 @@ class EventQueue {
  public:
   explicit EventQueue(int capacity = 512) : capacity_(capacity > 0 ? capacity : 512) {}
 
+  /// 位姿观测迟到容忍（s）：定位观测带扫描戳（处理链延迟 0.1~0.3s 晚于水位），
+  /// 容忍窗内放行（不回退水位，observePose 负责一阶外推）；0=全部按迟到丢弃
+  void setPoseLateTolerance(double sec) { pose_late_tolerance_ = sec > 0.0 ? sec : 0.0; }
+
   /// 入队；stamp 非有限 → false（invalid++）
   bool push(const Event& event);
 
   /// 弹出时间最早的事件；空 → false。stamp < 已处理水位 → 丢弃并计数后跳过
+  /// （位姿观测例外：容忍窗内放行，水位不回退）
   bool popNext(Event* event);
 
   std::size_t size() const { return heap_.size(); }
@@ -88,6 +93,7 @@ class EventQueue {
   int capacity_;
   std::priority_queue<Item> heap_;
   double watermark_ = -1.0;
+  double pose_late_tolerance_ = 0.0;
   std::uint64_t reordered_dropped_ = 0;
   std::uint64_t overflow_dropped_ = 0;
   std::uint64_t invalid_dropped_ = 0;

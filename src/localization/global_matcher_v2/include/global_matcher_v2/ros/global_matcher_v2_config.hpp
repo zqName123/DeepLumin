@@ -24,22 +24,22 @@ struct GlobalMatcherV2Config {
   Eigen::Matrix4f base_to_lidar = Eigen::Matrix4f::Identity();
 
   // ---- 话题 ----
-  std::string source_cloud_topic = "/localization/cloud_registered";
+  std::string source_cloud_topic = "/slam_odometry/cloud_registered";
   std::string initial_pose_topic = "/localization/fused_odom";
-  std::string source_odom_topic = "/localization/slam_odom";
+  std::string source_odom_topic = "/slam_odometry/odom";
   std::string bootstrap_initial_pose_topic = "/localization/manager/initial_pose";
   std::string manual_initial_pose_topic = "/initialpose";
-  std::string gm_anchor_topic = "/localization_v2/gm_anchor";  ///< localization_v2 初始化仲裁发布的重锚消息
-  std::string result_topic = "/localization/global_matcher/result";
-  std::string status_topic = "/localization/global_matcher/status";
-  std::string source_initial_scan_topic = "/localization/global_matcher/source_scan_initial";
-  std::string aligned_scan_topic = "/localization/global_matcher/aligned_scan";
-  std::string target_submap_topic = "/localization/global_matcher/target_submap";
-  std::string global_map_topic = "/localization/global_matcher/global_map";
-  std::string initial_guess_topic = "/localization/global_matcher/initial_guess";
-  std::string path_topic = "/localization/global_matcher/path";
-  std::string load_map_command_topic = "/localization/global_matcher/load_map_command";
-  std::string set_map_segment_command_topic = "/localization/global_matcher/set_map_segment_command";
+  std::string gm_anchor_topic = "/localization/gm_anchor";  ///< localization_v2 初始化仲裁发布的重锚消息
+  std::string result_topic = "/global_matcher/result";
+  std::string status_topic = "/global_matcher/status";
+  std::string source_initial_scan_topic = "/global_matcher/source_scan_initial";
+  std::string aligned_scan_topic = "/global_matcher/aligned_scan";
+  std::string target_submap_topic = "/global_matcher/target_submap";
+  std::string global_map_topic = "/global_matcher/global_map";
+  std::string initial_guess_topic = "/global_matcher/initial_guess";
+  std::string path_topic = "/global_matcher/path";
+  std::string load_map_command_topic = "/global_matcher/load_map_command";
+  std::string set_map_segment_command_topic = "/global_matcher/set_map_segment_command";
 
   // ---- 地图管理 ----
   std::string map_mode = "single";  ///< single | chunked
@@ -96,13 +96,13 @@ struct GlobalMatcherV2Config {
   // ---- 差异检测（computeDifference） ----
   bool publish_difference_cloud = false;
   std::string difference_cloud_topic =
-      "/localization/global_matcher/difference_cloud";
+      "/global_matcher/difference_cloud";
   double difference_distance_threshold = 0.15;
   double difference_rate_threshold = 0.25;
-  std::string difference_raw_topic = "/localization/cloud_registered";
+  std::string difference_raw_topic = "/slam_odometry/cloud_registered";
   // ---- 差异点聚类（DBSCAN + KNN自适应eps） ----
   std::string cluster_cloud_topic =
-      "/localization/global_matcher/cluster_cloud";
+      "/global_matcher/cluster_cloud";
   int cluster_knn_k = 4;             ///< KNN自适应eps的k值
   double cluster_eps_scale = 1.2;    ///< eps松弛因子（中位数 * scale）
   int cluster_min_pts = 10;          ///< DBSCAN最小簇点数，小于此值视为噪点

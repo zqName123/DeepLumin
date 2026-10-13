@@ -56,6 +56,10 @@ class Eskf {
               const Eigen::MatrixXd& R);
   void injectError(const Vec15d& dx);
   void applyPoseStep(const PoseSample& sample);
+  /// 标定信号打卡（被接受的绝对观测）：打开/保持零偏更新通道；冻结中则解冻并回充协方差
+  void markBiasCalibration(double stamp);
+  /// 标定信号是否新鲜（bias_freeze_timeout 窗内有被接受的观测）
+  bool biasCalibrationFresh() const;
   bool wheelFresh(double stamp) const;
   bool gnssFresh(double stamp) const;
   bool poseFresh(double stamp) const;
@@ -78,6 +82,10 @@ class Eskf {
   Quatd gnss_base_q_ = Quatd::Identity();  ///< 基准时刻的 GNSS 姿态
   Quatd datum_q_ = Quatd::Identity();      ///< 基准时刻的 DR 姿态（重定位/pose step 后同步）
   bool map_datum_set_ = false;             ///< 首帧定位观测已锚定 map 基准
+
+  // 零偏冻结（bias_freeze_timeout）：无标定信号期只修 v/θ，bg/ba 增量置零（数值保持）
+  double last_bias_cal_stamp_ = -1.0;      ///< 最近一次被接受的标定观测时刻
+  bool bias_frozen_ = false;
 
   // LLA→ENU 原点（首帧有效 GNSS 位置）
   bool origin_set_ = false;

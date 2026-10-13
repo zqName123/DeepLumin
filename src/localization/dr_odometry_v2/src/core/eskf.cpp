@@ -14,6 +14,10 @@ using math::skew;
 /// 长断流阈值：超过该间隙只对齐时间不积分（间隙内运动不可知，防 ZOH 假运动）
 constexpr double kMaxIntegrateGapSec = 1.0;
 
+/// 零偏先验方差（initialize 与冻结解冻回充共用）
+constexpr double kGyroBiasPriorVar = 0.01;
+constexpr double kAccelBiasPriorVar = 0.05;
+
 /// 航向约定换算：GPCHC 罗盘（北基准顺时针）→ 世界系 yaw（东基准逆时针）
 double yawFromHeading(double heading, const GnssConfig& cfg) {
   const double yaw = (cfg.heading_convention == "compass") ? (math::kPi / 2.0 - heading) : heading;
@@ -44,8 +48,8 @@ bool Eskf::initialize(const DrConfig& config) {
   state_.covariance.block<3, 3>(0, 0) *= 1.0;
   state_.covariance.block<3, 3>(3, 3) *= 1.0;
   state_.covariance.block<3, 3>(6, 6) *= 0.1;
-  state_.covariance.block<3, 3>(9, 9) *= 0.01;
-  state_.covariance.block<3, 3>(12, 12) *= 0.05;
+  state_.covariance.block<3, 3>(9, 9) *= kGyroBiasPriorVar;
+  state_.covariance.block<3, 3>(12, 12) *= kAccelBiasPriorVar;
 
   PoseGate::Config gate;
   gate.soft_trans = config.localization.jump_soft_trans;
@@ -62,6 +66,8 @@ bool Eskf::initialize(const DrConfig& config) {
   origin_set_ = false;
   gnss_baseline_set_ = false;
   map_datum_set_ = false;
+  last_bias_cal_stamp_ = -1.0;
+  bias_frozen_ = false;
   counters_ = DrHealth();
   return true;
 }
@@ -73,6 +79,8 @@ void Eskf::reset(const DrState& state) {
   pose_gate_.reset();
   gnss_baseline_set_ = false;
   map_datum_set_ = false;
+  last_bias_cal_stamp_ = -1.0;
+  bias_frozen_ = false;
 }
 
 // ============================== 事件驱动 ==============================
@@ -314,6 +322,7 @@ void Eskf::observeGnssAttitude(const GnssSample& s) {
   Rm(1, 1) = s_pitch * s_pitch;
   Rm(2, 2) = s_yaw * s_yaw;
 
+  markBiasCalibration(state_.timestamp);  // 绝对姿态辅助 = 标定信号（零偏可观）
   if (update(r, H, Rm)) {
     ++counters_.gnss_attitude_update_count;
   }
@@ -347,6 +356,7 @@ void Eskf::observeGnssAccel(const GnssSample& s) {
   }
   const double sigma = config_.gnss.accel_noise;
   const Mat3d Rm = Mat3d::Identity() * sigma * sigma;
+  markBiasCalibration(state_.timestamp);  // 加速度观测直接约束 ba = 标定信号
   if (update(r, H, Rm)) {
     ++counters_.gnss_accel_update_count;
   }
@@ -400,9 +410,17 @@ void Eskf::observePose(const PoseSample& s) {
     ++counters_.stale_pose_count;
     return;
   }
+  // 一阶外推：观测带扫描戳（可能早于状态时刻，处理链延迟）——按当前速度把观测
+  // 平移到状态时刻再比对，消 v·latency 错位（姿态变化在延迟窗内可忽略，只外推位置）
+  PoseSample obs = s;
+  const double lag = state_.timestamp - s.stamp;
+  if (lag > 0.0) {
+    obs.map_base.position += state_.velocity * lag;
+  }
   // 首帧定位观测：直接锚定 map 基准（"起点=map 起点"假设的自动推广）
   if (!map_datum_set_) {
-    applyPoseStep(s);
+    markBiasCalibration(state_.timestamp);  // 被接受的绝对观测 = 标定信号
+    applyPoseStep(obs);
     map_datum_set_ = true;
     ++counters_.pose_step_count;
     return;
@@ -411,7 +429,7 @@ void Eskf::observePose(const PoseSample& s) {
   Pose3d current;
   current.position = state_.position;
   current.orientation = state_.orientation;
-  const GateVerdict verdict = pose_gate_.evaluate(current, s.map_base, state_.timestamp);
+  const GateVerdict verdict = pose_gate_.evaluate(current, obs.map_base, state_.timestamp);
   switch (verdict) {
     case GateVerdict::kReject:
       ++counters_.pose_reject_count;
@@ -420,28 +438,33 @@ void Eskf::observePose(const PoseSample& s) {
       ++counters_.pose_pending_count;
       return;
     case GateVerdict::kAcceptStep:
-      applyPoseStep(s);  // 大跳确认：台阶修正（只修 p/θ，零偏不动）
+      markBiasCalibration(state_.timestamp);  // 被接受的绝对观测 = 标定信号
+      applyPoseStep(obs);  // 大跳确认：台阶修正（只修 p/θ，零偏不动）
       ++counters_.pose_step_count;
       return;
     case GateVerdict::kAccept:
       break;
   }
 
-  // 小跳：正常观测更新
-  const int rows = s.has_velocity ? 9 : 6;
+  // 小跳：正常观测更新（被接受 → 标定信号，本次 update 允许学零偏）
+  markBiasCalibration(state_.timestamp);
+  const int rows = obs.has_velocity ? 9 : 6;
   Eigen::VectorXd r(rows);
   Eigen::MatrixXd H = Eigen::MatrixXd::Zero(rows, 15);
   Eigen::MatrixXd Rm = Eigen::MatrixXd::Identity(rows, rows);
 
-  r.segment<3>(0) = s.map_base.position - state_.position;
+  r.segment<3>(0) = obs.map_base.position - state_.position;
   H.block<3, 3>(0, 0) = Mat3d::Identity();
   const double sp = config_.localization.pose_noise_trans;
   Rm.block<3, 3>(0, 0) = Mat3d::Identity() * sp * sp;
 
-  r.segment<3>(3) = math::logQuat(state_.orientation, s.map_base.orientation);
+  r.segment<3>(3) = math::logQuat(state_.orientation, obs.map_base.orientation);
   H.block<3, 3>(3, 6) = Mat3d::Identity();
   const double sa = deg2rad(config_.localization.pose_noise_att_deg);
   Rm.block<3, 3>(3, 3) = Mat3d::Identity() * sa * sa;
+  // yaw（δθ_z）单独噪声：roll/pitch 观测通常比航向可信，航向门限可独立放宽
+  const double sy = deg2rad(config_.localization.pose_noise_yaw_deg);
+  Rm(5, 5) = sy * sy;
 
   if (s.has_velocity) {
     const Mat3d R = state_.orientation.toRotationMatrix();
@@ -516,7 +539,16 @@ bool Eskf::update(const Eigen::VectorXd& residual, const Eigen::MatrixXd& H,
   if (!finiteEigen(new_cov)) {
     return false;
   }
-  injectError(dx);
+  // 零偏冻结门：无标定信号期（bias_freeze_timeout 窗内无被接受观测）→ 零偏【增量】置零，
+  // bg/ba 数值保持冻结前水平；速度/姿态修正照常。预测随机游走不冻（不确定性诚实增长）。
+  // 解冻由 markBiasCalibration 驱动（含协方差回充）。
+  Vec15d dx_inject = dx;
+  if (!biasCalibrationFresh()) {
+    bias_frozen_ = true;
+    dx_inject.segment<3>(9).setZero();
+    dx_inject.segment<3>(12).setZero();
+  }
+  injectError(dx_inject);
   state_.covariance = new_cov;
   return true;
 }
@@ -566,8 +598,28 @@ OdomResult Eskf::odometry(double t_out) const {
 DrHealth Eskf::health(double now) const {
   DrHealth h = counters_;
   h.last_update_time = state_.timestamp;
+  h.bias_frozen = bias_frozen_;
   (void)now;
   return h;
+}
+
+// ============================== 零偏冻结 ==============================
+
+bool Eskf::biasCalibrationFresh() const {
+  return last_bias_cal_stamp_ >= 0.0 &&
+         (state_.timestamp - last_bias_cal_stamp_) <= config_.localization.bias_freeze_timeout;
+}
+
+void Eskf::markBiasCalibration(double stamp) {
+  last_bias_cal_stamp_ = stamp;
+  if (bias_frozen_) {
+    // 解冻：零偏协方差回充到先验——冻结期 (I-KH) 经交叉项把 P_bg/P_ba 假收缩，
+    // 不回充会对一个长期没被观测过的零偏过度自信（解冻瞬间不敢修正温漂）。
+    // 只动协方差不动数值：bg/ba 依然停在冻结前的水平。
+    state_.covariance.block<3, 3>(9, 9) = Mat3d::Identity() * kGyroBiasPriorVar;
+    state_.covariance.block<3, 3>(12, 12) = Mat3d::Identity() * kAccelBiasPriorVar;
+    bias_frozen_ = false;
+  }
 }
 
 // ============================== 新鲜度 ==============================

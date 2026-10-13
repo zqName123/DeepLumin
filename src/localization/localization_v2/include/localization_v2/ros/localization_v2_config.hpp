@@ -21,19 +21,19 @@ struct LocalizationV2Config {
   std::string base_frame = "base_link";
 
   // ---- 话题 ----
-  std::string slam_odom_topic = "/localization/slam_odom";
-  std::string global_matcher_result_topic = "/localization/global_matcher/result";
+  std::string slam_odom_topic = "/slam_odometry/odom";
+  std::string global_matcher_result_topic = "/global_matcher/result";
   std::string initial_pose_topic = "/initialpose";
-  std::string source_cloud_topic = "/localization/cloud_registered_effect";
-  std::string fused_odom_topic = "/localization_v2/odom";
-  std::string map_to_odom_topic = "/localization_v2/map_to_odom";
-  std::string fused_path_topic = "/localization_v2/path";
-  std::string status_topic = "/localization_v2/status";
-  std::string current_scan_in_map_topic = "/localization_v2/current_scan_in_map";
-  std::string relocalization_result_topic = "/localization/relocalization/result";
-  std::string relocalization_command_topic = "/localization_v2/relocalization/command";
-  std::string gm_anchor_topic = "/localization_v2/gm_anchor";  ///< 初始化仲裁重定位胜出时，通知 GM 重锚（仅初始化阶段）
-  std::string loc_point_topic = "/localization_v2/loc_point";  ///< 规划订阅的位姿数据
+  std::string source_cloud_topic = "/slam_odometry/cloud_effect";
+  std::string fused_odom_topic = "/localization/fused_odom";
+  std::string map_to_odom_topic = "/localization/map_to_odom";
+  std::string fused_path_topic = "/localization/path";
+  std::string status_topic = "/localization/status";
+  std::string current_scan_in_map_topic = "/localization/current_scan_in_map";
+  std::string relocalization_result_topic = "/pc_reloc/result";
+  std::string relocalization_command_topic = "/pc_reloc/command";
+  std::string gm_anchor_topic = "/localization/gm_anchor";  ///< 初始化仲裁重定位胜出时，通知 GM 重锚（仅初始化阶段）
+  std::string loc_point_topic = "/localization/loc_point";  ///< 规划订阅的位姿数据
 
   // ---- 运行时 ----
   double output_rate_hz = 100.0;

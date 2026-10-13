@@ -48,6 +48,7 @@ add_library(localization_v3_core
   src/core/jump_guard.cpp
   src/core/failure_detector.cpp
   src/core/state_machine.cpp
+  src/core/local_odom_source.cpp
 )
 target_compile_features(localization_v3_core PUBLIC cxx_std_17)
 target_link_libraries(localization_v3_core ${EIGEN3_LIBRARIES})
@@ -81,7 +82,19 @@ target_link_libraries(localization_v3_node
   ${PCL_LIBRARIES}
 )
 
-install(TARGETS localization_v3_core localization_v3_ros localization_v3_node
+# ---------------------------------------------------------------------------
+# 局部里程计源桥（SLAM 主 / DR 备）——最小侵入接入，独立节点便于回退
+# ---------------------------------------------------------------------------
+add_executable(source_bridge_node src/ros/source_bridge_node.cpp)
+add_dependencies(source_bridge_node ${catkin_EXPORTED_TARGETS})
+target_compile_features(source_bridge_node PUBLIC cxx_std_17)
+target_link_libraries(source_bridge_node
+  localization_v3_core
+  ${catkin_LIBRARIES}
+  ${PCL_LIBRARIES}
+)
+
+install(TARGETS localization_v3_core localization_v3_ros localization_v3_node source_bridge_node
   ARCHIVE DESTINATION ${CATKIN_PACKAGE_LIB_DESTINATION}
   LIBRARY DESTINATION ${CATKIN_PACKAGE_LIB_DESTINATION}
   RUNTIME DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION}
@@ -117,4 +130,7 @@ if(CATKIN_ENABLE_TESTING)
 
   catkin_add_gtest(test_v3_failure_detector test/test_failure_detector.cpp)
   target_link_libraries(test_v3_failure_detector localization_v3_core ${GTEST_LIBRARIES} pthread)
+
+  catkin_add_gtest(test_v3_local_odom_source test/test_local_odom_source.cpp)
+  target_link_libraries(test_v3_local_odom_source localization_v3_core ${GTEST_LIBRARIES} pthread)
 endif()

@@ -15,11 +15,12 @@ topics:
   imu: "/ouster/imu"                       # 输入：IMU（预测）
   can: "/can_receive_info"                 # 输入：CAN 车速（轮速观测）
   gnss: "/gnss_chc_data"                   # 输入：GNSS/组合导航（姿态/加速度/速度/位置）
-  localization_pose: "/localization_v2/odom"      # 输入：定位 map->base（观测）
-  localization_status: "/localization_v2/status"  # 输入：定位状态（观测门控）
-  odom: "/localization/dr_odom"            # 输出：DR 里程计
-  status: "/localization/dr_status"        # 输出：健康/计数
-  path: "/localization/dr_path"            # 输出：轨迹（可视化）
+  localization_pose: "/localization/source_anchor"   # 输入：标定观测 = map_odom⊕anchor（map_base 全局位姿，扫描戳 + 差分速度 twist）
+                                                     # 【红线】必须接桥的观测话题；不得直连 fused_odom（DR 模式下=自回灌形态）
+  localization_status: "/localization/status"  # 输入：定位状态（观测门控）
+  odom: "/dr_odometry/odom"            # 输出：DR 里程计
+  status: "/dr_odometry/status"        # 输出：健康/计数
+  path: "/dr_odometry/path"            # 输出：轨迹（可视化）
 
 # ---------- 传感器安装外参（T_base_sensor：把 sensor 系向量/点转到 base）----------
 extrinsics:
@@ -50,7 +51,7 @@ wheel:
 
 # ---------- GNSS（观测：姿态为主，加速度/速度/位置可选）----------
 gnss:
-  enabled: true
+  enabled: false
   use_attitude: true         # yaw/pitch/roll 全姿态观测
   attitude_mode: "relative"  # relative: 只用姿态变化量（世界系=初始姿态系，与 LIO 一致，绝对基准消去）
                              # absolute: 绝对姿态（世界系锚 ENU，需 heading_convention 换算）
@@ -74,15 +75,19 @@ gnss:
 
 # ---------- 定位结果观测（辅助标定核心：零偏可观性的治本）----------
 localization:
-  enabled: false
+  enabled: true
   require_tracking: true     # 仅 status.state==TRACKING && output_valid 时观测
-  require_slam_fresh: true   # last_slam_age < slam_age_limit（防 DR 模式回喂闭环）
-  slam_age_limit: 0.2
   max_latency: 0.5           # 观测时刻与状态时间差上限 (s)
   pose_noise_trans: 0.05     # 位姿观测噪声 (m)
-  pose_noise_yaw_deg: 0.5
-  pose_noise_att_deg: 0.5
+  pose_noise_yaw_deg: 0.5    # 航向观测噪声（δθ_z 单独门限，deg）
+  pose_noise_att_deg: 0.5    # roll/pitch 观测噪声 (deg)
   vel_noise: 0.2             # twist 速度观测噪声 (m/s)
+  use_velocity: false        # ⓪' 已实施：桥差分真实速度接入 twist（body 系）——速度行从"恒零噪声"
+                             # 变信号（速度阻尼 + 与位置观测一致）；若观测源退回恒零 twist 必须改 false
+                             # （全零 twist 当"停车"观测会 10Hz 把速度态拽向 0、污染零偏）
+  bias_freeze_timeout: 1.0   # 零偏冻结窗 (s)：超过此时长无【被接受】的标定观测（定位位姿/GNSS姿态/加速度）
+                             # → 零偏增量置零（bg/ba 数值保持冻结前），防 DR 接管/拒收期轮速残差
+                             # 无依据归因污染零偏；须 > slam_timeout(0.25)，回切后首帧观测自动解冻+协方差回充
   # 跳变判断三档（防伪跳变污染）：小跳直收 / 大跳 N 帧一致台阶修正 / 超限拒收
   jump_soft_trans: 0.5
   jump_soft_yaw_deg: 2.0
@@ -95,7 +100,7 @@ localization:
 # ---------- 输出 ----------
 output:
   rate: 100.0                # 发布频率 (Hz)
-  publish_tf: true          # TF 由 localization_v3 拥有
+  publish_tf: false          # TF 由 localization_v3 拥有
   path_max_size: 100000      # 轨迹长度上限（稀疏追加后约 1~2h 历史）
   path_min_step: 0.05        # 轨迹稀疏追加步长 (m)：移动超此距离才留点；0=每帧留点
   path_publish_rate: 2.0     # 轨迹发布频率 (Hz)：累计量无需高频
@@ -105,6 +110,8 @@ output:
 time_sync:
   queue_size: 512            # 事件队列容量（约 1s 数据）
   reordered_drop_warn: 100   # 乱序丢弃计数告警阈值
+  pose_late_tolerance: 0.3   # 位姿观测迟到容忍 (s)：观测带扫描戳（处理链延迟晚于水位），容忍窗内放行
+                             # + observePose 一阶外推 z+=v·Δt（④）；须 ≥ 实际处理延迟，≤ localization/max_latency
 
 # ---------- 全局地图可视化（仅 RViz 观察 DR 轨迹，算法不消费）----------
 # 地图原生在 map 系、DR 在自有局部系，二者无自动对齐：
@@ -112,7 +119,7 @@ time_sync:
 map:
   enabled: true
   pcd_path: /home/hhy/2004ros/relocalization_ws/global_map_manual_imu.pcd
-  topic: /localization/dr_odometry_v2/global_map
+  topic: /dr_odometry/global_map
   frame_id: "odom"
   voxel_leaf: 2.0            # 降采样体素（m），199MB 地图可视化用；0=不降采样
   publish_period: 5.0        # 周期重发（latched + 定时，方便后开 RViz）

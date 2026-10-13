@@ -5,6 +5,13 @@
 > 关联：`localization_v3_optimization_plan.md`（v3 主优化方案，本文是其扩展）
 > 改动范围：`dr_odometry`（观测接口，P0）+ `localization_v3`（源管理/fallback 云/失效扩展）。**本文档为设计方案，未含代码改动。**
 
+> **【实现现状 2026-10-12】** §4 的源管理已落地为 `core/local_odom_source` + `ros/source_bridge_node`，
+> 并在实跑中发现/修复了 gap 填充与切换连续性的 5 处问题（含接管锚定基准错误、观测自回灌、
+> 零速度观测污染）。**实现语义以 `gap_fill_switch_optimization.md` 为准**（本文 §3.2/§4.2/§4.4 的
+> 接管锚定公式在实现中统一为 `glue_new = unified_motion(t_sw⁻) ⊕ T_new(t_sw)⁻¹`）。
+> 另：实现采用 `dr_odometry_v2`（非 `dr_odometry`），DR 世界系 = 虚拟局部系（非 map 系，
+> 观测源 = 桥的纯源锚 `/localization/source_anchor`，非 `map->base`），见实现文档 §2。
+
 ---
 
 ## 0. 问题、前提与问答速览
@@ -130,12 +137,22 @@ map_base_dr ───────►│  · SLAM 在：透传 SLAM              
 
 ```
 【热备标定】定位 status+odom ──► DR 观测门控(§4.1) ──► DrEskf.update（零偏/速度/姿态收敛）
-            SLAM odom ──透传──► 统一源 ──► fusion/GM/TF            （同现状）
+            SLAM odom ──⊕glue_slam──► 统一源 ──► fusion/GM/TF      （glue=I 时=透传）
 【DR 接管】 dr map 位姿 ──⊕map_odom(t0)⁻¹──► 统一源 ──► fusion/GM/TF
             /ouster/points ──⊕T_odom_base⊕T_base_lidar──► 统一源点云 ──► GM source_cloud
             （GM 匹配/质量三级/jump guard/失效计数/状态机：机制全部不变）
-【回切】    SLAM odom 恢复 → map_odom 重锚 → 统一源切回透传（§4.4）
+【回切】    SLAM odom 恢复 → 粘合换基准（保连续）→ 统一源切回 SLAM（§4.4）
 ```
+
+### 3.3.1 桥的坐标系契约（实现红线）
+
+**桥输出的一切（统一源里程计 + 统一源点云）必须同处【虚拟局部系】。** `map_odom` 的语义 =
+map→(源点云所在系)，凡与 map_odom 组合的量（fusion 可视化点云、TF/path 用的统一源）必须同系：
+
+- `glue_slam = I`（从未发生 DR 接管/回切）：SLAM 云零成本原样透传；
+- `glue_slam ≠ I`（发生过回切，含"DR 先启动→LIO 就绪"的常见启动时序）：SLAM 云必须 ⊕ glue_slam
+  进虚拟系后再发布——否则 GM 结果=map→云端系、统一源=虚拟系，两者混乘导致 **path/TF 偏移而点云看似正常**
+  （实施中实测踩坑并修复；回归测试 `SlamGlueNonIdentityAfterDrExcursion` 锁定）。
 
 ### 3.4 DR 角色定位（预期管理，DR 质量差前提）
 

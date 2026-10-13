@@ -1,0 +1,47 @@
+# =============================================================================
+# source_bridge 配置：局部里程计源桥（SLAM 主 / DR 备）
+#
+# 概念：虚拟局部里程计系 unified = glue ⊕ T_source，源切换由粘合变换保证输出连续，
+#       fusion / GM / 状态机无感知（详见 docs/dr_odometry_fallback_design.md）。
+# =============================================================================
+
+frames:
+  odom: "odom"            # 统一源父系（虚拟局部系）
+  base_link: "base_link"
+
+topics:
+  slam_odom: /slam_odometry/odom                  # 输入：SLAM 里程计（主）
+  dr_odom: /dr_odometry/odom                      # 输入：DR 里程计（备，dr_odometry_v2）
+  slam_cloud: /slam_odometry/cloud_effect   # 输入：SLAM 注册云
+  raw_cloud: /ouster/points                           # 输入：原始点云（DR 模式注册用）
+  unified_odom: /localization/odom_source             # 输出：统一纯源位姿（fusion/GM source_odom）
+  source_anchor: /localization/source_anchor          # 输出：标定观测（map_odom⊕anchor=map_base 全局位姿，SLAM 样本事件式；
+                                                      # 时间戳=扫描戳；twist=锚位姿差分真实速度(body 系)；dr_odometry_v2 观测）
+                                                      # 【红线】map_odom 未建立时不发——纯锚≠map_base（不同帧，实测差 ~12m），
+                                                      # 禁止退化；无观测期 DR 纯递推+零偏冻结兜底
+  map_to_odom: /localization/map_to_odom              # 输入：map->odom 修正（fusion 发布，观测合成用）
+  unified_cloud: /localization/source_cloud           # 输出：统一源点云（GM source_cloud）
+
+# 源管理策略
+odometry:
+  slam_timeout_sec: 0.25          # SLAM 断流判定 → 切 DR。接管锚定 T0⊕D(t0)⁻¹：检测窗真实运动一次性补进输出。
+                                  # 【红线】必须 > LIO 采样最大间隙（实测抖动 0.1~0.185s）：
+                                  # 取小了正常节拍的慢帧会误接管 → "冻结+补步进"反复出现（毛刺复发）；
+                                  # 取大了接管台阶 v×本值 变大（一次性，替代旧"轨迹短一截+GM 回拉"）。
+  dr_history_sec: 1.0             # DR 位姿历史长度：接管时按最后 SLAM 样本戳插值取 D(t0)
+  slam_require_cloud: true        # SLAM 源可用 = odom 新鲜 && 注册云新鲜（防"发 odom 不发云"的部分故障）
+  slam_cloud_timeout_sec: 0.5     # SLAM 注册云新鲜度判定（s）
+  dr_timeout_sec: 0.5             # DR 模式下 DR 断流判定 → 无输出（fusion 看门狗判失效）
+  switch_back_confirm_frames: 5   # 回切滞回：连续 N 帧 SLAM 新鲜才切回
+  flap_guard_count: 3             # 翻转保护：60s 内切换达到 N 次 → 回切确认帧加倍（0=关闭）
+  flap_window_sec: 60.0
+
+# 源点云
+cloud:
+  enabled: true
+  base_to_lidar:                  # T_base_lidar（与 GM 外参一致；DR 模式注册原始点云用）
+    translation: [0.0, 0.0, 0.0]
+    rotation: [0,1,0, -1,0,0, 0,0,1]
+
+output:
+  rate: 100.0                     # 统一源发布频率 (Hz)

@@ -13,12 +13,18 @@
 -->
 <launch>
   <arg name="slam_config" default="$(find slam_odometry_v2)/config/slam_odometry_v2.yaml" />
+  <arg name="config_path" default="$(find lio_odometry_v2)/config/lio_odometry.yaml" />  
   <arg name="relocalization_config" default="$(find relocalization)/config/relocalization.yaml" />
 
   <arg name="start_slam" default="true" />
   <arg name="start_relocalization" default="true" />
   <arg name="start_aruco_reloc" default="false" />
   <arg name="rviz" default="true" />
+
+  <!-- DR 备用源接入：true=经 source_bridge 统一源（SLAM 主 / DR 备，断流自动接管）；
+       false=直连 SLAM（一键回退到接入前的行为） -->
+  <arg name="use_dr_source" default="true" />
+  <arg name="start_dr" default="true" />
 
   <arg name="play_bag" default="false" />
   <arg name="bag" default="/home/hhy/2004ros/data/mimo.bag" />
@@ -37,16 +43,28 @@
   <param name="/use_sim_time" value="$(arg clock)" />
 
   <!-- 1. slam_odometry_v2：局部里程计 -->
-  <node if="$(arg start_slam)" pkg="slam_odometry_v2" type="slam_odometry_v2_node"
+  <!-- <node if="$(arg start_slam)" pkg="slam_odometry_v2" type="slam_odometry_v2_node"
         name="slam_odometry_v2" output="screen">
     <rosparam file="$(arg slam_config)" command="load" />
     <param name="node/faster_lio_config_yaml" value="$(arg slam_config)" />
     <param name="node/publish_tf" value="false" />
+    <param name="log_dir" value="$(arg log_dir)" />
+  </node> -->
+
+  <!--1.1 lio_odometry_v2：LIO 里程计 -->
+  <node if="$(arg start_slam)" pkg="lio_odometry_v2" type="lio_odometry_v2_node"
+        name="lio_odometry_v2" output="screen">
+    <param name="config_path" value="$(arg config_path)" />
+    <param name="log_dir" value="$(arg log_dir)" />
   </node>
 
   <!-- 2. localization_v3：融合节点 -->
   <node pkg="localization_v3" type="localization_v3_node" name="localization_v3" output="screen">
     <rosparam file="$(find localization_v3)/config/localization_v3.yaml" command="load" />
+    <!-- 统一局部里程计源（source_bridge 输出，SLAM 主 / DR 备） -->
+    <param if="$(arg use_dr_source)" name="topics/slam_odom" value="/localization/odom_source" />
+    <!-- 可视化源点云同走统一源：与 map_odom 的坐标系保持一致（见桥契约） -->
+    <param if="$(arg use_dr_source)" name="topics/source_cloud" value="/localization/source_cloud" />
 
     <param name="log_dir" value="$(arg log_dir)" />
     <param name="traj_path" value="$(find localization_v3)/traj.txt" />
@@ -63,12 +81,23 @@
     <param name="map/mode" value="$(arg map_mode)" />
     <param name="map/pcd_path" value="$(arg pcd_path)" />
     <param name="map/map_dir" value="$(arg map_dir)" />
-    <param name="topics/source_cloud" value="/localization/cloud_registered_effect" />
-    <param name="topics/initial_pose" value="/localization_v2/odom" />
-    <param name="topics/source_odom" value="/localization/slam_odom" />
+    <param name="topics/source_cloud" value="/slam_odometry/cloud_effect" />
+    <param name="topics/initial_pose" value="/localization/fused_odom" />
+    <param name="topics/source_odom" value="/slam_odometry/odom" />
+    <!-- 统一源（source_bridge）：SLAM 主 / DR 备 -->
+    <param if="$(arg use_dr_source)" name="topics/source_cloud" value="/localization/source_cloud" />
+    <param if="$(arg use_dr_source)" name="topics/source_odom" value="/localization/odom_source" />
     <param name="runtime/source_cloud_is_odom_frame" value="true" />
     <param name="runtime/source_cloud_frame" value="odom" />
     <param name="result/pose_frame" value="odom" />
+  </node>
+
+  <!-- 3.5 DR 备用源：dr_odometry_v2 + 局部里程计源桥（SLAM 断流自动接管，切换保连续） -->
+  <include if="$(arg start_dr)" file="$(find dr_odometry_v2)/launch/dr_odometry_v2.launch" />
+  <node if="$(arg use_dr_source)" pkg="localization_v3" type="source_bridge_node"
+        name="source_bridge" output="screen">
+    <rosparam file="$(find localization_v3)/config/source_bridge.yaml" command="load" />
+    <param name="log_dir" value="$(arg log_dir)" />
   </node>
 
   <!-- 4. 重定位：初始化 / 跟踪丢失恢复 -->

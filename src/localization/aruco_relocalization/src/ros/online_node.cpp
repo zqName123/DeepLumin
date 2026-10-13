@@ -12,8 +12,8 @@
  *   - visualizer.enabled: 是否发布调试图像和点云
  *
  * 与 localization_v2 的对接：
- *   result_topic: /localization/relocalization/result（与 relocalization 共用）
- *   command_topic: /localization_v2/relocalization/command
+ *   result_topic: /v_reloc/result（与 relocalization 共用）
+ *   command_topic: /v_reloc/command
  */
 
 #include <aruco_relocalization/detector/marker_detector.hpp>

@@ -1,0 +1,27 @@
+<?xml version="1.0"?>
+<package format="2">
+  <name>local_odom_gateway</name>
+  <version>0.1.0</version>
+  <description>
+    前端里程计统一接入与无缝切换（SLAM 主 / DR 备 / 可扩展）。
+    核心为纯 C++ 库（core/），ROS 层薄适配（ros/），提供内嵌与独立两种前端。
+    只管理前端里程计与其点云；传感器由各自节点直订。
+    设计文档：localization_v3/docs/local_odom_gateway_design.md
+  </description>
+  <maintainer email="dev@deeplumin.local">DeepLumin</maintainer>
+  <license>Proprietary</license>
+
+  <buildtool_depend>catkin</buildtool_depend>
+
+  <depend>roscpp</depend>
+  <depend>std_msgs</depend>
+  <depend>geometry_msgs</depend>
+  <depend>nav_msgs</depend>
+  <depend>sensor_msgs</depend>
+  <depend>pcl_ros</depend>
+  <depend>pcl_conversions</depend>
+  <depend>localization_common</depend>
+  <depend>syslog_ros_wrap</depend>
+  <depend>libpcl-dev</depend>
+  <depend>libeigen3-dev</depend>
+</package>

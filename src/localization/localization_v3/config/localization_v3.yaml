@@ -18,17 +18,18 @@ frames:
 
 # -------------------- 话题 --------------------
 topics:
-  slam_odom: /localization/slam_odom                 # 输入：slam_odometry_v2 odom->base_link
-  global_matcher_result: /localization/global_matcher/result  # 输入：GM 匹配结果
+  slam_odom: /slam_odometry/odom                 # 输入：slam_odometry_v2 odom->base_link
+  global_matcher_result: /global_matcher/result  # 输入：GM 匹配结果
   initial_pose: /initialpose                          # 输入：RViz 人工初始位姿（最高优先级）
-  source_cloud: /localization/cloud_registered_effect # 输入：当前帧点云（仅可视化）
-  fused_odom: /localization_v2/odom                  # 输出：map->base_link 融合里程计
-  map_to_odom: /localization_v2/map_to_odom          # 输出：map->odom 修正量
-  fused_path: /localization_v2/path                  # 输出：融合轨迹（可视化）
-  status: /localization_v2/status                    # 输出：FusionStatus 定位状态
-  current_scan_in_map: /localization_v2/current_scan_in_map  # 输出：点云在 map 系（可视化）
-  gm_anchor: /localization_v2/gm_anchor              # 输出：通知 GM 重锚（人工位姿/验证/初始化仲裁后）
-  loc_point: /localization_v2/loc_point              # 输出：规划订阅的位姿
+  source_cloud: /slam_odometry/cloud_effect # 输入：当前帧点云（仅可视化）。注意：须与 map_odom 同系
+                                                   # （源里程计/源点云所在系）；use_dr_source 时 launch 覆盖为桥输出
+  fused_odom: /localization/fused_odom                  # 输出：map->base_link 融合里程计
+  map_to_odom: /localization/map_to_odom          # 输出：map->odom 修正量
+  fused_path: /localization/path                  # 输出：融合轨迹（可视化）
+  status: /localization/status                    # 输出：FusionStatus 定位状态
+  current_scan_in_map: /localization/current_scan_in_map  # 输出：点云在 map 系（可视化）
+  gm_anchor: /localization/gm_anchor              # 输出：通知 GM 重锚（人工位姿/验证/初始化仲裁后）
+  loc_point: /localization/loc_point              # 输出：规划订阅的位姿
 
 # -------------------- 运行时 --------------------
 runtime:
@@ -48,7 +49,7 @@ global_matcher:
   #   good     : inlier_ratio >= good_min 且 rmse <= max_inlier_rmse → 应用并清失败计数
   #   degraded : inlier_ratio >= degraded_min 且 rmse <= max → 应用 + 退化计数
   #   bad      : 其余（含 rmse 超标）→ 不应用 + 失败计数
-  good_min_inlier_ratio: 0.69      # 好/退化分界
+  good_min_inlier_ratio: 0.65      # 好/退化分界
   degraded_min_inlier_ratio: 0.4   # 退化/差分界
   max_inlier_rmse: 0.4             # RMSE 上限（米），超标一律 bad
 
@@ -110,8 +111,8 @@ initialization:
 
 # -------------------- 重定位接口 --------------------
 relocalization:
-  result_topic: /localization/relocalization/result   # 输入：RelocalizationResult（map->base_link）
-  command_topic: /localization_v2/relocalization/command  # 输出：start/stop
+  result_topic: /pc_reloc/result   # 输入：RelocalizationResult（map->base_link）
+  command_topic: /pc_reloc/command  # 输出：start/stop
   enabled: true
   auto_start: true               # 未初始化时自动请求启动重定位
   stop_on_success: true          # 重定位成功后停止

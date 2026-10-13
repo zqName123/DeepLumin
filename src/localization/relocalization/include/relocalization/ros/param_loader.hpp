@@ -38,8 +38,8 @@ struct OnlineRelocalizationConfig {
   std::string lidar_frame_id = "lidar_link";
   std::string query_cloud_frame = "auto";
   Eigen::Matrix4d base_to_lidar = Eigen::Matrix4d::Identity();
-  std::string result_topic = "/localization/relocalization/result";
-  std::string command_topic = "/localization_v2/relocalization/command";  ///< 启停命令话题（start/stop）
+  std::string result_topic = "/pc_reloc/result";
+  std::string command_topic = "/pc_reloc/command";  ///< 启停命令话题（start/stop）
   std::string map_id = "default";
   std::string method = "scan_context_gicp";
   bool query_rotate_xy_y_negx = false;

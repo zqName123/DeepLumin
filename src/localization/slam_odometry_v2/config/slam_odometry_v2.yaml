@@ -45,10 +45,10 @@ sensors:
 # -------------------- 节点层：发布话题 --------------------
 outputs:
   # 与 slam_odometry 当前外接形式（fastlio2）默认一致
-  odom_topic: "/localization/slam_odom"
-  local_map_topic: "/localization/local_map"
-  registered_scan_topic: "/localization/cloud_registered"
-  effect_scan_topic: "/localization/cloud_registered_effect"
+  odom_topic: "/slam_odometry/odom"
+  local_map_topic: "/slam_odometry/local_map"
+  registered_scan_topic: "/slam_odometry/cloud_registered"
+  effect_scan_topic: "/slam_odometry/cloud_effect"
 
 # -------------------- 节点层：订阅队列（单位：条）--------------------
 # 队列不是越大越好：LiDAR 单帧 ~2MB，旧值 200000 理论上限数十 GB。
@@ -171,7 +171,7 @@ mapping:
   #               0.0, 1.0, 0.0,
   #               0.0, 0.0, 1.0]
 
-point_filter_num: 2
+point_filter_num: 1
 max_iteration: 6
 filter_size_surf: 0.35            # 对齐 lm_slam（原 0.2）：稀疏点 → LiDAR 单帧信息量天然小一个量级，
 filter_size_map: 0.5             # 对齐 lm_slam（原 0.35）：P_pitch 不被钉死，轮速/GNSS 无需干预即有增益

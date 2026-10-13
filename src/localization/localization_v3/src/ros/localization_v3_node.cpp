@@ -12,9 +12,9 @@
  *   init_arbiter     初始化来源择优
  *
  * 数据流：
- *   slam_odometry_v2   /localization/slam_odom                  odom->base_link
- *   global_matcher_v2  /localization/global_matcher/result      map->odom
- *   relocalization     /localization/relocalization/result      map->base_link
+ *   slam_odometry_v2   /slam_odometry/odom                  odom->base_link
+ *   global_matcher_v2  /global_matcher/result      map->odom
+ *   relocalization     /pc_reloc/result      map->base_link
  *   /initialpose                                          人工初值（最高优先级）
  *
  * 融合公式（不变）：

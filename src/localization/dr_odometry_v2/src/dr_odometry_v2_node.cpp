@@ -31,11 +31,32 @@
 
 namespace dr_odometry_v2 {
 
+namespace {
+
+/**
+ * @brief 事件时间基归一：消息戳与 ROS 时钟同源时用消息戳（精确），
+ * 否则（bag 回放：消息头=传感器时钟、now=bag/墙钟）退化为接收时间。
+ * 事件队列必须全体同一时间基——混基会污染乱序水位，把传感器事件整批丢弃
+ * （实测表现为"定位观测一开、滤波立即冻结"）。
+ */
+double eventStamp(const ros::Time& stamp) {
+  if (!ros::Time::isValid()) {
+    return stamp.toSec();
+  }
+  const double now = ros::Time::now().toSec();
+  const double s = stamp.toSec();
+  return (s > 0.0 && std::abs(s - now) < 5.0) ? s : now;
+}
+
+}  // namespace
+
 class DrOdometryV2Node {
  public:
   DrOdometryV2Node(ros::NodeHandle& nh, ros::NodeHandle& pnh)
       : nh_(nh), config_(dr_odometry_v2_ros::loadConfig(pnh)), queue_(config_.core.time_sync.queue_size) {
     eskf_.initialize(config_.core);
+    // 观测带扫描戳（处理链延迟晚于水位）：位姿迟到容忍窗内放行 + observePose 一阶外推
+    queue_.setPoseLateTolerance(config_.core.time_sync.pose_late_tolerance);
 
     imu_sub_ = nh_.subscribe(config_.topics.imu, 2000, &DrOdometryV2Node::onImu, this);
     can_sub_ = nh_.subscribe(config_.topics.can, 200, &DrOdometryV2Node::onCan, this);
@@ -80,27 +101,21 @@ class DrOdometryV2Node {
 
   void onImu(const sensor_msgs::Imu::ConstPtr& msg) {
     ImuSample s = dr_odometry_v2_ros::fromRos(*msg, config_.extrinsics.base_to_imu);
-    if (s.stamp <= 0.0) {
-      s.stamp = ros::Time::now().toSec();  // 零戳兜底
-    }
+    s.stamp = eventStamp(msg->header.stamp);
     std::lock_guard<std::mutex> lock(mutex_);
     queue_.push(Event::makeImu(s));
   }
 
   void onCan(const deeplumin_msgs::CanReceiveInfo::ConstPtr& msg) {
     WheelSample s = dr_odometry_v2_ros::fromRos(*msg, config_.core.wheel);
-    if (s.stamp <= 0.0) {
-      s.stamp = ros::Time::now().toSec();
-    }
+    s.stamp = eventStamp(msg->header.stamp);
     std::lock_guard<std::mutex> lock(mutex_);
     queue_.push(Event::makeWheel(s));
   }
 
   void onGnss(const deeplumin_msgs::Gpchc::ConstPtr& msg) {
     GnssSample s = dr_odometry_v2_ros::fromRos(*msg);
-    if (s.stamp <= 0.0) {
-      s.stamp = ros::Time::now().toSec();
-    }
+    s.stamp = eventStamp(msg->header.stamp);
     std::lock_guard<std::mutex> lock(mutex_);
     queue_.push(Event::makeGnss(s));
   }
@@ -109,25 +124,24 @@ class DrOdometryV2Node {
     const auto info = dr_odometry_v2_ros::fromRos(*msg);
     std::lock_guard<std::mutex> lock(mutex_);
     gate_tracking_ = info.tracking;
-    gate_slam_age_ = info.slam_age;
     have_status_ = true;
   }
 
   void onLocalizationPose(const nav_msgs::Odometry::ConstPtr& msg) {
-    // 观测门控（设计 §4.1.1）：status 正常 + SLAM 新鲜（防 DR 模式回喂闭环）
+    // 观测门控（质量门）：status 正常即可观测。
+    // 自回灌由观测构造性排除（红线见 config 注释）：观测 = map_odom⊕anchor（map_base
+    // 全局位姿，anchor 不含 DR 增量），且桥只在 SLAM 驱动输出期按样本事件发布——
+    // DR 驱动期根本不会有观测到达，无需探针/稳定窗等活性近似。
     {
       std::lock_guard<std::mutex> lock(mutex_);
       if (config_.core.localization.require_tracking && !(have_status_ && gate_tracking_)) {
         return;
       }
-      if (config_.core.localization.require_slam_fresh &&
-          gate_slam_age_ > config_.core.localization.slam_age_limit) {
-        return;
-      }
     }
     PoseSample s = dr_odometry_v2_ros::fromRos(*msg);
-    if (s.stamp <= 0.0) {
-      s.stamp = ros::Time::now().toSec();
+    s.stamp = eventStamp(msg->header.stamp);
+    if (!config_.core.localization.use_velocity) {
+      s.has_velocity = false;  // 位姿锚不带 twist：全零速度不得当"停车"观测
     }
     std::lock_guard<std::mutex> lock(mutex_);
     queue_.push(Event::makePose(s));
@@ -221,13 +235,17 @@ class DrOdometryV2Node {
     if (now - last_log_time_ > 1.0) {
       last_log_time_ = now;
       const auto h = eskf_.health(now);
+      const auto& st = eskf_.state();
       SYS_LOG(syslog::LogSeverity::INFO, false)
           << "odom t=" << odom.timestamp << " pos=(" << odom.pose.position.x() << ", "
           << odom.pose.position.y() << ", " << odom.pose.position.z() << ") upd(w/g/p)="
           << h.wheel_update_count << "/" << h.gnss_attitude_update_count << "/"
           << h.pose_update_count << " gate(rej/pend/step)=" << h.pose_reject_count << "/"
           << h.pose_pending_count << "/" << h.pose_step_count
-          << " drop(reordered)=" << queue_.reorderedDropped();
+          << " drop(reordered)=" << queue_.reorderedDropped()
+          << " bias_frozen=" << (h.bias_frozen ? 1 : 0) << " bg=(" << st.gyro_bias.x() << ", "
+          << st.gyro_bias.y() << ", " << st.gyro_bias.z() << ") ba=(" << st.accel_bias.x() << ", "
+          << st.accel_bias.y() << ", " << st.accel_bias.z() << ")";
     }
   }
 
@@ -252,7 +270,6 @@ class DrOdometryV2Node {
 
   bool have_status_ = false;
   bool gate_tracking_ = false;
-  double gate_slam_age_ = 1e9;
   double last_log_time_ = 0.0;
   double last_path_stamp_ = -1.0;
   double last_path_pub_time_ = 0.0;
@@ -271,6 +288,18 @@ int main(int argc, char** argv) {
   pnh.param<std::string>("log_dir", log_dir,
                          "/home/hhy/2004ros/DeepLumin_zq/src/localization/loclog");
   SYS_LOG_INIT_FULL(log_dir, syslog::LogSeverity::INFO, 50, "dr_odometry_v2");
+
+  // sim time 模式：必须等 /clock 有效后再建定时器——否则定时器在时间无效时创建，
+  // 时钟到位后不再触发（表现为"节点活着但无输出"）
+  if (ros::Time::isSimTime() && !ros::Time::isValid()) {
+    SYS_LOG(syslog::LogSeverity::WARNING, true)
+        << "use_sim_time=true: waiting for /clock (rosbag play 需带 --clock) ...";
+    // 墙钟轮询：ros::Time::now()/waitForValid 在时钟无效时可能抛异常，不可用
+    while (ros::ok() && !ros::Time::isValid()) {
+      ros::WallDuration(0.05).sleep();
+    }
+    SYS_LOG(syslog::LogSeverity::INFO, true) << "/clock ready";
+  }
 
   dr_odometry_v2::DrOdometryV2Node node(nh, pnh);
   ros::spin();

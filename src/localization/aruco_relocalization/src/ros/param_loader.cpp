@@ -37,10 +37,10 @@ OnlineNodeConfig loadOnlineNodeConfig(ros::NodeHandle& pnh) {
 
   // 话题
   pnh.param<std::string>("image_topic", cfg.image_topic, "/camera/image_raw");
-  pnh.param<std::string>("result_topic", cfg.result_topic, "/localization/relocalization/result");
+  pnh.param<std::string>("result_topic", cfg.result_topic, "/v_reloc/result");
   pnh.param<std::string>("pose_topic", cfg.pose_topic, "/aruco_reloc/pose");
   pnh.param<std::string>("status_topic", cfg.status_topic, "/aruco_reloc/status");
-  pnh.param<std::string>("command_topic", cfg.command_topic, "/localization_v2/relocalization/command");
+  pnh.param<std::string>("command_topic", cfg.command_topic, "/v_reloc/command");
   pnh.param<std::string>("debug_image_topic", cfg.debug_image_topic, "/aruco_reloc/debug_image");
 
   // 坐标系

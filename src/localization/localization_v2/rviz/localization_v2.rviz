@@ -75,7 +75,7 @@ Visualization Manager:
       Size (Pixels): 3
       Size (m): 0.10000000149011612
       Style: Flat Squares
-      Topic: /localization/global_matcher/target_submap
+      Topic: /global_matcher/target_submap
       Unreliable: false
       Use Fixed Frame: true
       Use rainbow: true
@@ -103,7 +103,7 @@ Visualization Manager:
       Size (Pixels): 3
       Size (m): 0.009999999776482582
       Style: Points
-      Topic: /localization/global_matcher/global_map
+      Topic: /global_matcher/global_map
       Unreliable: false
       Use Fixed Frame: true
       Use rainbow: false
@@ -131,7 +131,7 @@ Visualization Manager:
       Size (Pixels): 3
       Size (m): 0.10000000149011612
       Style: Flat Squares
-      Topic: /localization_v2/current_scan_in_map
+      Topic: /localization/current_scan_in_map
       Unreliable: false
       Use Fixed Frame: true
       Use rainbow: true
@@ -157,7 +157,7 @@ Visualization Manager:
       Radius: 0.029999999329447746
       Shaft Diameter: 0.10000000149011612
       Shaft Length: 0.10000000149011612
-      Topic: /localization_v2/path
+      Topic: /localization/path
       Unreliable: false
       Value: true
     - Class: rviz/TF
@@ -207,7 +207,7 @@ Visualization Manager:
       Size (Pixels): 3
       Size (m): 0.10000000149011612
       Style: Flat Squares
-      Topic: /reloc_aligned_scan
+      Topic: /pc_reloc/aligned_scan
       Unreliable: false
       Use Fixed Frame: true
       Use rainbow: true
@@ -235,7 +235,7 @@ Visualization Manager:
       Size (Pixels): 5
       Size (m): 0.009999999776482582
       Style: Points
-      Topic: /localization/global_matcher/difference_cloud
+      Topic: /global_matcher/difference_cloud
       Unreliable: false
       Use Fixed Frame: true
       Use rainbow: true

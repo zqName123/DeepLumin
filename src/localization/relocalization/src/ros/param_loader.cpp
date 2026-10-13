@@ -165,9 +165,9 @@ OnlineRelocalizationConfig loadOnlineRelocalizationConfig(ros::NodeHandle& pnh) 
   pnh.param<std::string>("lidar_frame_id", cfg.lidar_frame_id, "lidar_link");
   pnh.param<std::string>("query_cloud_frame", cfg.query_cloud_frame, "auto");
   cfg.base_to_lidar = loadExtrinsic(pnh, "extrinsics/base_to_lidar");
-  pnh.param<std::string>("result_topic", cfg.result_topic, "/localization/relocalization/result");
+  pnh.param<std::string>("result_topic", cfg.result_topic, "/pc_reloc/result");
   pnh.param<std::string>("command_topic", cfg.command_topic,
-                         "/localization_v2/relocalization/command");
+                         "/pc_reloc/command");
   pnh.param<std::string>("map_id", cfg.map_id, "default");
   pnh.param<std::string>("method", cfg.method, "scan_context_gicp");
   pnh.param<bool>("query_frame/rotate_xy_y_negx", cfg.query_rotate_xy_y_negx, false);

@@ -17,7 +17,7 @@
   <arg name="config" default="$(find dr_odometry)/config/dr_odometry.yaml" />
   <arg name="publish_global_map" default="true" />
   <arg name="pcd_path" default="/home/hhy/2004ros/relocalization_ws/global_map_manual_imu.pcd" />
-  <arg name="global_map_topic" default="/localization/dr_odometry/global_map" />
+  <arg name="global_map_topic" default="/dr_odometry/odometry/global_map" />
   <arg name="global_map_voxel_leaf" default="5.0" />
   <arg name="global_map_frame" default="odom" />
 

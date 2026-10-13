@@ -70,10 +70,10 @@ struct DebugVisualizerConfig {
 struct OnlineNodeConfig {
   // 话题
   std::string image_topic = "/camera/image_raw";
-  std::string result_topic = "/localization/relocalization/result";
+  std::string result_topic = "/v_reloc/result";
   std::string pose_topic = "/aruco_reloc/pose";
   std::string status_topic = "/aruco_reloc/status";
-  std::string command_topic = "/localization_v2/relocalization/command";
+  std::string command_topic = "/v_reloc/command";
   std::string debug_image_topic = "/aruco_reloc/debug_image";
 
   // 坐标系

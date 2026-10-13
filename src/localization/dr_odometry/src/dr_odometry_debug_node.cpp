@@ -92,7 +92,7 @@ class DrOdometryDebugNode {
     path_pub_ = nh_.advertise<nav_msgs::Path>(topics_.path, 5);
     status_pub_ = nh_.advertise<deeplumin_msgs::LocalizationStatus>(topics_.status, 10);
     path_.header.frame_id = frames_.odom;
-    global_map_viz_.setup(nh_, pnh_, "/localization/dr_odometry/global_map", "map", "dr_odometry_debug");
+    global_map_viz_.setup(nh_, pnh_, "/dr_odometry/odometry/global_map", "map", "dr_odometry_debug");
 
     ROS_INFO("[dr_odometry_debug] use_imu=%s use_wheel=%s use_gnss=%s heading=%s position=%s velocity=%s",
              yesNo(use_imu_), yesNo(config_.use_wheel), yesNo(config_.use_gnss),

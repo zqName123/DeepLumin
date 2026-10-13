@@ -21,8 +21,8 @@ input:
   gnss_topic: "/gnss_chc_data"
   image_topic: "/camera/li_image"  # 视觉回环用
 
-  # odom_topic: "/localization/slam_odom"
-  # scan_topic: "/localization/cloud_registered_effect"
+  # odom_topic: "/slam_odometry/odom"
+  # scan_topic: "/slam_odometry/cloud_effect"
   # gnss_topic: "/gnss_chc_data"
   # image_topic: "/camera/color/image_raw/compressed"  # 视觉回环用
 

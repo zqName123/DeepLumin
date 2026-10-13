@@ -20,8 +20,8 @@ struct FrameConfig {
 };
 
 struct InputConfig {
-  std::string odom_topic = "/localization/slam_odom";
-  std::string scan_topic = "/localization/cloud_registered";
+  std::string odom_topic = "/slam_odometry/odom";
+  std::string scan_topic = "/slam_odometry/cloud_registered";
   std::string gnss_topic = "/gnss_chc_data";
   std::string image_topic = "/camera/image_raw";  // 相机图像话题（视觉回环用）
 };

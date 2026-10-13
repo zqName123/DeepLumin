@@ -46,12 +46,12 @@ NodeConfig loadNodeConfig(ros::NodeHandle& pnh) {
     pnh.param<std::string>("sensors/gnss_topic", cfg.sensors.gnss, "/gnss_chc_data");
 
     // outputs（与 slam_odometry 当前外接形式默认一致）
-    pnh.param<std::string>("outputs/odom_topic", cfg.outputs.odom, "/localization/slam_odom");
-    pnh.param<std::string>("outputs/local_map_topic", cfg.outputs.local_map, "/localization/local_map");
+    pnh.param<std::string>("outputs/odom_topic", cfg.outputs.odom, "/slam_odometry/odom");
+    pnh.param<std::string>("outputs/local_map_topic", cfg.outputs.local_map, "/slam_odometry/local_map");
     pnh.param<std::string>("outputs/registered_scan_topic", cfg.outputs.registered_scan,
-                           "/localization/cloud_registered");
+                           "/slam_odometry/cloud_registered");
     pnh.param<std::string>("outputs/effect_scan_topic", cfg.outputs.effect_scan,
-                           "/localization/cloud_registered_effect");
+                           "/slam_odometry/cloud_effect");
 
     // slam
     pnh.param<std::string>("node/faster_lio_config_yaml", cfg.slam.faster_lio_config_yaml, "");

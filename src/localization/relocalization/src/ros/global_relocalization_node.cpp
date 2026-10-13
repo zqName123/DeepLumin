@@ -119,11 +119,11 @@ class GlobalRelocalizationNode {
     lidar_sub_ = nh_.subscribe(config_.lidar_topic, 1, &GlobalRelocalizationNode::onCloud, this);
     command_sub_ =
         nh_.subscribe(config_.command_topic, 5, &GlobalRelocalizationNode::onCommand, this);
-    pose_pub_ = nh_.advertise<geometry_msgs::PoseStamped>("reloc_pose", 1, true);
+    pose_pub_ = nh_.advertise<geometry_msgs::PoseStamped>("/pc_reloc/pose", 1, true);
     result_pub_ = nh_.advertise<deeplumin_msgs::RelocalizationResult>(config_.result_topic, 1, true);
-    status_pub_ = nh_.advertise<std_msgs::String>("reloc_status", 1, true);
-    aligned_pub_ = nh_.advertise<sensor_msgs::PointCloud2>("reloc_aligned_scan", 1, true);
-    target_pub_ = nh_.advertise<sensor_msgs::PointCloud2>("reloc_target_submap", 1, true);
+    status_pub_ = nh_.advertise<std_msgs::String>("/pc_reloc/status", 1, true);
+    aligned_pub_ = nh_.advertise<sensor_msgs::PointCloud2>("/pc_reloc/aligned_scan", 1, true);
+    target_pub_ = nh_.advertise<sensor_msgs::PointCloud2>("/pc_reloc/target_submap", 1, true);
 
     // ROS_INFO_STREAM("Loaded " << core_.descriptor().size() << " descriptors");
     SYS_LOG(syslog::LogSeverity::INFO, false) 

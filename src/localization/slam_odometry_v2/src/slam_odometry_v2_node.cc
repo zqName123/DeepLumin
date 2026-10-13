@@ -122,9 +122,9 @@ class SlamOdometryV2Node {
         // 订阅队列配置化（Stage 1）：队列单位是条不是字节，LiDAR 单帧 ~2MB 必须小。
         // enable_override=false 时逐字恢复旧常量（imu/lidar=200000, wheel=1000, gnss=100），
         // 用于运行时回退（docs/odom_buffer_memory_fix.md）。
-        const int q_imu = config_.queue.enable_override ? config_.queue.imu : 200000;
-        const int q_lidar = config_.queue.enable_override ? config_.queue.lidar : 200000;
-        const int q_wheel = config_.queue.enable_override ? config_.queue.wheel : 1000;
+        const int q_imu = config_.queue.enable_override ? config_.queue.imu : 500;
+        const int q_lidar = config_.queue.enable_override ? config_.queue.lidar : 20;
+        const int q_wheel = config_.queue.enable_override ? config_.queue.wheel : 100;
         const int q_gnss = config_.queue.enable_override ? config_.queue.gnss : 100;
 
         imu_sub_ = nh_.subscribe(config_.sensors.imu, q_imu, &SlamOdometryV2Node::onImu, this);
@@ -195,7 +195,7 @@ class SlamOdometryV2Node {
             out.pose.pose.orientation.x = odom.orientation.x();
             out.pose.pose.orientation.y = odom.orientation.y();
             out.pose.pose.orientation.z = odom.orientation.z();
-            odom_pub_.publish(out);
+            odom_pub_.publish(out);   // 是不是补上速度？
 
             if (config_.publish_tf) {
                 tf::Transform transform;

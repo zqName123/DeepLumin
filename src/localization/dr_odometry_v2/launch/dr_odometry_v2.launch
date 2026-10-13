@@ -1,6 +1,6 @@
 <!--
   dr_odometry_v2 启动文件
-  输出 /localization/dr_odom 供 localization_v3 的 LocalOdomSource 消费（SLAM 断流备用源）。
+  输出 /dr_odometry/odom 供 localization_v3 的 LocalOdomSource 消费（SLAM 断流备用源）。
 -->
 <launch>
   <arg name="log_dir" default="$(find dr_odometry_v2)/../loclog" />

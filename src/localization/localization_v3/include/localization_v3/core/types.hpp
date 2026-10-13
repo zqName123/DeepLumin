@@ -43,6 +43,13 @@ inline bool isFinite(const Pose3d& pose) {
   return isFinite(pose.position) && isFinite(pose.orientation);
 }
 
+inline Pose3d identity() { return Pose3d(); }
+
+inline bool isIdentity(const Pose3d& pose, double tol = 1e-9) {
+  return pose.position.norm() < tol &&
+         std::abs(pose.orientation.normalized().w()) > 1.0 - tol;
+}
+
 inline Pose3d inverse(const Pose3d& pose) {
   Pose3d out;
   out.orientation = pose.orientation.normalized().conjugate();

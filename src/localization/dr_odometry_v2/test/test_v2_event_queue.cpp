@@ -41,6 +41,55 @@ TEST(EventQueueTest, LateEventDropped) {
   EXPECT_EQ(q.reorderedDropped(), 1u);
 }
 
+namespace {
+Event poseAt(double t) {
+  PoseSample p;
+  p.stamp = t;
+  return Event::makePose(p);
+}
+}  // namespace
+
+TEST(EventQueueTest, LatePoseWithinToleranceAccepted) {
+  // ④：位姿观测带扫描戳（晚于水位到达）——容忍窗内放行、水位不回退
+  EventQueue q(16);
+  q.setPoseLateTolerance(0.3);
+  ASSERT_TRUE(q.push(imuAt(1.0)));
+  Event e;
+  ASSERT_TRUE(q.popNext(&e));  // 水位 → 1.0
+
+  ASSERT_TRUE(q.push(poseAt(0.85)));  // 迟到 0.15s ≤ 容忍 0.3s
+  ASSERT_TRUE(q.popNext(&e));
+  EXPECT_EQ(e.type, EventType::kPose);
+  EXPECT_DOUBLE_EQ(e.stamp, 0.85);
+  EXPECT_DOUBLE_EQ(q.processedWatermark(), 1.0);  // 水位不回退
+  EXPECT_EQ(q.reorderedDropped(), 0u);
+}
+
+TEST(EventQueueTest, LatePoseBeyondToleranceDropped) {
+  EventQueue q(16);
+  q.setPoseLateTolerance(0.3);
+  ASSERT_TRUE(q.push(imuAt(1.0)));
+  Event e;
+  ASSERT_TRUE(q.popNext(&e));
+
+  ASSERT_TRUE(q.push(poseAt(0.5)));  // 迟到 0.5s > 容忍 0.3s
+  EXPECT_FALSE(q.popNext(&e));
+  EXPECT_EQ(q.reorderedDropped(), 1u);
+}
+
+TEST(EventQueueTest, LateImuNeverTolerated) {
+  // 迟到容忍只对位姿观测开放：IMU 迟到仍丢（时间主轴不可乱）
+  EventQueue q(16);
+  q.setPoseLateTolerance(0.3);
+  ASSERT_TRUE(q.push(imuAt(1.0)));
+  Event e;
+  ASSERT_TRUE(q.popNext(&e));
+
+  ASSERT_TRUE(q.push(imuAt(0.9)));  // 迟到 0.1s 在容忍窗内，但类型非位姿 → 丢
+  EXPECT_FALSE(q.popNext(&e));
+  EXPECT_EQ(q.reorderedDropped(), 1u);
+}
+
 TEST(EventQueueTest, InvalidStampRejected) {
   EventQueue q(16);
   Event bad = imuAt(std::numeric_limits<double>::quiet_NaN());

@@ -123,10 +123,6 @@ LoadedConfig loadConfig(ros::NodeHandle& pnh) {
   cfg.localization.enabled = loadBool(pnh, "localization/enabled", cfg.localization.enabled);
   cfg.localization.require_tracking =
       loadBool(pnh, "localization/require_tracking", cfg.localization.require_tracking);
-  cfg.localization.require_slam_fresh =
-      loadBool(pnh, "localization/require_slam_fresh", cfg.localization.require_slam_fresh);
-  cfg.localization.slam_age_limit =
-      loadDouble(pnh, "localization/slam_age_limit", cfg.localization.slam_age_limit);
   cfg.localization.max_latency =
       loadDouble(pnh, "localization/max_latency", cfg.localization.max_latency);
   cfg.localization.pose_noise_trans =
@@ -136,6 +132,10 @@ LoadedConfig loadConfig(ros::NodeHandle& pnh) {
   cfg.localization.pose_noise_att_deg =
       loadDouble(pnh, "localization/pose_noise_att_deg", cfg.localization.pose_noise_att_deg);
   cfg.localization.vel_noise = loadDouble(pnh, "localization/vel_noise", cfg.localization.vel_noise);
+  cfg.localization.use_velocity =
+      loadBool(pnh, "localization/use_velocity", cfg.localization.use_velocity);
+  cfg.localization.bias_freeze_timeout =
+      loadDouble(pnh, "localization/bias_freeze_timeout", cfg.localization.bias_freeze_timeout);
   cfg.localization.jump_soft_trans =
       loadDouble(pnh, "localization/jump_soft_trans", cfg.localization.jump_soft_trans);
   cfg.localization.jump_soft_yaw_deg =
@@ -166,6 +166,8 @@ LoadedConfig loadConfig(ros::NodeHandle& pnh) {
   cfg.time_sync.queue_size = loadInt(pnh, "time_sync/queue_size", cfg.time_sync.queue_size);
   cfg.time_sync.reordered_drop_warn =
       loadInt(pnh, "time_sync/reordered_drop_warn", cfg.time_sync.reordered_drop_warn);
+  cfg.time_sync.pose_late_tolerance =
+      loadDouble(pnh, "time_sync/pose_late_tolerance", cfg.time_sync.pose_late_tolerance);
 
   cfg.initial_yaw_deg = loadDouble(pnh, "imu/initial_yaw_deg", cfg.initial_yaw_deg);
 

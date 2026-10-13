@@ -1,0 +1,19 @@
+<?xml version="1.0"?>
+<package format="2">
+  <name>localization_common</name>
+  <version>0.1.0</version>
+  <description>
+    定位模块共享的基础类型：SE(3) 位姿数学、时间工具（header-only）。
+    被 local_odom_gateway / localization_v3 等定位包共用，避免类型重复定义。
+  </description>
+  <maintainer email="dev@deeplumin.local">DeepLumin</maintainer>
+  <license>Proprietary</license>
+
+  <buildtool_depend>catkin</buildtool_depend>
+  <build_depend>roscpp</build_depend>
+  <build_export_depend>roscpp</build_export_depend>
+
+  <!-- Eigen：deeplumin_cmake 统一管理版本 -->
+  <build_depend>eigen</build_depend>
+  <build_export_depend>eigen</build_export_depend>
+</package>

@@ -40,10 +40,10 @@ struct SensorTopicConfig {
 };
 
 struct OutputTopicConfig {
-    std::string odom = "/localization/slam_odom";
-    std::string local_map = "/localization/local_map";
-    std::string registered_scan = "/localization/cloud_registered";
-    std::string effect_scan = "/localization/cloud_registered_effect";
+    std::string odom = "/slam_odometry/odom";
+    std::string local_map = "/slam_odometry/local_map";
+    std::string registered_scan = "/slam_odometry/cloud_registered";
+    std::string effect_scan = "/slam_odometry/cloud_effect";
 };
 
 struct SlamConfig {

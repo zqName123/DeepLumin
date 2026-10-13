@@ -274,6 +274,44 @@ TEST(EskfTest, OutputExtrapolation) {
   EXPECT_NEAR(odom.timestamp, 1.05, 1e-6);
 }
 
+TEST(EskfTest, LatePoseObservationExtrapolatedByVelocity) {
+  // ④：位姿观测带扫描戳（滞后状态时刻）——按速度一阶外推到状态时刻再比对。
+  // 构造：状态匀速 1m/s 前进，观测滞后 0.2s 且位姿是"滞后时刻真值"。
+  // 无外推时残差 = -v·lag，位置被向后拽；有外推时残差≈0，位置不动。
+  Eskf eskf;
+  ASSERT_TRUE(eskf.initialize(defaultConfig()));
+  feedStationary(eskf, 0.0, 0.5, 0.005);
+
+  // 首帧锚定 map 基准
+  PoseSample anchor;
+  anchor.stamp = 0.505;
+  anchor.map_base.position = Vec3d(0.0, 0.0, 0.0);
+  eskf.processEvent(Event::makePose(anchor));
+
+  // 匀速 1m/s：IMU 无加速度（重力比力），轮速持续喂 1.0 维持速度态
+  for (double t = 0.51; t <= 1.0 + 1e-9; t += 0.005) {
+    eskf.processEvent(Event::makeImu(imuAt(t)));
+    WheelSample w;
+    w.stamp = t;
+    w.speed_mps = 1.0;
+    eskf.processEvent(Event::makeWheel(w));
+  }
+  const double x_before = eskf.odometry(1.0).pose.position.x();
+  ASSERT_GT(x_before, 0.3);  // 确认状态确实在前进（速度建立）
+
+  // 迟到观测：扫描戳 0.8（滞后 0.2s），位姿 = 0.8 时刻真值 ≈ (x_before - 1.0*0.2)
+  PoseSample late;
+  late.stamp = 0.8;
+  late.map_base.position = Vec3d(x_before - 1.0 * 0.2, 0.0, 0.0);
+  late.map_base.orientation = Quatd::Identity();
+  eskf.processEvent(Event::makePose(late));
+
+  // 外推补上 v·lag：残差≈0 → 位置不应被向后拽（无外推会被拽 ~0.2·K）
+  const double x_after = eskf.odometry(1.0).pose.position.x();
+  EXPECT_NEAR(x_after, x_before, 0.05);
+  EXPECT_GT(eskf.health(1.0).pose_update_count, 0u);  // 观测被正常接收（未被当迟到丢）
+}
+
 
 
 
@@ -318,6 +356,54 @@ TEST(EskfTest, RelativeModeIgnoresGnssPresetBeforeImu) {
   const auto odom = eskf.odometry(2.0);
   EXPECT_GT(odom.pose.position.x(), 1.0);
   EXPECT_NEAR(odom.pose.position.y(), 0.0, 0.5);
+}
+
+TEST(EskfTest, BiasFrozenKeepsValueWhenNoCalibrationSignal) {
+  // 零偏冻结语义（2026-10-13）：无标定信号期（无被接受的定位/GNSS 姿态/加速度观测）→
+  // bg/ba【数值】保持冻结前水平（只置零增量，不是置 0），即使轮速残差经协方差交叉项
+  // 会尝试归因到零偏；速度/姿态修正不受影响。
+  Eskf eskf;
+  ASSERT_TRUE(eskf.initialize(defaultConfig()));
+  feedStationary(eskf, 0.0, 0.5, 0.005);
+
+  // "冻结前已校准"的零偏 + 错误速度（制造轮速残差，交叉项会尝试拽 ba/bg）
+  DrState s = eskf.state();
+  s.gyro_bias = Vec3d(0.0, 0.0, 0.01);
+  s.velocity = Vec3d(5.0, 0.0, 0.0);
+  eskf.reset(s);
+  eskf.processEvent(Event::makeImu(imuAt(0.51)));
+
+  for (double t = 0.515; t <= 2.0; t += 0.02) {
+    eskf.processEvent(Event::makeImu(imuAt(t)));
+    WheelSample w;
+    w.stamp = t;
+    w.speed_mps = 0.0;
+    eskf.processEvent(Event::makeWheel(w));
+  }
+  EXPECT_TRUE(eskf.health(2.0).bias_frozen);
+  EXPECT_NEAR(eskf.state().gyro_bias.z(), 0.01, 1e-9);     // 数值保持冻结前，不是置 0
+  EXPECT_NEAR(eskf.state().accel_bias.norm(), 0.0, 1e-9);  // 增量置零（原本就是 0）
+  EXPECT_LT(eskf.state().velocity.x(), 5.0);               // 速度修正照常（只冻零偏增量）
+}
+
+TEST(EskfTest, AcceptedPoseUnfreezesBiasAndRefillsCovariance) {
+  // 解冻路径：被接受的定位观测 = 标定信号 → 解冻 + 零偏协方差回充到先验
+  //（冻结期 (I-KH) 经交叉项假收缩，不回充会对未观测过的零偏过度自信）
+  Eskf eskf;
+  ASSERT_TRUE(eskf.initialize(defaultConfig()));
+  feedStationary(eskf, 0.0, 0.5, 0.005);
+  EXPECT_TRUE(eskf.health(0.5).bias_frozen);  // 从未有标定信号 → 冻结
+
+  PoseSample anchor;
+  anchor.stamp = 0.505;
+  anchor.map_base.position = Vec3d(0.0, 0.0, 0.0);
+  anchor.map_base.orientation = Quatd::Identity();
+  eskf.processEvent(Event::makePose(anchor));  // 首帧锚定 = 被接受
+
+  EXPECT_FALSE(eskf.health(0.505).bias_frozen);
+  const Mat15d P = eskf.state().covariance;
+  EXPECT_GE(P(9, 9), 0.009);   // P_bg 回充 ≈ 0.01
+  EXPECT_GE(P(12, 12), 0.04);  // P_ba 回充 ≈ 0.05
 }
 
 int main(int argc, char** argv) {

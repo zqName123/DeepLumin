@@ -63,7 +63,7 @@ class DrOdometryNode {
     status_pub_ = nh_.advertise<deeplumin_msgs::LocalizationStatus>(topics_.status, 10);
     path_pub_ = nh_.advertise<nav_msgs::Path>(topics_.path, 5);
     path_.header.frame_id = frames_.odom;
-    global_map_viz_.setup(nh_, pnh_, "/localization/dr_odometry/global_map", "map", "dr_odometry");
+    global_map_viz_.setup(nh_, pnh_, "/dr_odometry/odometry/global_map", "map", "dr_odometry");
 
     ROS_INFO("[dr_odometry] imu=%s can=%s gnss=%s use_gnss=%s use_wheel=%s output=%s",
              topics_.imu.c_str(), topics_.can.c_str(), topics_.gnss.c_str(),

@@ -3,9 +3,9 @@
  * @brief localization_v2 定位融合节点
  *
  * 数据流：
- *   slam_odometry_v2   /localization/slam_odom            odom->base_link（高频）
- *   global_matcher     /localization/global_matcher/result map->odom（低频修正）
- *   relocalization     /localization/relocalization/result map->base_link（启动初值）
+ *   slam_odometry_v2   /slam_odometry/odom            odom->base_link（高频）
+ *   global_matcher     /global_matcher/result map->odom（低频修正）
+ *   relocalization     /pc_reloc/result map->base_link（启动初值）
  *   /initialpose                                          人工初值（map 2D/3D）
  *
  * 融合公式（与 ysw_style_fusion 一致）：

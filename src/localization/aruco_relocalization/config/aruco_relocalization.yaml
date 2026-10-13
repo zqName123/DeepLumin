@@ -153,7 +153,7 @@ image_topic: "/camera/li_image"
 # 发布：重定位结果话题（用于定位管理器 fusion）
 # 类型：deeplumin_msgs::RelocalizationResult
 # 说明：包含位姿、协方差、成功标志、拒绝原因等，供定位管理器做多传感器融合。
-result_topic: "/localization/relocalization/result"
+result_topic: "/v_reloc/result"
 
 # 发布：当前位姿话题（供其他模块使用）
 # 类型：geometry_msgs::PoseStamped
@@ -171,8 +171,8 @@ status_topic: "/aruco_reloc/status"
 # 说明：支持 "start" 和 "stop" 两个命令。
 #   "start"：开始重定位（首次默认即启用）
 #   "stop"：暂停重定位，停止发布结果
-# 使用示例：rostopic pub /localization_v2/relocalization/command std_msgs/String "data: 'start'"
-command_topic: "/localization_v2/relocalization/command"
+# 使用示例：rostopic pub /v_reloc/command std_msgs/String "data: 'start'"
+command_topic: "/v_reloc/command"
 
 # ---------------------------------------------------------------------------
 # 坐标系（在线重定位私有）

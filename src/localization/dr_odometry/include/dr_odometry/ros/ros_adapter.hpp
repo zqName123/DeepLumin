@@ -28,9 +28,9 @@ struct TopicConfig {
   std::string imu = "/ouster/imu";
   std::string can = "/can_receive_info";
   std::string gnss = "/gnss_chc_data";
-  std::string odom = "/localization/dr_odom";
-  std::string status = "/localization/dr_status";
-  std::string path = "/localization/dr_path";
+  std::string odom = "/dr_odometry/odom";
+  std::string status = "/dr_odometry/status";
+  std::string path = "/dr_odometry/path";
 };
 
 /** @brief 坐标系名，对应 yaml 中 frames/*。 */

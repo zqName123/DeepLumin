@@ -578,7 +578,7 @@ class GlobalMatcherV2Node {
 
     const ros::Time start = ros::Time::now();
     
-    crop_pcl = map_manager_.cropSubmap(initial_map_base_for_crop, config_.crop);
+    // crop_pcl = map_manager_.cropSubmap(initial_map_base_for_crop, config_.crop); // 这里是不是多裁剪了一次？
     
     if (use_crop) {
       crop_pcl = map_manager_.cropSubmap(initial_map_base_for_crop, config_.crop);

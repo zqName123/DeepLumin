@@ -110,6 +110,7 @@ struct DrHealth {
   std::uint64_t stale_gnss_count = 0;
   std::uint64_t stale_pose_count = 0;
   double last_update_time = 0.0;
+  bool bias_frozen = false;  ///< 零偏冻结中（无标定信号期，增量置零、数值保持）
 };
 
 // ============================== 配置（按功能分组） ==============================
@@ -170,13 +171,16 @@ struct GnssConfig {
 struct LocalizationConfig {
   bool enabled = true;
   bool require_tracking = true;    ///< status.state==TRACKING && output_valid
-  bool require_slam_fresh = true;  ///< last_slam_age 限内（防 DR 模式回喂闭环）
-  double slam_age_limit = 0.2;
   double max_latency = 0.5;
   double pose_noise_trans = 0.05;
   double pose_noise_yaw_deg = 0.5;
   double pose_noise_att_deg = 0.5;
   double vel_noise = 0.2;
+  /// 是否把观测消息的 twist 当速度观测。
+  /// **默认关闭**：定位锚（source_anchor）是位姿锚、不带 twist；nav_msgs 的全零 twist
+  /// 会被 fromRos 判成"有效零速度"，车一动就以 10Hz 把速度态拽向 0（零偏连带被污染）。
+  /// 只有当观测源真的发布 body 系速度时才打开。
+  bool use_velocity = false;
   // 跳变判断三档（防伪跳变污染）
   double jump_soft_trans = 0.5;
   double jump_soft_yaw_deg = 2.0;
@@ -185,6 +189,11 @@ struct LocalizationConfig {
   int jump_confirm_frames = 3;
   double jump_confirm_consistency_trans = 0.5;
   double jump_confirm_consistency_yaw_deg = 2.0;
+  /// 零偏冻结窗（s）：超过此时长无【被接受】的标定观测（定位位姿 / GNSS 姿态 / GNSS 加速度）
+  /// → 置零零偏【增量】（bg/ba 数值保持冻结前水平）。防止 DR 接管/拒收期只有轮速残差时，
+  /// 误差经协方差交叉项无依据归因到零偏（污染后回切 SLAM 需重新校准）。
+  /// 须 > slam_timeout（检测窗内不抖动开关）；回切后首帧被接受观测自动解冻。
+  double bias_freeze_timeout = 1.0;
 };
 
 struct OutputConfig {
@@ -199,6 +208,9 @@ struct OutputConfig {
 struct TimeSyncConfig {
   int queue_size = 512;
   int reordered_drop_warn = 100;
+  /// 位姿观测迟到容忍（s）：观测带扫描戳（处理链延迟晚于水位），容忍窗内放行
+  /// （observePose 一阶外推到状态时刻）；0=按迟到丢弃（旧行为）
+  double pose_late_tolerance = 0.3;
 };
 
 struct DrConfig {

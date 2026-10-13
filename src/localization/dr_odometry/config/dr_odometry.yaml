@@ -25,7 +25,7 @@ frames:
 map:
   publish_global_map: false
   pcd_path: /home/hhy/2004ros/relocalization_ws/global_map_manual_imu.pcd
-  global_map_topic: /localization/dr_odometry/global_map
+  global_map_topic: /dr_odometry/odometry/global_map
   frame_id: odom
   publish_voxel_leaf: 5.0
   publish_period: 5.0
@@ -57,9 +57,9 @@ topics:
   imu: "/ouster/imu"                    # sensor_msgs/Imu
   can: "/can_receive_info"              # deeplumin_msgs/CanReceiveInfo
   gnss: "/gnss_chc_data"                # deeplumin_msgs/Gpchc（华测类 GPCHC）
-  odom: "/localization/dr_odom"         # nav_msgs/Odometry
-  status: "/localization/dr_status"     # deeplumin_msgs/LocalizationStatus
-  path: "/localization/dr_path"         # nav_msgs/Path（可视化）
+  odom: "/dr_odometry/odom"         # nav_msgs/Odometry
+  status: "/dr_odometry/status"     # deeplumin_msgs/LocalizationStatus
+  path: "/dr_odometry/path"         # nav_msgs/Path（可视化）
 
 # CAN 车速单位标记：
 #   true  → msg.speed 按 km/h，适配层会 /3.6 转成 m/s（与 ysw_loc 约定一致）

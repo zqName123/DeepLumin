@@ -15,18 +15,18 @@ frames:
 # -------------------- 话题 --------------------
 topics:
   # 输入
-  slam_odom: /localization/slam_odom                 # slam_odometry_v2: odom->base_link
-  global_matcher_result: /localization/global_matcher/result  # global_matcher 结果
+  slam_odom: /slam_odometry/odom                 # slam_odometry_v2: odom->base_link
+  global_matcher_result: /global_matcher/result  # global_matcher 结果
   initial_pose: /initialpose                          # 人工初始位姿（RViz 2D Pose Estimate）
-  source_cloud: /localization/cloud_registered_effect # 当前帧点云（odom 系，仅可视化用）
+  source_cloud: /slam_odometry/cloud_effect # 当前帧点云（odom 系，仅可视化用）
   # 输出
-  fused_odom: /localization_v2/odom                  # map->base_link 融合里程计
-  map_to_odom: /localization_v2/map_to_odom          # map->odom 修正量
-  fused_path: /localization_v2/path                  # 融合轨迹（可视化）
-  status: /localization_v2/status                    # FusionStatus 定位状态
-  current_scan_in_map: /localization_v2/current_scan_in_map  # 点云在 map 系（可视化）
-  gm_anchor: /localization_v2/gm_anchor              # 初始化仲裁重定位胜出时，通知 GM 重锚（仅初始化阶段）
-  loc_point: /localization_v2/loc_point              # 规划订阅的位姿数据
+  fused_odom: /localization/fused_odom                  # map->base_link 融合里程计
+  map_to_odom: /localization/map_to_odom          # map->odom 修正量
+  fused_path: /localization/path                  # 融合轨迹（可视化）
+  status: /localization/status                    # FusionStatus 定位状态
+  current_scan_in_map: /localization/current_scan_in_map  # 点云在 map 系（可视化）
+  gm_anchor: /localization/gm_anchor              # 初始化仲裁重定位胜出时，通知 GM 重锚（仅初始化阶段）
+  loc_point: /localization/loc_point              # 规划订阅的位姿数据
 
 
 # -------------------- 运行时 --------------------
@@ -65,8 +65,8 @@ initialization:
 
 # -------------------- 重定位接口 --------------------
 relocalization:
-  result_topic: /localization/relocalization/result   # 输入：RelocalizationResult（map->base_link）
-  command_topic: /localization_v2/relocalization/command  # 输出：std_msgs/String "start"/"stop"
+  result_topic: /pc_reloc/result   # 输入：RelocalizationResult（map->base_link）
+  command_topic: /pc_reloc/command  # 输出：std_msgs/String "start"/"stop"
   enabled: true
   auto_start: true               # 未初始化时自动请求启动重定位
   stop_on_success: true          # 重定位成功（过门限）后停止

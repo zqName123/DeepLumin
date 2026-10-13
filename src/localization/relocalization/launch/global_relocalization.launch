@@ -17,7 +17,7 @@
       -> 发布重定位位姿
 
   标准发布话题：
-    /localization/relocalization/result : deeplumin_msgs/RelocalizationResult
+    /pc_reloc/result : deeplumin_msgs/RelocalizationResult
       给 localization_manager / pose_fusion 使用，语义为 map -> base_link。
 
   兼容调试话题（命名空间 /global_relocalization/）：
